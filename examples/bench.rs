@@ -223,6 +223,8 @@ fn resolver(dir: &std::path::Path, origin: &str) -> Resolver {
     let _ = std::fs::remove_dir_all(dir);
     let mut c = Config::in_dir(dir).unwrap();
     c.peers.insert(MESH.into(), origin.into());
+    // Longer than the proxy's rate-keeping waits: a fetch waits, it does not time out.
+    c.timeout = Duration::from_secs(300);
     Resolver::open(c).unwrap()
 }
 
@@ -282,7 +284,7 @@ fn main() {
     let mut cc = ClientConfig::default();
     cc.peers.insert(MESH.into(), origin.clone());
     cc.allowed = Some(vec![MESH.into()]);
-    cc.timeout = Duration::from_secs(60);
+    cc.timeout = Duration::from_secs(300);
     let direct = Client::new(cc);
     let mesh = measure("mesh", &counter, || {
         reads
