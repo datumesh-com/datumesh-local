@@ -106,7 +106,13 @@ impl Server {
     /// [`Error::Address`]); port 0 picks one. The resolver's links become
     /// `http://127.0.0.1:<port>`.
     pub async fn bind(resolver: Arc<Resolver>, addr: SocketAddr) -> Result<Server, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        if addr.ip() != IpAddr::V4(Ipv4Addr::LOCALHOST) {
+            return Err(Error::Address(format!("{addr}: the local endpoint binds 127.0.0.1 only")));
+        }
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| Error::Address(format!("{addr}: {e}")))?;
+        let bound = listener.local_addr().map_err(|e| Error::Address(e.to_string()))?;
+        resolver.set_base_url(Some(format!("http://{bound}")))?;
+        Ok(Server { listener, resolver })
     }
 
     /// The address bound.
