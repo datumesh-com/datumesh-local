@@ -1,0 +1,91 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_call: # release.yml runs this workflow before publishing
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.toolchain }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.97", "1.99"] # MSRV and stable
+        os: [ubuntu-latest]
+        include:
+          - toolchain: "1.99"
+            os: macos-latest
+          - toolchain: "1.99"
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal && rustup default ${{ matrix.toolchain }}
+      - run: cargo test --locked
+
+  # Brief test 3's refresh against an upstream on PostgreSQL 16, as the test mesh runs.
+  refresh-pg:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+      - run: cargo test --locked --test prefetch refresh_picks_up_a_new_version_published_on_the_mesh
+        env:
+          UPSTREAM_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99 --profile minimal --component clippy,rustfmt && rustup default 1.99
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --lib --no-default-features --features wasm --locked -- -D warnings
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+      - run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  public-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly-2026-10-22 --profile minimal && rustup default nightly-2026-10-22
+      - run: cargo install --locked cargo-public-api@0.52.0
+      - run: tools/public_api.sh --native
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99 --profile minimal && rustup default 1.99
+      - run: tools/package_test.sh --native
+
+  # Brief test 8: the wasm32 bindings in Node.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99 --profile minimal --target wasm32-unknown-unknown && rustup default 1.99
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: tools/wasm_smoke.sh --native
