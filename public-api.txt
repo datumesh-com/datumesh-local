@@ -404,9 +404,8 @@ pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) 
 impl core::fmt::Debug for datumesh_local::Resolver
 pub fn datumesh_local::Resolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const datumesh_local::FOREIGN_UNAVAILABLE: &str
-pub const datumesh_local::FOREIGN_UNAVAILABLE_DETAILS: [&str; 6]
 pub const datumesh_local::FOREIGN_UNAVAILABLE_STATUS: u16
 pub const datumesh_local::LOCAL_HOST: &str
 pub const datumesh_local::LOCAL_LABEL: &str
 pub const datumesh_local::UNVERIFIABLE_LABEL: &str
-pub fn datumesh_local::foreign_unavailable_envelope(&str) -> alloc::vec::Vec<u8>
+pub fn datumesh_local::foreign_unavailable_envelope(datumesh_core::envelope::ForeignDetail) -> alloc::vec::Vec<u8>
