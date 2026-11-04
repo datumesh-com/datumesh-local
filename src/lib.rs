@@ -120,26 +120,21 @@ pub const UNVERIFIABLE_LABEL: &str = "unverifiable: signed by another machine's 
 
 /// The `error` code of a foreign cell that is not held and cannot be fetched (offline, the
 /// network or the host down, a host not allowed): `E_FOREIGN_UNAVAILABLE` (spec-0.4.3, D78:
-/// outcome `error`, HTTP 502, a required envelope member `detail`). The one place the code
-/// is named.
-///
-/// datumesh-core 0.3.6's `ErrorCode` does not have it (it comes with core 0.3.7), so the
-/// envelope is written here ([`foreign_unavailable_envelope`]) and core 0.3.6 cannot check it.
-pub const FOREIGN_UNAVAILABLE: &str = "E_FOREIGN_UNAVAILABLE";
+/// outcome `error`, HTTP 502, a required envelope member `detail`), datumesh-core's
+/// [`ErrorCode::ForeignUnavailable`](datumesh_core::ErrorCode::ForeignUnavailable). The
+/// envelope is core's ([`foreign_unavailable_envelope`]).
+pub const FOREIGN_UNAVAILABLE: &str = datumesh_core::ErrorCode::ForeignUnavailable.as_str();
 
 /// The HTTP status of [`FOREIGN_UNAVAILABLE`].
 pub const FOREIGN_UNAVAILABLE_STATUS: u16 = 502;
 
-/// The values of the envelope's `detail` with [`FOREIGN_UNAVAILABLE`] (spec-0.4.3, a closed
-/// set): `offline` (no network, or configured not to use it: offline mode, a host outside
-/// the allowlist), `network`, `dns`, `tls`, `timeout`, `refused`.
-pub const FOREIGN_UNAVAILABLE_DETAILS: [&str; 6] = ["offline", "network", "dns", "tls", "timeout", "refused"];
-
-/// The envelope of [`FOREIGN_UNAVAILABLE`] with `detail` (canonical JSON, SPEC 5.5's `error`
-/// outcome). A `detail` outside [`FOREIGN_UNAVAILABLE_DETAILS`] is written `network`.
-pub fn foreign_unavailable_envelope(detail: &str) -> Vec<u8> {
-    let d = if FOREIGN_UNAVAILABLE_DETAILS.contains(&detail) { detail } else { "network" };
-    format!(r#"{{"detail":"{d}","error":"{FOREIGN_UNAVAILABLE}","outcome":"error"}}"#).into_bytes()
+/// The envelope of [`FOREIGN_UNAVAILABLE`] with `detail` (core's
+/// `Answer::foreign_unavailable`, canonical JSON). This resolver's details:
+/// [`ForeignDetail::Offline`](datumesh_core::ForeignDetail::Offline) for offline mode and for
+/// a host outside the allowlist (configured not to use the network for it); `network`, `dns`,
+/// `tls`, `timeout` or `refused` for a fetch that got no answer.
+pub fn foreign_unavailable_envelope(detail: datumesh_core::ForeignDetail) -> Vec<u8> {
+    datumesh_core::Answer::foreign_unavailable(detail).to_json()
 }
 
 /// What went wrong outside an answer (an answer, `error` envelopes included, is a [`Reply`]).

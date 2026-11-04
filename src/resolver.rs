@@ -60,11 +60,11 @@ impl Reply {
         Reply { status, body, source, label: None, detail: None }
     }
 
-    /// [`crate::FOREIGN_UNAVAILABLE`]: written here, as core 0.3.6 has no such code.
+    /// [`crate::FOREIGN_UNAVAILABLE`], core's envelope.
     fn unavailable(detail: String) -> Reply {
         Reply {
             status: FOREIGN_UNAVAILABLE_STATUS,
-            body: foreign_unavailable_envelope(&kind_of(&detail)),
+            body: foreign_unavailable_envelope(kind_of(&detail)),
             source: Source::Unavailable,
             label: None,
             detail: Some(detail),
@@ -982,12 +982,11 @@ fn publish_key_document(s: &Shared) -> Result<(), Error> {
 
 /// The envelope's `detail` of a failure (`<kind>: <why>`): a host not allowed is `offline`
 /// (the resolver is configured not to use the network for it).
-fn kind_of(detail: &str) -> String {
+fn kind_of(detail: &str) -> datumesh_core::ForeignDetail {
     let k = detail.split(':').next().unwrap_or("").trim();
-    if k == "not allowed" {
-        "offline".into()
-    } else {
-        k.to_string()
+    match k {
+        "not allowed" => datumesh_core::ForeignDetail::Offline,
+        k => datumesh_core::ForeignDetail::from_name(k).unwrap_or(datumesh_core::ForeignDetail::Network),
     }
 }
 

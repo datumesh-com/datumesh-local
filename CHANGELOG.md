@@ -14,7 +14,7 @@ The first release (step 1.8a): the Datumesh local resolver.
   the store, receipts signed `local.invalid#<key id>` and labelled `local, verifies only on
   this machine`.
 - `E_FOREIGN_UNAVAILABLE` (spec-0.4.3; HTTP 502, `detail` offline, network, dns, tls, timeout or refused) for a foreign cell not held that cannot be
-  fetched, behind one constant; written by this crate until datumesh-core 0.3.7.
+  fetched, behind one constant; the envelope is datumesh-core 0.3.7's.
 - The configuration file with comments, the alias map as a refreshable file snapshot, the
   licence gate's open list.
 - `serve`: the mesh's handlers on 127.0.0.1 only, `/cell` through the resolver.

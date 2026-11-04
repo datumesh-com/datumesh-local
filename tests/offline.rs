@@ -22,7 +22,7 @@ fn assert_unavailable(reply: &datumesh_local::Reply, kind: &str, why: &str) {
     assert_eq!(s(&env, "error"), FOREIGN_UNAVAILABLE);
     assert_eq!(FOREIGN_UNAVAILABLE, "E_FOREIGN_UNAVAILABLE");
     assert_eq!(s(&env, "detail"), kind);
-    assert_eq!(reply.body, foreign_unavailable_envelope(kind));
+    assert_eq!(reply.body, foreign_unavailable_envelope(datumesh_core::ForeignDetail::from_name(kind).unwrap()));
     assert_eq!(
         String::from_utf8(reply.body.clone()).unwrap(),
         format!(r#"{{"detail":"{kind}","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}}"#)

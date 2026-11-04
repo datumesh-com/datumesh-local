@@ -86,10 +86,9 @@ local store:
 `E_FOREIGN_UNAVAILABLE` is spec-0.4.3's: outcome `error`, HTTP 502, and a required `detail`,
 one of `offline` (offline mode, or a host outside the allowlist), `network`, `dns`, `tls`,
 `timeout`, `refused`, e.g.
-`{"detail":"offline","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}`. datumesh-core
-0.3.6's `ErrorCode` does not have the code yet (it comes with core 0.3.7), so this crate
-writes the envelope itself; the full failure is on stderr and in the `Datumesh-Detail`
-header.
+`{"detail":"offline","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}`, built by
+datumesh-core 0.3.7 (`Answer::foreign_unavailable`); the full failure is on stderr and in
+the `Datumesh-Detail` header.
 
 ## `local.invalid`
 
@@ -151,7 +150,7 @@ call parser for `wasm32-unknown-unknown` (`verify`, `parse_call`; JSON in and ou
 ## Versions
 
 datumesh-local 0.1.0 follows spec-0.4.2 (plus spec-0.4.3's `E_FOREIGN_UNAVAILABLE` and
-unrooted namespaces), on datumesh-core 0.3.6, datumesh-engine 0.4.0, datumesh-formula 0.2.0,
+unrooted namespaces), on datumesh-core 0.3.7, datumesh-engine 0.4.0, datumesh-formula 0.2.0,
 datumesh-http 0.2.0 and datumesh-store 0.4.0. MSRV 1.97.
 
 ## License
