@@ -728,7 +728,13 @@ impl Resolver {
     /// The receipts kept aside at import: signed by another machine's local key that is not
     /// trusted here.
     pub fn quarantined(&self) -> Result<Vec<Quarantined>, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        Ok(self
+            .shared
+            .index
+            .quarantined()?
+            .into_iter()
+            .map(|(hash, key_id, bytes)| Quarantined { hash, key_id, label: crate::UNVERIFIABLE_LABEL.into(), bytes })
+            .collect())
     }
 
     /// Prefetches `target`: a slice (a call or URI with `*` for open arguments) of a foreign

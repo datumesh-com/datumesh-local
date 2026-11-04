@@ -120,12 +120,330 @@ impl Resolver {
     /// manifests), blobs held for those values, forwarded answers, and the key documents of
     /// every signer (this machine's own included).
     pub fn export(&self) -> Result<Vec<u8>, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let store = &s.store;
+        let mut descriptors = BTreeSet::new();
+        let mut bindings = Vec::new();
+        for (name, _) in s.index.names()? {
+            if let Some(b) = store.resolve_binding(&name, END).map_err(st)? {
+                descriptors.insert(b.fn_hash.clone());
+                bindings.push(obj(vec![
+                    ("fn_hash", Value::String(b.fn_hash)),
+                    ("name", Value::String(name)),
+                    ("since", Value::String(b.tx)),
+                ]));
+            }
+        }
+        let mut receipts: Vec<String> = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut versions = Vec::new();
+        for c in s.index.cells()? {
+            for v in store.versions(&c.cell_id, START, END).map_err(st)? {
+                versions.push(obj(vec![
+                    ("cell_id", Value::String(c.cell_id.clone())),
+                    ("receipt", Value::String(v.receipt_hash.clone())),
+                    ("tx", Value::String(v.tx.clone())),
+                ]));
+                if seen.insert(v.receipt_hash.clone()) {
+                    receipts.push(v.receipt_hash);
+                }
+            }
+        }
+        let mut computed = Vec::new();
+        let mut manifests = BTreeSet::new();
+        let mut todo: Vec<String> = Vec::new();
+        for (h, cell_id) in s.index.all_answered()? {
+            if let Some(bytes) = store.receipt(&h) {
+                if let Ok(r) = Receipt::from_json(&bytes) {
+                    computed.push(obj(vec![
+                        ("cell_id", Value::String(cell_id)),
+                        ("receipt", Value::String(h.clone())),
+                        ("tx", Value::String(r.tx().to_string())),
+                    ]));
+                }
+            }
+            todo.push(h);
+        }
+        for f in s.index.all_forwarded()? {
+            if let Some(r) = json::parse(&f.body).ok().and_then(|v| v.get("receipt").cloned()) {
+                if let Ok(r) = Receipt::from_value(&r) {
+                    todo.push(r.hash().to_string());
+                }
+            }
+        }
+        // The lineage of computed receipts: inputs and slice entries, recursively.
+        while let Some(h) = todo.pop() {
+            if h.starts_with("slice:") {
+                if manifests.insert(h.clone()) {
+                    if let Some(m) = store.manifest(&h) {
+                        if let Ok(m) = datumesh_core::Manifest::from_json(&m) {
+                            todo.extend(m.members().iter().cloned());
+                        }
+                    }
+                }
+                continue;
+            }
+            if seen.insert(h.clone()) {
+                receipts.push(h.clone());
+            }
+            if let Some(bytes) = store.receipt(&h) {
+                if let Ok(r) = Receipt::from_json(&bytes) {
+                    for i in r.inputs() {
+                        if !seen.contains(i) && !manifests.contains(i) {
+                            todo.push(i.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let mut hosts = BTreeSet::from([LOCAL_HOST.to_string()]);
+        let mut receipt_values = Vec::new();
+        let mut blobs = Vec::new();
+        for h in &receipts {
+            let Some(bytes) = store.receipt(h) else { continue };
+            if let Ok(r) = Receipt::from_json(&bytes) {
+                hosts.insert(r.signer_host().to_string());
+                descriptors.insert(r.cell().fn_hash.clone());
+                if r.value().ty() == Type::Blob {
+                    let sha = r.value().lexical().split(':').next().unwrap_or("").to_string();
+                    if let Some(b) = store.blob(&sha).map_err(st)? {
+                        blobs.push((sha, base64(&b)));
+                    }
+                }
+            }
+            receipt_values.push(text(&bytes));
+        }
+        blobs.sort();
+        blobs.dedup();
+        let mut keydocs = Vec::new();
+        for h in hosts {
+            if let Some(n) = store.namespace(&h).map_err(st)? {
+                keydocs.push((h, text(&n.keydoc)));
+            }
+        }
+        let descriptor_values: Vec<Value> =
+            descriptors.iter().filter_map(|h| store.descriptor(h)).map(|b| text(&b)).collect();
+        let manifest_values: Vec<Value> =
+            manifests.iter().filter_map(|e| store.manifest(e)).map(|b| text(&b)).collect();
+        let forwarded: Vec<Value> = s
+            .index
+            .all_forwarded()?
+            .into_iter()
+            .map(|f| {
+                obj(vec![
+                    ("body", text(&f.body)),
+                    ("cell_id", Value::String(f.cell_id)),
+                    ("mesh", Value::String(f.mesh)),
+                    ("rest", Value::String(f.rest)),
+                    ("status", Value::String(f.status.to_string())),
+                ])
+            })
+            .collect();
+        Ok(obj(vec![
+            ("bindings", Value::Array(bindings)),
+            ("blobs", Value::Object(blobs.into_iter().map(|(k, v)| (k, Value::String(v))).collect())),
+            ("bundle", Value::String(FORMAT.into())),
+            ("computed", Value::Array(computed)),
+            ("descriptors", Value::Array(descriptor_values)),
+            ("exported_at", Value::String(s.now())),
+            ("forwarded", Value::Array(forwarded)),
+            ("key_documents", Value::Object(keydocs)),
+            ("machine", Value::String(self.key_id().to_string())),
+            ("manifests", Value::Array(manifest_values)),
+            ("receipts", Value::Array(receipt_values)),
+            ("versions", Value::Array(versions)),
+        ])
+        .to_jcs())
     }
 
     /// Imports a bundle (see the module documentation). `trust` names other machines' key
     /// ids (from the bundle's `local.invalid` key document) to accept.
     pub fn import(&self, bundle: &[u8], trust: &[String]) -> Result<Imported, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let store = &s.store;
+        let now = s.now();
+        let v = json::parse(bundle).map_err(|e| Error::Bundle(e.to_string()))?;
+        if v.get("bundle").and_then(Value::as_str) != Some(FORMAT) {
+            return Err(Error::Bundle(format!("not a {FORMAT} bundle")));
+        }
+        let arr = |k: &str| match v.get(k) {
+            Some(Value::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        let strs = |k: &str| -> Vec<String> { arr(k).iter().filter_map(|x| x.as_str().map(str::to_string)).collect() };
+        let mut out = Imported::default();
+        // Key documents: other hosts' when absent here; the exporting machine's keys trusted
+        // only when named.
+        if let Some(docs) = v.get("key_documents").and_then(Value::as_object) {
+            for (host, doc) in docs {
+                let Some(doc) = doc.as_str() else { continue };
+                if host == LOCAL_HOST {
+                    let mine: BTreeSet<String> = key_entries(&self.key_document())
+                        .iter()
+                        .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_string))
+                        .collect();
+                    for e in key_entries(doc.as_bytes()) {
+                        let id = e.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                        if !mine.contains(&id) && trust.contains(&id) {
+                            s.index.trust(&id, &String::from_utf8_lossy(&e.to_jcs()), &now)?;
+                            out.trusted.push(id);
+                        }
+                    }
+                    continue;
+                }
+                if is_unrooted(host) {
+                    continue;
+                }
+                if store.namespace(host).map_err(st)?.is_none() {
+                    if let Err(e) = store.put_namespace(host, doc.as_bytes(), &now) {
+                        out.failed.push(format!("key document {host}: {e}"));
+                    }
+                }
+            }
+        }
+        for t in trust {
+            if !out.trusted.contains(t) && !s.index.trusted()?.iter().any(|(k, _)| k == t) {
+                return Err(Error::Bundle(format!(
+                    "--trust-key {t}: no such key in the bundle's local.invalid key document"
+                )));
+            }
+        }
+        if !out.trusted.is_empty() {
+            self.publish_key_document()?;
+        }
+        let local_ids: BTreeSet<String> = key_entries(&self.key_document())
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        for d in strs("descriptors") {
+            match store.put_descriptor(d.as_bytes()) {
+                Ok(_) => out.descriptors += 1,
+                Err(e) => out.failed.push(format!("descriptor: {e}")),
+            }
+        }
+        let mut bindings = arr("bindings");
+        bindings.sort_by(|a, b| a.get("since").and_then(Value::as_str).cmp(&b.get("since").and_then(Value::as_str)));
+        for b in bindings {
+            let g = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let (name, h, since) = (g("name"), g("fn_hash"), g("since"));
+            match store.resolve_binding(&name, END).map_err(st)? {
+                Some(x) if x.fn_hash == h => {}
+                Some(_) => out
+                    .failed
+                    .push(format!("{name}: bound here to another function; the bundle's binding is not taken")),
+                None => match store.bind_name(&name, &h, &since) {
+                    Ok(()) => out.bindings += 1,
+                    Err(e) => {
+                        out.failed.push(format!("bind {name}: {e}"));
+                        continue;
+                    }
+                },
+            }
+            s.index.hold_name(&name, host_of(&name), &now)?;
+        }
+        // Receipts: those signed by an untrusted local key are kept aside.
+        let mut stored = BTreeSet::new();
+        for text in strs("receipts") {
+            let r = match Receipt::from_json(text.as_bytes()) {
+                Ok(r) => r,
+                Err(e) => {
+                    out.failed.push(format!("receipt: {e}"));
+                    continue;
+                }
+            };
+            if is_unrooted(r.signer_host()) && !local_ids.contains(r.key_id()) {
+                s.index.quarantine(r.hash(), r.key_id(), text.as_bytes(), &now)?;
+                out.quarantined.push(r.hash().to_string());
+                continue;
+            }
+            match store.put_receipt(text.as_bytes()) {
+                Ok(h) => {
+                    s.index.release(&h)?;
+                    stored.insert(h);
+                    out.receipts += 1;
+                }
+                Err(e) => out.failed.push(format!("receipt {}: {e}", r.hash())),
+            }
+        }
+        for m in strs("manifests") {
+            match store.put_manifest(m.as_bytes()) {
+                Ok(_) => out.manifests += 1,
+                Err(e) => out.failed.push(format!("manifest: {e}")),
+            }
+        }
+        if let Some(bs) = v.get("blobs").and_then(Value::as_object) {
+            for (sha, b) in bs {
+                match b.as_str().and_then(unbase64) {
+                    Some(bytes) if datumesh_core::sha256_hex(&bytes) == *sha => match store.put_blob(&bytes) {
+                        Ok(_) => out.blobs += 1,
+                        Err(e) => out.failed.push(format!("blob {sha}: {e}")),
+                    },
+                    _ => out.failed.push(format!("blob {sha}: content of another hash")),
+                }
+            }
+        }
+        let mesh = self.mesh();
+        let mut entries: Vec<(String, String, String, bool)> = Vec::new();
+        for (k, computed) in [("versions", false), ("computed", true)] {
+            for x in arr(k) {
+                let g = |n: &str| x.get(n).and_then(Value::as_str).unwrap_or("").to_string();
+                entries.push((g("cell_id"), g("tx"), g("receipt"), computed));
+            }
+        }
+        entries.sort_by(|a, b| a.1.cmp(&b.1));
+        for (cell_id, tx, h, computed) in entries {
+            if !stored.contains(&h) {
+                continue;
+            }
+            let r = match store.receipt(&h).map(|b| Receipt::from_json(&b)) {
+                Some(Ok(r)) => r,
+                _ => continue,
+            };
+            if computed {
+                match store.computed_asof(&cell_id, END).map_err(st)? {
+                    Some(c) if c.tx.as_str() >= tx.as_str() => {}
+                    _ => match store.put_computed(&cell_id, &tx, &h) {
+                        Ok(()) => {
+                            out.computed += 1;
+                            s.index.answered(&h, &cell_id, &now)?;
+                        }
+                        Err(e) => out.failed.push(format!("computed {cell_id}: {e}")),
+                    },
+                }
+                continue;
+            }
+            match store.latest(&cell_id).map_err(st)? {
+                Some(l) if l.tx.as_str() >= tx.as_str() => {}
+                _ => match store.put_version(&cell_id, &tx, &h) {
+                    Ok(()) => out.versions += 1,
+                    Err(e) => {
+                        out.failed.push(format!("version {cell_id}: {e}"));
+                        continue;
+                    }
+                },
+            }
+            let held = HeldCell {
+                cell_id: cell_id.clone(),
+                host: host_of(&r.cell().ns).to_string(),
+                rest: cell_rest(r.cell()),
+                slice: None,
+            };
+            s.index.hold_cell(&held, &now)?;
+            mesh.stored_version_added(&cell_id);
+        }
+        for f in arr("forwarded") {
+            let g = |n: &str| f.get(n).and_then(Value::as_str).unwrap_or("").to_string();
+            let fw = Forwarded {
+                rest: g("rest"),
+                mesh: g("mesh"),
+                status: g("status").parse().unwrap_or(200),
+                body: g("body").into_bytes(),
+                cell_id: g("cell_id"),
+            };
+            s.index.put_forwarded(&fw, &now)?;
+            out.forwarded += 1;
+        }
+        mesh.clear_memo();
+        Ok(out)
     }
 }
