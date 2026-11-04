@@ -1,0 +1,56 @@
+// The configuration of the Datumesh local resolver (datumesh-local 0.1.0), installed at first
+// run. JSON; a line whose first non-blank characters are // is a comment.
+{
+  // The hosts the resolver may fetch from. Nothing else ever reaches the network: a fetch is
+  // explicit (get of a cell not held, prefetch, refresh, a forwarded request) and goes
+  // through the Datumesh HTTP client to these hosts only. The default is datumesh.com plus
+  // mesh-test.datumesh.com, the test mesh, so the tests and the first run work; remove the
+  // test mesh when you no longer use it.
+  "allowlist": ["datumesh.com", "mesh-test.datumesh.com"],
+
+  // The licence gate. A function evaluates on this machine when every input's licence is on
+  // this list, or the input is local (under local.invalid); otherwise the request is
+  // forwarded to forward_mesh and its answer (signed by that mesh) is returned.
+  // The list holds SPDX ids, and licence URLs exactly as receipts write them.
+  // Share-alike entries (CC-BY-SA-4.0, ODbL-1.0) are "open for delivery": they may be
+  // delivered and computed over here; the obligations they put on derived cells are not the
+  // gate's to decide. Licence inheritance on derived cells (spec-0.4.3 section 8.5) is the
+  // engine's job, and the lineage policy is step 3.4's, not the gate's.
+  // https://tanach.us/License.html is the UXLC's licence (scripture decision 6a): open for
+  // delivery here, although the inheritance rule ranks every https:// licence as restricted.
+  "open_licences": [
+    "CC0-1.0",
+    "CC-BY-4.0",
+    "CC-BY-SA-4.0",
+    "ODbL-1.0",
+    "OGL-UK-3.0",
+    "PDDL-1.0",
+    "Apache-2.0",
+    "MIT",
+    "https://tanach.us/License.html"
+  ],
+
+  // The mesh that answers what the gate does not let this machine compute.
+  "forward_mesh": "mesh-test.datumesh.com",
+
+  // true: no fetch at all; a cell not held answers error E_FOREIGN_UNAVAILABLE.
+  "offline": false,
+
+  // The licence of the receipts this machine signs (until the engine inherits licences).
+  "licence": "CC-BY-4.0",
+
+  // Origins to use instead of https://<host> for some hosts (tests, private networks).
+  "peers": {},
+
+  // The time limit of one request to a mesh, in seconds.
+  "timeout_seconds": 10,
+
+  // The store: null for <data directory>/store.sqlite, a SQLite path, or a postgres:// URL.
+  "store": null,
+
+  // The machine key (Ed25519 seed, mode 0600): null for <config directory>/machine.key.
+  "key_file": null,
+
+  // The alias map: null for <config directory>/aliases.json.
+  "aliases_file": null
+}

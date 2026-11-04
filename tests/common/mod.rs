@@ -110,10 +110,12 @@ pub fn upstream_with(slice_page: usize) -> Upstream {
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicU64::new(0));
     let counted = requests.clone();
-    let router = mesh.router().layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        next.run(req)
-    }));
+    let router = mesh.router().layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            next.run(req)
+        },
+    ));
     rt.spawn(async move {
         axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
     });

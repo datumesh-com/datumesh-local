@@ -1,0 +1,800 @@
+//! The resolver: answers, definitions, prefetch and refresh, verification.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+
+use datumesh_core::json::{self, Value};
+use datumesh_core::{Arg, ErrorCode, FunctionDescriptor, Receipt, Request, Scalar};
+use datumesh_http::client::{Client, ClientConfig, ClientError};
+use datumesh_http::{Config as MeshConfig, Mesh};
+use datumesh_store::{SqliteStore, Store};
+
+use crate::alias::AliasMap;
+use crate::config::Config;
+use crate::fetch::{self, host_of, name_of, network_failure, Gated, Shared, END};
+use crate::gate::{is_unrooted, LicenceGate};
+use crate::index::{Forwarded, Index};
+use crate::key::{key_entries, local_key_document, MachineKey};
+use crate::{Error, FOREIGN_UNAVAILABLE_ENVELOPE, FOREIGN_UNAVAILABLE_STATUS, LOCAL_HOST, LOCAL_LABEL};
+
+/// Where an answer came from.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The local store, without a fetch (a cell held, or evaluated here).
+    Local,
+    /// Fetched from its host now, imported, and answered from the store.
+    Fetched,
+    /// Forwarded by the licence gate to this mesh (now, or cached from before): its answer.
+    Forwarded {
+        /// The mesh.
+        mesh: String,
+    },
+    /// Not held and could not be fetched: `E_FOREIGN_UNAVAILABLE`.
+    Unavailable,
+}
+
+/// An answer: the HTTP status and the envelope (SPEC 5.5) exactly as the localhost endpoint
+/// serves them, with where it came from and how to label its signer.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    /// The HTTP status.
+    pub status: u16,
+    /// The envelope (canonical JSON).
+    pub body: Vec<u8>,
+    /// Where it came from.
+    pub source: Source,
+    /// The signer's label when this machine's key (or a trusted machine key) signed the
+    /// receipt: [`LOCAL_LABEL`].
+    pub label: Option<String>,
+    /// Why, for an answer that is not the cell's (`E_FOREIGN_UNAVAILABLE`'s failure, the
+    /// gate's reason to forward).
+    pub detail: Option<String>,
+}
+
+impl Reply {
+    fn new(status: u16, body: Vec<u8>, source: Source) -> Reply {
+        Reply { status, body, source, label: None, detail: None }
+    }
+
+    fn unavailable(detail: String) -> Reply {
+        let r = datumesh_http::envelope::error_reply(ErrorCode::InputUnavailable);
+        Reply {
+            status: r.status,
+            body: r.body.to_vec(),
+            source: Source::Unavailable,
+            label: None,
+            detail: Some(detail),
+        }
+    }
+
+    fn error(code: ErrorCode, detail: String) -> Reply {
+        let r = if code == ErrorCode::NameUnbound {
+            datumesh_http::envelope::name_unbound_reply(0)
+        } else {
+            datumesh_http::envelope::error_reply(code)
+        };
+        Reply { status: r.status, body: r.body.to_vec(), source: Source::Local, label: None, detail: Some(detail) }
+    }
+
+    /// The envelope, parsed.
+    pub fn envelope(&self) -> Option<Value> {
+        json::parse(&self.body).ok()
+    }
+
+    /// The envelope's `outcome`.
+    pub fn outcome(&self) -> Option<String> {
+        self.envelope().and_then(|v| v.get("outcome").and_then(Value::as_str).map(str::to_string))
+    }
+
+    /// The receipt, parsed, when the envelope has one.
+    pub fn receipt(&self) -> Option<Receipt> {
+        let v = self.envelope()?;
+        Receipt::from_value(v.get("receipt")?).ok()
+    }
+}
+
+/// A definition made: the name (full) and the function hash it is bound to.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Defined {
+    /// The full name.
+    pub name: String,
+    /// The function hash.
+    pub fn_hash: String,
+    /// Whether the name was newly bound (false: already bound to this function).
+    pub bound: bool,
+}
+
+/// What a prefetch pulled.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Prefetched {
+    /// The slice (its URI rest) or function prefetched.
+    pub target: String,
+    /// Pages fetched.
+    pub pages: usize,
+    /// Members (cells) seen.
+    pub members: usize,
+    /// Versions newly added to the store.
+    pub versions: usize,
+    /// Blobs fetched.
+    pub blobs: usize,
+    /// Function names held (bindings and descriptors).
+    pub names: usize,
+}
+
+/// What a refresh pulled.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Refreshed {
+    /// Names whose binding was checked.
+    pub names: usize,
+    /// Slices fetched again.
+    pub slices: usize,
+    /// Single cells checked.
+    pub cells: usize,
+    /// Versions newly added.
+    pub versions: usize,
+    /// Forwarded answers fetched again.
+    pub forwarded: usize,
+    /// Failures (what, why); the rest was refreshed.
+    pub failed: Vec<(String, String)>,
+}
+
+/// A name `find` found.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    /// The full name.
+    pub name: String,
+    /// The function hash it is bound to now (here, or on the mesh asked).
+    pub fn_hash: String,
+    /// Held here (false: found on the mesh only).
+    pub held: bool,
+}
+
+/// An imported receipt kept aside: signed by another machine's local key, not trusted.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quarantined {
+    /// The receipt hash.
+    pub hash: String,
+    /// The signing key's id (the other machine).
+    pub key_id: String,
+    /// [`crate::UNVERIFIABLE_LABEL`].
+    pub label: String,
+    /// The receipt.
+    pub bytes: Vec<u8>,
+}
+
+/// The local resolver (see the crate documentation). Blocking; cheap to share behind an
+/// `Arc`.
+pub struct Resolver {
+    pub(crate) shared: Arc<Shared>,
+    aliases: RwLock<Arc<AliasMap>>,
+    mesh: RwLock<Mesh>,
+    base_url: RwLock<Option<String>>,
+}
+
+impl std::fmt::Debug for Resolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolver").field("key_id", &self.key_id()).finish_non_exhaustive()
+    }
+}
+
+fn open_store(config: &Config) -> Result<Arc<dyn Store + Send + Sync>, Error> {
+    let target =
+        config.store.clone().unwrap_or_else(|| config.data_dir.join("store.sqlite").to_string_lossy().into_owned());
+    if target.starts_with("postgres://") || target.starts_with("postgresql://") {
+        let s = datumesh_store::PgStore::connect(&target).map_err(|e| Error::Store(e.to_string()))?;
+        datumesh_store::migrate::apply(&s).map_err(|e| Error::Store(e.to_string()))?;
+        return Ok(Arc::new(s));
+    }
+    let path = target.strip_prefix("sqlite://").unwrap_or(&target);
+    let s = SqliteStore::open(path).map_err(|e| Error::Store(format!("{path}: {e}")))?;
+    datumesh_store::migrate::sqlite::apply(&s).map_err(|e| Error::Store(e.to_string()))?;
+    Ok(Arc::new(s))
+}
+
+pub(crate) fn rejection_detail(e: &ClientError) -> String {
+    format!("{}: {}", e.code.as_str(), e.detail)
+}
+
+impl Resolver {
+    /// Opens the resolver: the machine key (made at first run), the store (migrated), the
+    /// index, the alias map, and this machine's key document in the store for `local.invalid`
+    /// (this key and the trusted ones).
+    pub fn open(config: Config) -> Result<Resolver, Error> {
+        let key = MachineKey::load_or_create(&config.key_file)?;
+        let store = open_store(&config)?;
+        let index = Index::open(&config.data_dir.join("index.sqlite"))?;
+        let aliases = AliasMap::load(&config.aliases_file)?;
+        let mut cc = ClientConfig::default();
+        cc.peers = config.peers.clone();
+        cc.allowed = Some(config.allowlist.clone());
+        cc.timeout = config.timeout;
+        let client = Client::new(cc);
+        let gate = LicenceGate::new(&config.open_licences);
+        let offline = AtomicBool::new(config.offline);
+        let shared = Arc::new(Shared { config, key, store, client, index, gate, offline });
+        publish_key_document(&shared)?;
+        let r = Resolver {
+            mesh: RwLock::new(build_mesh(&shared, &aliases, None)?),
+            shared,
+            aliases: RwLock::new(Arc::new(aliases)),
+            base_url: RwLock::new(None),
+        };
+        Ok(r)
+    }
+
+    /// Puts the key document of `local.invalid` (this machine's key and the trusted ones) in
+    /// the store when it differs.
+    pub(crate) fn publish_key_document(&self) -> Result<(), Error> {
+        publish_key_document(&self.shared)
+    }
+
+    /// The machine id: the key id of this machine's key.
+    pub fn key_id(&self) -> &str {
+        self.shared.key.key_id()
+    }
+
+    /// The key document of `local.invalid` as this machine supplies it to verification.
+    pub fn key_document(&self) -> Vec<u8> {
+        self.shared.store.namespace(LOCAL_HOST).ok().flatten().map(|n| n.keydoc).unwrap_or_default()
+    }
+
+    /// The configuration.
+    pub fn config(&self) -> &Config {
+        &self.shared.config
+    }
+
+    /// The store.
+    pub fn store(&self) -> &Arc<dyn Store + Send + Sync> {
+        &self.shared.store
+    }
+
+    /// The mesh (the handlers over the local store).
+    pub fn mesh(&self) -> Mesh {
+        self.mesh.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The alias map in use.
+    pub fn aliases(&self) -> Arc<AliasMap> {
+        self.aliases.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Reads the alias map's file again (a refreshed snapshot).
+    pub fn reload_aliases(&self) -> Result<(), Error> {
+        let m = AliasMap::load(&self.shared.config.aliases_file)?;
+        let base = self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mesh = build_mesh(&self.shared, &m, base)?;
+        *self.aliases.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(m);
+        *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        Ok(())
+    }
+
+    /// Serves the mesh's links under this base URL (`serve`: `http://127.0.0.1:<port>`).
+    pub(crate) fn set_base_url(&self, base: Option<String>) -> Result<(), Error> {
+        let mesh = build_mesh(&self.shared, &self.aliases(), base.clone())?;
+        *self.base_url.write().unwrap_or_else(|p| p.into_inner()) = base;
+        *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        Ok(())
+    }
+
+    /// Whether the resolver is offline.
+    pub fn offline(&self) -> bool {
+        self.shared.offline.load(Ordering::Acquire)
+    }
+
+    /// Goes offline (no fetch at all) or online.
+    pub fn set_offline(&self, offline: bool) {
+        self.shared.offline.store(offline, Ordering::Release);
+    }
+
+    fn label_of(&self, reply: &mut Reply) {
+        let Some(r) = reply.receipt() else { return };
+        if r.signer_host() != LOCAL_HOST {
+            return;
+        }
+        reply.label = Some(if r.key_id() == self.key_id() {
+            LOCAL_LABEL.to_string()
+        } else {
+            format!(
+                "local, machine {} (trusted here with --trust-key), verifies only where that key is trusted",
+                r.key_id()
+            )
+        });
+    }
+
+    fn mesh_reply(&self, r: datumesh_http::envelope::Reply, source: Source) -> Reply {
+        let mut reply = Reply::new(r.status, r.body.to_vec(), source);
+        self.label_of(&mut reply);
+        reply
+    }
+
+    /// The answer to `request`: a call (`name(arg: value, ...)`, `name@<hash>(...)`, with
+    /// `?asof=`), a cell URI, or the rest of one; short names expanded by the alias map. See
+    /// the crate documentation for where answers come from.
+    pub fn get(&self, request: &str) -> Result<Reply, Error> {
+        let s = &self.shared;
+        let text = self.aliases().expand_request(request);
+        let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
+        let name = name_of(&rest).to_string();
+        let host = host_of(&name).to_string();
+        let mesh = self.mesh();
+        let mut fetched = false;
+        let foreign = !is_unrooted(&host) && datumesh_formula::names::is_function_name(&name);
+        if foreign {
+            let pin = pin_of(&rest);
+            let missing = match &pin {
+                Some(p) => s.store.descriptor(p).is_none(),
+                None => s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))?.is_none(),
+            };
+            if missing {
+                if let Err(why) = s.may_fetch(&host) {
+                    return Ok(Reply::unavailable(why));
+                }
+                let r = match &pin {
+                    Some(p) => s.import_descriptor(&host, p).map(|_| true),
+                    None => s.import_name(&name),
+                };
+                match r {
+                    Ok(_) => fetched = true,
+                    Err(e) => {
+                        if let Some(why) = network_failure(&e) {
+                            return Ok(Reply::unavailable(why));
+                        }
+                        if e.code != ErrorCode::NameUnbound {
+                            return Ok(Reply::error(e.code, rejection_detail(&e)));
+                        }
+                    }
+                }
+            }
+        }
+        let target = match mesh.resolve(&rest, false) {
+            Ok(t) => t,
+            Err(_) => return Ok(self.mesh_reply(mesh.cell(&rest, None), Source::Local)),
+        };
+        if let Some(f) = s.index.forwarded(target.rest())? {
+            let mut reply = Reply::new(f.status, f.body, Source::Forwarded { mesh: f.mesh });
+            reply.detail = Some("forwarded by the licence gate (cached)".into());
+            return Ok(reply);
+        }
+        let stored = target.bound.descriptor.lang == "stored";
+        if foreign && stored {
+            let id = target.cell_id().to_string();
+            if s.store.latest(&id).map_err(|e| Error::Store(e.to_string()))?.is_none() {
+                if let Err(why) = s.may_fetch(&host) {
+                    return Ok(Reply::unavailable(why));
+                }
+                let mut reference = target.pinned_reference();
+                reference.asof = None;
+                let f = match s.fetch_cell(&host, &reference) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        return Ok(match network_failure(&e) {
+                            Some(why) => Reply::unavailable(why),
+                            None => Reply::error(e.code, rejection_detail(&e)),
+                        })
+                    }
+                };
+                match f.answer.receipt.as_ref() {
+                    Some(r) => {
+                        let (imported, _) = fetch::with_ctx(|| {
+                            s.import_receipt(r, true, None)?;
+                            s.import_blob(&host, r)
+                        });
+                        if let Err(e) = imported {
+                            return Ok(match network_failure(&e) {
+                                Some(why) => Reply::unavailable(why),
+                                None => Reply::error(e.code, rejection_detail(&e)),
+                            });
+                        }
+                        mesh.stored_version_added(&id);
+                        fetched = true;
+                    }
+                    // The host's answer without a receipt (not_covered, unlicensed, ...).
+                    None => return Ok(Reply::new(f.status, f.body, Source::Fetched)),
+                }
+            }
+            let source = if fetched { Source::Fetched } else { Source::Local };
+            return Ok(self.mesh_reply(mesh.cell(&rest, None), source));
+        }
+        // Evaluated here (or a local stored cell): foreign inputs fetched, inputs gated.
+        let (reply, ctx) = fetch::with_ctx(|| mesh.cell(&rest, None));
+        for c in &ctx.added {
+            mesh.stored_version_added(c);
+        }
+        if let Some(why) = ctx.refused {
+            return self.forward(&target, why);
+        }
+        if let Some(why) = ctx.unavailable {
+            return Ok(Reply::unavailable(why));
+        }
+        if let (Some(e), Some(o)) = (ctx.remote, reply.outcome()) {
+            if o == "error" {
+                return Ok(Reply::error(e.code, rejection_detail(&e)));
+            }
+        }
+        let source = if fetched || !ctx.added.is_empty() { Source::Fetched } else { Source::Local };
+        let reply = self.mesh_reply(reply, source);
+        if let Some(r) = reply.receipt() {
+            if r.signer_host() == LOCAL_HOST && !r.inputs().is_empty() {
+                s.index.answered(r.hash(), &r.cell().id(), &s.now())?;
+            }
+        }
+        Ok(reply)
+    }
+
+    /// Forwards a request the gate refused to the configured mesh; its answer is kept.
+    fn forward(&self, target: &datumesh_http::call::Target, why: String) -> Result<Reply, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Defines a formula function `name` (a full or short name) with `source` and
+    /// `signature` (a JSON signature with `order`), bound from now. Its callees are as bound
+    /// now (foreign ones fetched when not held). A function under a rooted namespace whose
+    /// inputs name an unrooted one is refused ([`Error::UnrootedInput`]).
+    pub fn define_formula(&self, name: &str, source: &str, signature: &Value) -> Result<Defined, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Defines a stored function `name` with `signature`, bound from now.
+    pub fn define_stored(&self, name: &str, signature: &Value) -> Result<Defined, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Defines a function from a descriptor (JSON) as `name`, bound from now: the rooting
+    /// rule checked on its `inputs`.
+    pub fn define(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
+        let s = &self.shared;
+        if !datumesh_formula::names::is_function_name(name) {
+            return Err(Error::Define(format!("{name} is not a full function name")));
+        }
+        let h = s.store.put_descriptor(bytes).map_err(|e| Error::Store(e.to_string()))?;
+        debug_assert_eq!(h, fn_hash);
+        let bound = match s.store.resolve_binding(name, END).map_err(|e| Error::Store(e.to_string()))? {
+            Some(b) if b.fn_hash == h => false,
+            _ => {
+                s.store.bind_name(name, &h, now).map_err(|e| Error::Store(e.to_string()))?;
+                true
+            }
+        };
+        s.index.hold_name(name, host_of(name), now)?;
+        self.mesh().clear_memo();
+        Ok(Defined { name: name.to_string(), fn_hash: h, bound })
+    }
+
+    /// Publishes local functions and stored cells (`define` plus `put_version`), under
+    /// `local/` only: a JSON lines file in the format of `datumesh-mesh publish-stored`
+    /// (function, formula and cell lines; names may be short). Cells are signed with this
+    /// machine's key.
+    pub fn publish(&self, path: &Path) -> Result<datumesh_http::publish::Published, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    fn cell_id_of_line(&self, line: &Value) -> Option<String> {
+        let c = line.get("cell")?;
+        let name = c.get("fn")?.as_str()?;
+        let tx = line.get("tx")?.as_str()?;
+        let h = self.shared.store.resolve_name(name, tx).ok().flatten()?;
+        let (ns, f) = name.rsplit_once('/')?;
+        Some(datumesh_core::Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash: h, args: args_of(line) }.id())
+    }
+
+    /// The lineage of a cell as nested envelopes (`/explain`, depth-bounded), from the store.
+    pub fn explain(&self, request: &str, depth: Option<usize>) -> Result<Reply, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Names held here whose name contains `query` (case-insensitive); with `remote`, also
+    /// those the forward mesh's `/find` gives (an explicit fetch).
+    pub fn find(&self, query: &str, remote: bool) -> Result<Vec<Found>, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Verifies a receipt (SPEC 10.1) with this machine's keys: the store's key documents
+    /// (this machine's own for `local.invalid`), at level `recomputed` with the engine as the
+    /// resolver. The result as JSON (`ok`, `level`, `code`, `hash`, ...).
+    pub fn verify(&self, receipt: &[u8]) -> Value {
+        let mut keys = datumesh_core::Keys::new();
+        if let Ok(r) = json::parse(receipt) {
+            let mut hosts = Vec::new();
+            collect_signers(&r, &mut hosts);
+            for h in hosts {
+                if let Ok(Some(n)) = self.shared.store.namespace(&h) {
+                    keys.insert_response(&h, 200, Some(&n.keydoc));
+                }
+            }
+        }
+        let mesh = self.mesh();
+        let engine = mesh.engine().clone();
+        let out = datumesh_core::verify(receipt, &keys, Some(&*engine as &dyn datumesh_core::Resolver), None);
+        let level = out.level.map(|l| l.as_str().to_string());
+        Value::Object(
+            [
+                Some(("ok".to_string(), Value::Bool(out.ok))),
+                level.map(|l| ("level".to_string(), Value::String(l))),
+                out.code.map(|c| ("code".to_string(), Value::String(c.as_str().to_string()))),
+                out.hash.clone().map(|h| ("hash".to_string(), Value::String(h))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )
+    }
+
+    /// The receipts kept aside at import: signed by another machine's local key that is not
+    /// trusted here.
+    pub fn quarantined(&self) -> Result<Vec<Quarantined>, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    /// Prefetches `target`: a slice (a call or URI with `*` for open arguments) of a foreign
+    /// stored function, its pages (each member's receipt checked and imported), descriptors
+    /// and keys; or a function name (its binding, descriptor and key document); or one cell.
+    /// `page` is the page size asked for (the mesh's default when `None`); `blobs` fetches
+    /// the content of blob values too (one request each).
+    pub fn prefetch(&self, target: &str, page: Option<usize>, blobs: bool) -> Result<Prefetched, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    fn pull_slice(
+        &self,
+        host: &str,
+        slice_rest: &str,
+        t: &datumesh_http::call::Target,
+        page: Option<usize>,
+        blobs: bool,
+        out: &mut Prefetched,
+    ) -> Result<(), Error> {
+        let s = &self.shared;
+        let mesh = self.mesh();
+        let open: Vec<String> =
+            t.reference.args.iter().filter(|(_, a)| matches!(a, Arg::Slice)).map(|(k, _)| k.clone()).collect();
+        let doc = s.patient(|| s.client.resolve(host)).map_err(|e| client_error(&e))?;
+        let first = doc.url("slice", &[("cell", slice_rest)]).ok_or_else(|| Error::Client {
+            code: "E_MESH_DOC".into(),
+            detail: format!("{host} has no slice endpoint"),
+        })?;
+        let mut url = match page {
+            Some(n) => format!("{first}{}limit={n}", if first.contains('?') { '&' } else { '?' }),
+            None => first,
+        };
+        let mut after: Option<BTreeMap<String, Scalar>> = None;
+        let mut seen = 0usize;
+        loop {
+            let f = s.patient(|| {
+                let f = s.client.slice_page(host, slice_rest, Some(&url), after.clone())?;
+                if f.status == 429 {
+                    return Err(ClientError { code: ErrorCode::InputUnavailable, detail: "status 429".into() });
+                }
+                Ok(f)
+            });
+            let f = f.map_err(|e| match network_failure(&e) {
+                Some(w) => Error::ForeignUnavailable(w),
+                None => client_error(&e),
+            })?;
+            out.pages += 1;
+            let Some(p) = f.answer.page.as_ref() else {
+                return Err(Error::Client {
+                    code: f
+                        .answer
+                        .error
+                        .map(|c| c.as_str().to_string())
+                        .unwrap_or_else(|| "E_INPUT_UNAVAILABLE".into()),
+                    detail: format!("{slice_rest}: {}", f.answer.outcome.as_str()),
+                });
+            };
+            let (r, _) = fetch::with_ctx(|| -> Result<(), ClientError> {
+                for m in &p.members {
+                    let Some(r) = m.receipt.as_ref() else { continue };
+                    seen += 1;
+                    if s.import_receipt(r, true, Some(slice_rest))? {
+                        out.versions += 1;
+                        mesh.stored_version_added(&r.cell().id());
+                    }
+                    if blobs && s.import_blob(host, r)? {
+                        out.blobs += 1;
+                    }
+                }
+                Ok(())
+            });
+            r.map_err(|e| client_error(&e))?;
+            match (&p.next, p.members.last().and_then(|m| m.receipt.as_ref())) {
+                (Some(next), Some(last)) => {
+                    let key: BTreeMap<String, Scalar> = open
+                        .iter()
+                        .filter_map(|k| match last.cell().args.get(k) {
+                            Some(Arg::Value(v)) => Some((k.clone(), v.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    after = Some(key);
+                    url = next.clone();
+                }
+                _ => break,
+            }
+        }
+        out.members = seen;
+        Ok(())
+    }
+
+    /// Re-pulls the latest versions of what is held: names' bindings, prefetched slices
+    /// (their pages again), single cells (through `/versions` where the host lists it, else
+    /// their envelope now), and forwarded answers; then reloads the alias map.
+    pub fn refresh(&self) -> Result<Refreshed, Error> {
+        Err(Error::Request("not implemented yet".into()))
+    }
+
+    fn refresh_cell(&self, c: &crate::index::HeldCell) -> Result<usize, Error> {
+        let s = &self.shared;
+        let mesh = self.mesh();
+        let doc = s.patient(|| s.client.resolve(&c.host)).map_err(|e| client_error(&e))?;
+        let local = s.store.latest(&c.cell_id).map_err(|e| Error::Store(e.to_string()))?;
+        let mut added = 0;
+        if doc.url("versions", &[("cell", &c.rest)]).is_some() {
+            let mut page = s.patient(|| s.client.versions(&c.host, &c.rest)).map_err(|e| client_error(&e))?;
+            loop {
+                for v in &page.versions {
+                    if local.as_ref().is_some_and(|l| l.tx.as_str() >= v.tx.as_str()) {
+                        continue;
+                    }
+                    let bytes = s.patient(|| s.client.receipt(&c.host, &v.receipt)).map_err(|e| client_error(&e))?;
+                    let r = Receipt::from_json(&bytes)
+                        .map_err(|e| Error::Client { code: e.code().as_str().into(), detail: e.to_string() })?;
+                    if s.import_receipt(&r, true, c.slice.as_deref()).map_err(|e| client_error(&e))? {
+                        added += 1;
+                    }
+                }
+                match page.next.clone() {
+                    Some(n) => page = s.patient(|| s.client.versions_at(&n)).map_err(|e| client_error(&e))?,
+                    None => break,
+                }
+            }
+        } else {
+            let t = mesh.resolve(&c.rest, false).map_err(|e| Error::Request(format!("{}: {e:?}", c.rest)))?;
+            let mut reference = t.pinned_reference();
+            reference.asof = None;
+            let f = s.fetch_cell(&c.host, &reference).map_err(|e| client_error(&e))?;
+            if let Some(r) = f.answer.receipt.as_ref() {
+                if s.import_receipt(r, true, c.slice.as_deref()).map_err(|e| client_error(&e))? {
+                    added += 1;
+                }
+            }
+        }
+        if added > 0 {
+            mesh.stored_version_added(&c.cell_id);
+        }
+        Ok(added)
+    }
+}
+
+/// The key document of `local.invalid` in the store: this machine's key, the trusted ones,
+/// and the store's earlier ones.
+fn publish_key_document(s: &Shared) -> Result<(), Error> {
+    let mut entries = vec![s.key.entry()];
+    for (_, e) in s.index.trusted()? {
+        entries.push(json::parse(e.as_bytes()).map_err(|e| Error::Store(e.to_string()))?);
+    }
+    let stored = s.store.namespace(LOCAL_HOST).map_err(|e| Error::Store(e.to_string()))?;
+    // Keys of this store's earlier machines (a reinstall) stay: their receipts verify.
+    if let Some(n) = &stored {
+        entries.extend(key_entries(&n.keydoc));
+    }
+    let doc = local_key_document(&entries)?;
+    if stored.map(|n| n.keydoc) != Some(doc.clone()) {
+        s.store.put_namespace(LOCAL_HOST, &doc, &s.now()).map_err(|e| Error::Store(e.to_string()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn client_error(e: &ClientError) -> Error {
+    match network_failure(e) {
+        Some(w) => Error::ForeignUnavailable(w),
+        None => Error::Client { code: e.code.as_str().to_string(), detail: e.detail.clone() },
+    }
+}
+
+fn collect_signers(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == "computed_by" {
+                    if let Some(s) = x.as_str() {
+                        let h = s.split('#').next().unwrap_or("").to_string();
+                        if !out.contains(&h) {
+                            out.push(h);
+                        }
+                    }
+                } else {
+                    collect_signers(x, out);
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| collect_signers(x, out)),
+        _ => {}
+    }
+}
+
+fn args_of(line: &Value) -> datumesh_core::Args {
+    let mut args = datumesh_core::Args::new();
+    if let Some(m) = line.get("cell").and_then(|c| c.get("args")).and_then(Value::as_object) {
+        for (k, a) in m {
+            if let Ok(s) = Scalar::from_json(&a.to_jcs()) {
+                args.insert(k.clone(), Arg::Value(s));
+            }
+        }
+    }
+    args
+}
+
+/// The pin of a request: `name@<hash>(...)` or `fn_hash=` in a URI.
+fn pin_of(rest: &str) -> Option<String> {
+    let path = rest.split('(').next().unwrap_or(rest);
+    if let Some((_, h)) = path.split_once('@') {
+        return Some(h.trim().to_string());
+    }
+    let q = rest.split_once('?')?.1;
+    q.split('&').find_map(|p| p.strip_prefix("fn_hash=")).map(str::to_string)
+}
+
+/// SPEC 2.5: a function under a rooted namespace may not read one under an unrooted one.
+fn check_rooting(name: &str, d: &FunctionDescriptor) -> Result<(), Error> {
+    if is_unrooted(host_of(name)) {
+        return Ok(());
+    }
+    match d.inputs.iter().find(|i| is_unrooted(host_of(i))) {
+        Some(i) => Err(Error::UnrootedInput { function: name.to_string(), input: i.clone() }),
+        None => Ok(()),
+    }
+}
+
+/// Callees for a definition: the store's bindings, a foreign name fetched when not held.
+struct Callees<'a> {
+    shared: &'a Shared,
+}
+
+impl datumesh_formula::definition::Callees for Callees<'_> {
+    fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
+        let s = self.shared;
+        let host = host_of(name);
+        if !is_unrooted(host) && s.store.resolve_binding(name, END).map_err(|e| e.to_string())?.is_none() {
+            s.may_fetch(host)?;
+            s.import_name(name).map_err(|e| e.to_string())?;
+        }
+        let Some(b) = s.store.resolve_binding(name, at).map_err(|e| e.to_string())? else { return Ok(None) };
+        let bytes = s.store.descriptor(&b.fn_hash).ok_or_else(|| format!("descriptor {} is not stored", b.fn_hash))?;
+        let descriptor = json::parse(&bytes).map_err(|e| e.to_string())?;
+        Ok(Some(datumesh_formula::definition::Callee { fn_hash: b.fn_hash, start: b.tx, descriptor }))
+    }
+}
+
+/// The mesh over the local store: `local.invalid`, no cross-mesh resolution (fetches are the
+/// resolver's), no rate limits, the formula runtime behind the gate.
+pub(crate) fn build_mesh(shared: &Arc<Shared>, aliases: &AliasMap, base_url: Option<String>) -> Result<Mesh, Error> {
+    let mut c = MeshConfig::new(LOCAL_HOST);
+    c.cross_mesh = false;
+    c.rate.enabled = false;
+    c.pool_size = 8;
+    c.aliases = aliases.bare();
+    c.base_url = base_url;
+    let formula: Arc<dyn datumesh_engine::Runtime> =
+        Arc::new(datumesh_formula::runtime::FormulaRuntime::new(shared.store.clone()));
+    let rt = Arc::new(Gated::new(formula, shared.clone()));
+    Mesh::builder(c, shared.store.clone())
+        .without_formula()
+        .runtime(rt)
+        .signing_key(shared.key.signing_key().clone())
+        .licence(shared.config.licence.clone())
+        .build()
+        .map_err(|e| Error::Config(format!("mesh: {e:?}")))
+}
