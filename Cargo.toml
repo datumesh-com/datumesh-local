@@ -1,0 +1,60 @@
+[package]
+name = "datumesh-local"
+version = "0.1.0"
+description = "The Datumesh local resolver: the mesh's engine over a local SQLite store, the unrooted local.invalid namespace, explicit fetches, prefetch, a licence gate, export and import, and a localhost endpoint."
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/datumesh-com/datumesh-local"
+homepage = "https://datumesh.com"
+documentation = "https://docs.rs/datumesh-local"
+readme = "README.md"
+keywords = ["datumesh", "receipt", "provenance", "cache", "resolver"]
+categories = ["command-line-utilities", "database"]
+include = ["/src/**/*.rs", "/defaults/*", "/Cargo.toml", "/LICENSE", "/README.md"]
+
+[lib]
+name = "datumesh_local"
+
+[features]
+default = ["resolver"]
+# The resolver: engine, store, mesh handlers, client, CLI and the localhost endpoint.
+resolver = [
+    "dep:datumesh-store",
+    "dep:datumesh-engine",
+    "dep:datumesh-http",
+    "datumesh-formula/engine",
+    "datumesh-core/sign",
+    "dep:axum",
+    "dep:tokio",
+    "dep:getrandom",
+    "dep:rusqlite",
+]
+# wasm32 bindings: the core's verification and call parsing (not the engine). Build with
+# `--no-default-features --features wasm --target wasm32-unknown-unknown`.
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+datumesh-core = "0.3.6"
+# The call syntax (parse_call) without the engine for wasm; with it for the resolver.
+datumesh-formula = { version = "0.2.0", default-features = false }
+datumesh-store = { version = "0.4.0", optional = true }
+datumesh-engine = { version = "0.4.0", optional = true }
+datumesh-http = { version = "0.2.0", optional = true }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal"], optional = true }
+getrandom = { version = "0.3.4", optional = true }
+# The resolver's own index (what is held, forwarded, quarantined), next to the store.
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+wasm-bindgen = { version = "0.2.129", optional = true }
+
+[dev-dependencies]
+datumesh-core = { version = "0.3.6", features = ["sign"] }
+
+# The engine signs and the store verifies many receipts in the tests: curve25519 and sha2
+# are optimised even in test builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+[package.metadata.docs.rs]
+features = ["resolver"]
