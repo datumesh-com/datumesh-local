@@ -83,11 +83,13 @@ local store:
 | computed over an input not open | forwarded to `forward_mesh`; its answer (signed by that mesh) returned and kept |
 | foreign, not held, not fetchable (offline, network down, host not allowed) | `error` `E_FOREIGN_UNAVAILABLE` (HTTP 502), never `not_covered` |
 
-`E_FOREIGN_UNAVAILABLE` is spec-0.4.3's. datumesh-core 0.3.6's `ErrorCode` does not have
-it yet (it comes with core 0.3.7), so this crate writes the envelope itself
-(`{"error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}`), and says the failure (`offline`,
-`refused`, `dns`, `tls`, `timeout`, `network`, `not allowed`) on stderr and in the
-`Datumesh-Detail` header.
+`E_FOREIGN_UNAVAILABLE` is spec-0.4.3's: outcome `error`, HTTP 502, and a required `detail`,
+one of `offline` (offline mode, or a host outside the allowlist), `network`, `dns`, `tls`,
+`timeout`, `refused`, e.g.
+`{"detail":"offline","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}`. datumesh-core
+0.3.6's `ErrorCode` does not have the code yet (it comes with core 0.3.7), so this crate
+writes the envelope itself; the full failure is on stderr and in the `Datumesh-Detail`
+header.
 
 ## `local.invalid`
 

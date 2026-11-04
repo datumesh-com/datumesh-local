@@ -17,7 +17,7 @@ use crate::fetch::{self, host_of, name_of, network_failure, Gated, Shared, END};
 use crate::gate::{is_unrooted, LicenceGate};
 use crate::index::{Forwarded, Index};
 use crate::key::{key_entries, local_key_document, MachineKey};
-use crate::{Error, FOREIGN_UNAVAILABLE_ENVELOPE, FOREIGN_UNAVAILABLE_STATUS, LOCAL_HOST, LOCAL_LABEL};
+use crate::{foreign_unavailable_envelope, Error, FOREIGN_UNAVAILABLE_STATUS, LOCAL_HOST, LOCAL_LABEL};
 
 /// Where an answer came from.
 #[non_exhaustive]
@@ -64,7 +64,7 @@ impl Reply {
     fn unavailable(detail: String) -> Reply {
         Reply {
             status: FOREIGN_UNAVAILABLE_STATUS,
-            body: FOREIGN_UNAVAILABLE_ENVELOPE.as_bytes().to_vec(),
+            body: foreign_unavailable_envelope(&kind_of(&detail)),
             source: Source::Unavailable,
             label: None,
             detail: Some(detail),
@@ -978,6 +978,17 @@ fn publish_key_document(s: &Shared) -> Result<(), Error> {
         s.store.put_namespace(LOCAL_HOST, &doc, &s.now()).map_err(|e| Error::Store(e.to_string()))?;
     }
     Ok(())
+}
+
+/// The envelope's `detail` of a failure (`<kind>: <why>`): a host not allowed is `offline`
+/// (the resolver is configured not to use the network for it).
+fn kind_of(detail: &str) -> String {
+    let k = detail.split(':').next().unwrap_or("").trim();
+    if k == "not allowed" {
+        "offline".into()
+    } else {
+        k.to_string()
+    }
 }
 
 pub(crate) fn client_error(e: &ClientError) -> Error {
