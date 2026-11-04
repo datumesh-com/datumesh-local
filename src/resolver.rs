@@ -60,11 +60,11 @@ impl Reply {
         Reply { status, body, source, label: None, detail: None }
     }
 
+    /// [`crate::FOREIGN_UNAVAILABLE`]: written here, as core 0.3.6 has no such code.
     fn unavailable(detail: String) -> Reply {
-        let r = datumesh_http::envelope::error_reply(ErrorCode::InputUnavailable);
         Reply {
-            status: r.status,
-            body: r.body.to_vec(),
+            status: FOREIGN_UNAVAILABLE_STATUS,
+            body: FOREIGN_UNAVAILABLE_ENVELOPE.as_bytes().to_vec(),
             source: Source::Unavailable,
             label: None,
             detail: Some(detail),
