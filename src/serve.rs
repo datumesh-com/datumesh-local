@@ -3,6 +3,16 @@
 //! there fetches, gates and forwards as the CLI does). Links in the mesh document and in
 //! answers are `http://127.0.0.1:<port>/...`.
 //!
+//! **The mesh document served here is local-only.** Its endpoint URLs are
+//! `http://127.0.0.1:<port>/...`, which spec-0.4.3 (9.6) does not allow: a mesh document's
+//! URLs are `https://`. A client checking it under spec-0.4.3 refuses it, and it is not
+//! valid anywhere but on this machine until spec-0.4.4, which is to say: "for an unrooted host
+//! (a name under .invalid), mesh-document URLs and poll may be http:// on a loopback address
+//! only (`127.0.0.1`, `[::1]`, `localhost`); rooted hosts stay https-only". The links the mesh's
+//! handlers put in answers (a job's `poll`, a slice page's `next`, the `Link: rel="canonical"`
+//! header) point at `https://local.invalid/...` and cannot be followed: `.invalid` never
+//! resolves.
+//!
 //! A `/cell` answer whose receipt this machine signed carries the header
 //! `Datumesh-Signer: local, verifies only on this machine`; an answer that is not the cell's
 //! (`E_FOREIGN_UNAVAILABLE`, a forwarded answer) says why in `Datumesh-Detail`.

@@ -105,6 +105,18 @@ so they verify here at `signed` and `recomputed`; elsewhere they stop at
 A function under a rooted namespace may not read a local one: `define` refuses it
 (`Error::UnrootedInput`). No spec code names this refusal (SPEC 2.5 calls it define's).
 
+## The localhost endpoint
+
+`datumesh serve` binds 127.0.0.1 only (any other address is refused) and serves the mesh's
+endpoints over the local store, `/cell` through the resolver (fetch, gate, forward). The mesh
+document it serves is **local-only**: its URLs are `http://127.0.0.1:<port>/...`, which
+spec-0.4.3 (section 9.6) does not allow, since mesh-document URLs are `https://`. It is not
+valid under spec-0.4.3 until spec-0.4.4, which is to say: "for an unrooted host (a name under
+.invalid), mesh-document URLs and poll may be http:// on a loopback address only (127.0.0.1,
+[::1], localhost); rooted hosts stay https-only". The links in answers (a job's `poll`, a
+slice page's `next`, `Link: rel="canonical"`) point at `https://local.invalid/...` and cannot
+be followed: `.invalid` never resolves.
+
 ## Export and import
 
 `export` writes the working set as one JSON bundle (`datumesh-local/1`): names, descriptors,

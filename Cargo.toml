@@ -24,6 +24,8 @@ resolver = [
     "dep:datumesh-engine",
     "dep:datumesh-http",
     "datumesh-formula/engine",
+    "datumesh-formula/sqlite",
+    "datumesh-engine/sqlite",
     "datumesh-core/sign",
     "dep:axum",
     "dep:tower",
@@ -39,8 +41,10 @@ wasm = ["dep:wasm-bindgen"]
 datumesh-core = "0.3.6"
 # The call syntax (parse_call) without the engine for wasm; with it for the resolver.
 datumesh-formula = { version = "0.2.0", default-features = false }
-datumesh-store = { version = "0.4.0", optional = true }
-datumesh-engine = { version = "0.4.0", optional = true }
+# SQLite explicitly (the store's `sqlite` feature), not through the store's defaults; the
+# PostgreSQL backend (a postgres:// store URL) is always in datumesh-store 0.4.0.
+datumesh-store = { version = "0.4.0", default-features = false, features = ["sqlite"], optional = true }
+datumesh-engine = { version = "0.4.0", default-features = false, optional = true }
 datumesh-http = { version = "0.2.0", optional = true }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
 tower = { version = "0.5.3", features = ["util"], optional = true }

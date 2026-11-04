@@ -60,6 +60,16 @@
 //! forwarded request, `find --remote`. The resolver's mesh never resolves names across meshes
 //! by itself.
 
+//! # The localhost endpoint
+//!
+//! [`serve`] binds 127.0.0.1 only and serves the mesh's handlers over the local store. The
+//! mesh document it serves is **local-only**: its URLs are `http://127.0.0.1:<port>/...`,
+//! which spec-0.4.3 (9.6) does not allow (mesh-document URLs are `https://`), until
+//! spec-0.4.4 lets an unrooted host (a name under `.invalid`) use `http://` on a loopback
+//! address only (`127.0.0.1`, `[::1]`, `localhost`); rooted hosts stay https-only. Links in answers
+//! (`poll`, a page's `next`, `rel="canonical"`) point at `https://local.invalid/...` and
+//! cannot be followed.
+
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
