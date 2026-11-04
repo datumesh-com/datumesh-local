@@ -6,20 +6,19 @@
 #
 # DATUMESH_PATCH=<dir>: a directory holding a cargo config file `config.toml` (e.g. a
 # [patch.crates-io] of unreleased dependencies, with paths under /patch), mounted read-only
-# at /patch and passed to cargo with --config. Unset: crates.io only.
+# at /patch and installed as the container's $CARGO_HOME/config.toml (so external
+# subcommands such as clippy see it too). Unset: crates.io only.
 set -e
 tag="$1"; shift
 case "$tag" in nightly) image=rustlang/rust:nightly ;; nightly-tools) image=datumesh-nightly-tools ;; lint) image=datumesh-rust-1.99-lint ;; *) image="rust:$tag" ;; esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
 patch_mount=""
-patch_arg=""
 if [ -n "$DATUMESH_PATCH" ]; then
   patch_mount="-v $DATUMESH_PATCH:/patch:ro"
-  patch_arg="--config /patch/config.toml"
 fi
 # shellcheck disable=SC2086
 exec docker run --rm -i --name "datumesh-local-cargo-$tag-$$" --network datumesh $patch_mount \
   -v "$HOME/.cache/datumesh-cargo:/usr/local/cargo/registry" -v "$root:/w" -w /w \
   -e CARGO_TARGET_DIR="/w/target-$tag" -e CARGO_TERM_COLOR=never \
-  -e RUST_LOG -e RUST_BACKTRACE -e RUSTDOCFLAGS -e RUST_TEST_THREADS -e DATUMESH_LIVE -e DATUMESH_BENCH_OUT \
-  "$image" cargo $patch_arg "$@"
+  -e UPSTREAM_DATABASE_URL -e RUST_LOG -e RUST_BACKTRACE -e RUSTDOCFLAGS -e RUST_TEST_THREADS -e DATUMESH_LIVE -e DATUMESH_BENCH_OUT \
+  "$image" sh -c 'if [ -f /patch/config.toml ]; then cp /patch/config.toml "${CARGO_HOME:-/usr/local/cargo}/config.toml"; fi; exec cargo "$@"' cargo "$@"

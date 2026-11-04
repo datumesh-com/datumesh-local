@@ -93,13 +93,25 @@ impl Upstream {
 /// Starts the upstream; `slice_page` is its default slice page size.
 pub fn upstream_with(slice_page: usize) -> Upstream {
     let dir = TempDir::new("upstream");
-    let s = SqliteStore::open(dir.path().join("upstream.sqlite")).unwrap();
-    datumesh_store::migrate::sqlite::apply(&s).unwrap();
+    // UPSTREAM_DATABASE_URL: the upstream on PostgreSQL, as the test mesh runs (an empty
+    // database of its own, made by the caller, for one test: tools/refresh_pg.sh); else on
+    // SQLite.
+    let store: Arc<dyn Store + Send + Sync> = match std::env::var("UPSTREAM_DATABASE_URL") {
+        Ok(url) => {
+            let s = datumesh_store::PgStore::connect(&url).unwrap();
+            datumesh_store::migrate::apply(&s).unwrap();
+            Arc::new(s)
+        }
+        Err(_) => {
+            let s = SqliteStore::open(dir.path().join("upstream.sqlite")).unwrap();
+            datumesh_store::migrate::sqlite::apply(&s).unwrap();
+            Arc::new(s)
+        }
+    };
     let doc = datumesh_http::keydoc::with_key(HOST, None, &upstream_key(), KEY_FROM).unwrap();
-    s.put_namespace(HOST, &doc, KEY_FROM).unwrap();
-    datumesh_http::publish::publish_stored(&s, &upstream_key(), HOST, &data("ecb.jsonl")).unwrap();
-    datumesh_http::publish::publish_stored(&s, &upstream_key(), HOST, &data("scripture.jsonl")).unwrap();
-    let store: Arc<dyn Store + Send + Sync> = Arc::new(s);
+    store.put_namespace(HOST, &doc, KEY_FROM).unwrap();
+    datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("ecb.jsonl")).unwrap();
+    datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("scripture.jsonl")).unwrap();
     let mut config = MeshConfig::new(HOST);
     config.rate.enabled = false;
     config.cross_mesh = false;

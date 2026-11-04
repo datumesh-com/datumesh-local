@@ -75,7 +75,7 @@ pub fn base64(bytes: &[u8]) -> String {
 /// Decodes [`base64`].
 pub fn unbase64(s: &str) -> Option<Vec<u8>> {
     let s = s.as_bytes();
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         return None;
     }
     let val = |b: u8| B64.iter().position(|&x| x == b).map(|p| p as u32);
