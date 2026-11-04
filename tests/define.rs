@@ -128,7 +128,7 @@ fn publish_is_define_plus_put_version_under_local_only() {
     // A stored function defined directly, and find.
     r.define_stored(
         "local/scores",
-        &sig(r#"{"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "number"}"#),
+        &sig(r#"{"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": {"type": "number", "unit": "1"}}"#),
     )
     .unwrap();
     let found = r.find("note", false).unwrap();

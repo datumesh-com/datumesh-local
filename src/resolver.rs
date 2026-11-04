@@ -432,7 +432,47 @@ impl Resolver {
 
     /// Forwards a request the gate refused to the configured mesh; its answer is kept.
     fn forward(&self, target: &datumesh_http::call::Target, why: String) -> Result<Reply, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let Some(mesh) = s.config.forward_mesh.clone() else {
+            let mut r = Reply::new(403, datumesh_http::envelope::unlicensed(), Source::Local);
+            r.detail = Some(format!("{why}; no forward mesh is configured"));
+            return Ok(r);
+        };
+        if let Err(w) = s.may_fetch(&mesh) {
+            return Ok(Reply::unavailable(w));
+        }
+        let mut req = Request::new(target.cell_id(), target.asof()).map_err(|e| Error::Request(format!("{e:?}")))?;
+        if let Some(p) = &target.pin {
+            req = req.with_pin(p).map_err(|e| Error::Request(format!("{e:?}")))?;
+        }
+        let f = match s.patient(|| s.client.cell(&mesh, target.rest(), &req)) {
+            Ok(f) => f,
+            Err(e) => {
+                return Ok(match network_failure(&e) {
+                    Some(w) => Reply::unavailable(w),
+                    None => Reply::error(e.code, rejection_detail(&e)),
+                })
+            }
+        };
+        if f.status == 200 {
+            s.index.put_forwarded(
+                &Forwarded {
+                    rest: target.rest().to_string(),
+                    mesh: mesh.clone(),
+                    status: f.status,
+                    body: f.body.clone(),
+                    cell_id: target.cell_id().to_string(),
+                },
+                &s.now(),
+            )?;
+            // Kept in the store too (verified again there), for export and verification.
+            if let Some(r) = f.answer.receipt.as_ref() {
+                let _ = s.import_receipt(r, false, None);
+            }
+        }
+        let mut reply = Reply::new(f.status, f.body, Source::Forwarded { mesh });
+        reply.detail = Some(why);
+        Ok(reply)
     }
 
     /// Defines a formula function `name` (a full or short name) with `source` and
@@ -440,18 +480,40 @@ impl Resolver {
     /// now (foreign ones fetched when not held). A function under a rooted namespace whose
     /// inputs name an unrooted one is refused ([`Error::UnrootedInput`]).
     pub fn define_formula(&self, name: &str, source: &str, signature: &Value) -> Result<Defined, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let name = self.aliases().expand(name);
+        let now = s.now();
+        let callees = Callees { shared: s };
+        let def = datumesh_formula::definition::define_function(
+            &name,
+            source,
+            signature,
+            &self.aliases().bare(),
+            &callees,
+            &now,
+        )
+        .map_err(|e| Error::Define(e.to_string()))?;
+        check_rooting(&name, &def.descriptor)?;
+        self.bind(&name, &def.bytes, &def.fn_hash, &now)
     }
 
     /// Defines a stored function `name` with `signature`, bound from now.
     pub fn define_stored(&self, name: &str, signature: &Value) -> Result<Defined, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let name = self.aliases().expand(name);
+        let d = FunctionDescriptor::from_value(&fetch::stored_descriptor(signature))
+            .map_err(|e| Error::Define(e.to_string()))?;
+        let now = self.shared.now();
+        self.bind(&name, &d.canonical(), &d.hash(), &now)
     }
 
     /// Defines a function from a descriptor (JSON) as `name`, bound from now: the rooting
     /// rule checked on its `inputs`.
     pub fn define(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let name = self.aliases().expand(name);
+        let d = FunctionDescriptor::from_json(descriptor).map_err(|e| Error::Define(e.to_string()))?;
+        check_rooting(&name, &d)?;
+        let now = self.shared.now();
+        self.bind(&name, &d.canonical(), &d.hash(), &now)
     }
 
     fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
@@ -478,7 +540,119 @@ impl Resolver {
     /// (function, formula and cell lines; names may be short). Cells are signed with this
     /// machine's key.
     pub fn publish(&self, path: &Path) -> Result<datumesh_http::publish::Published, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let text = std::fs::read_to_string(path).map_err(|e| Error::Request(format!("{}: {e}", path.display())))?;
+        let aliases = self.aliases();
+        let mut kept = String::new();
+        let mut formulas = Vec::new();
+        let mut names = Vec::new();
+        let mut cells = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let v = json::parse(line.as_bytes()).map_err(|e| Error::Request(format!("line {}: {e}", i + 1)))?;
+            let Value::Object(mut m) = v else {
+                return Err(Error::Request(format!("line {}: not an object", i + 1)));
+            };
+            let mut formula = None;
+            for (k, x) in m.iter_mut() {
+                let full = match (k.as_str(), &*x) {
+                    ("function" | "formula", Value::String(n)) => Some(aliases.expand(n)),
+                    _ => None,
+                };
+                if let Some(full) = full {
+                    if host_of(&full) != LOCAL_HOST {
+                        return Err(Error::Request(format!("line {}: {full}: publish is under local/ only", i + 1)));
+                    }
+                    if k == "formula" {
+                        formula = Some(full.clone());
+                    } else {
+                        names.push(full.clone());
+                    }
+                    *x = Value::String(full);
+                }
+                if k == "cell" {
+                    if let Value::Object(cm) = x {
+                        for (ck, cx) in cm.iter_mut() {
+                            if ck == "fn" {
+                                let full = aliases.expand(cx.as_str().unwrap_or(""));
+                                if host_of(&full) != LOCAL_HOST {
+                                    return Err(Error::Request(format!(
+                                        "line {}: {full}: publish is under local/ only",
+                                        i + 1
+                                    )));
+                                }
+                                *cx = Value::String(full);
+                            }
+                        }
+                    }
+                }
+            }
+            let v = Value::Object(m);
+            if let Some(name) = formula {
+                formulas.push((name, v));
+                continue;
+            }
+            if v.get("cell").is_some() {
+                cells.push(v.clone());
+            }
+            kept.push_str(&String::from_utf8_lossy(&v.to_jcs()));
+            kept.push('\n');
+        }
+        let tmp = s.config.data_dir.join(format!("publish-{}.jsonl", std::process::id()));
+        std::fs::write(&tmp, kept).map_err(|e| Error::Request(e.to_string()))?;
+        // Blob files are relative to the published file: copy nothing, point there.
+        let out = if path.parent().is_some_and(|p| p != s.config.data_dir) {
+            let near = path.with_file_name(format!(".datumesh-publish-{}.jsonl", std::process::id()));
+            std::fs::rename(&tmp, &near).map_err(|e| Error::Request(e.to_string()))?;
+            let r = datumesh_http::publish::publish_stored(&*s.store, s.key.signing_key(), LOCAL_HOST, &near);
+            let _ = std::fs::remove_file(&near);
+            r
+        } else {
+            let r = datumesh_http::publish::publish_stored(&*s.store, s.key.signing_key(), LOCAL_HOST, &tmp);
+            let _ = std::fs::remove_file(&tmp);
+            r
+        };
+        let mut published = out.map_err(|e| Error::Request(e.to_string()))?;
+        for n in &names {
+            s.index.hold_name(n, LOCAL_HOST, &s.now())?;
+        }
+        // Formulas after the stored functions they may read.
+        for (name, v) in &formulas {
+            let src = v.get("source").and_then(Value::as_str).unwrap_or("");
+            let sig = v.get("signature").cloned().unwrap_or(Value::Null);
+            if self.define_formula(name, src, &sig)?.bound {
+                published.functions += 1;
+            }
+        }
+        let mesh = self.mesh();
+        for c in cells {
+            if let Some(id) = self.cell_id_of_line(&c) {
+                let rest =
+                    c.get("cell").and_then(|x| x.get("fn")).and_then(Value::as_str).and_then(|n| {
+                        self.shared.store.resolve_name(n, END).ok().flatten().map(|h| (n.to_string(), h))
+                    });
+                if let Some((n, h)) = rest {
+                    let cell = datumesh_core::Cell {
+                        ns: n.rsplit_once('/').map(|x| x.0).unwrap_or("").to_string(),
+                        fn_name: n.rsplit_once('/').map(|x| x.1).unwrap_or("").to_string(),
+                        fn_hash: h,
+                        args: args_of(&c),
+                    };
+                    let held = crate::index::HeldCell {
+                        cell_id: id.clone(),
+                        host: LOCAL_HOST.into(),
+                        rest: fetch::cell_rest(&cell),
+                        slice: None,
+                    };
+                    s.index.hold_cell(&held, &s.now())?;
+                }
+                mesh.stored_version_added(&id);
+            }
+        }
+        mesh.clear_memo();
+        Ok(published)
     }
 
     fn cell_id_of_line(&self, line: &Value) -> Option<String> {
@@ -492,44 +666,63 @@ impl Resolver {
 
     /// The lineage of a cell as nested envelopes (`/explain`, depth-bounded), from the store.
     pub fn explain(&self, request: &str, depth: Option<usize>) -> Result<Reply, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let text = self.aliases().expand_request(request);
+        let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
+        let mut path = format!("/explain/{}", crate::serve::encode_path(&rest));
+        if let Some(d) = depth {
+            path.push(if rest.contains('?') { '&' } else { '?' });
+            path.push_str(&format!("depth={d}"));
+        }
+        let (status, body) = crate::serve::oneshot(&self.mesh(), &path)?;
+        let mut reply = Reply::new(status, body, Source::Local);
+        self.label_of(&mut reply);
+        Ok(reply)
     }
 
     /// Names held here whose name contains `query` (case-insensitive); with `remote`, also
     /// those the forward mesh's `/find` gives (an explicit fetch).
     pub fn find(&self, query: &str, remote: bool) -> Result<Vec<Found>, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let q = query.to_lowercase();
+        let mut out = Vec::new();
+        for (name, _) in s.index.names()? {
+            if name.to_lowercase().contains(&q) {
+                if let Some(b) = s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))? {
+                    out.push(Found { name, fn_hash: b.fn_hash, held: true });
+                }
+            }
+        }
+        if remote {
+            let mesh = s.config.forward_mesh.clone().ok_or_else(|| Error::Request("no forward mesh".into()))?;
+            s.may_fetch(&mesh).map_err(Error::ForeignUnavailable)?;
+            let doc = s.client.resolve(&mesh).map_err(|e| client_error(&e))?;
+            let url = doc.url("find", &[]).unwrap_or_else(|| format!("https://{mesh}/find")).to_string();
+            let url = format!("{url}?q={}", datumesh_http::client::pct(query));
+            let (status, body) = s.client.get(&url, 16 << 20).map_err(|e| Error::ForeignUnavailable(e.to_string()))?;
+            if status != 200 {
+                return Err(Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail: format!("{url}: {status}") });
+            }
+            let v = json::parse(&body)
+                .map_err(|e| Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail: e.to_string() })?;
+            if let Some(Value::Array(rs)) = v.get("results") {
+                for r in rs {
+                    let name = r.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    let h = r.get("fn_hash").and_then(Value::as_str).unwrap_or("").to_string();
+                    if !out.iter().any(|f| f.name == name) {
+                        out.push(Found { name, fn_hash: h, held: false });
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Verifies a receipt (SPEC 10.1) with this machine's keys: the store's key documents
     /// (this machine's own for `local.invalid`), at level `recomputed` with the engine as the
     /// resolver. The result as JSON (`ok`, `level`, `code`, `hash`, ...).
     pub fn verify(&self, receipt: &[u8]) -> Value {
-        let mut keys = datumesh_core::Keys::new();
-        if let Ok(r) = json::parse(receipt) {
-            let mut hosts = Vec::new();
-            collect_signers(&r, &mut hosts);
-            for h in hosts {
-                if let Ok(Some(n)) = self.shared.store.namespace(&h) {
-                    keys.insert_response(&h, 200, Some(&n.keydoc));
-                }
-            }
-        }
-        let mesh = self.mesh();
-        let engine = mesh.engine().clone();
-        let out = datumesh_core::verify(receipt, &keys, Some(&*engine as &dyn datumesh_core::Resolver), None);
-        let level = out.level.map(|l| l.as_str().to_string());
-        Value::Object(
-            [
-                Some(("ok".to_string(), Value::Bool(out.ok))),
-                level.map(|l| ("level".to_string(), Value::String(l))),
-                out.code.map(|c| ("code".to_string(), Value::String(c.as_str().to_string()))),
-                out.hash.clone().map(|h| ("hash".to_string(), Value::String(h))),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-        )
+        let v = self.mesh().verify(receipt, false, None);
+        json::parse(&v.body).unwrap_or(Value::Null)
     }
 
     /// The receipts kept aside at import: signed by another machine's local key that is not
@@ -785,27 +978,6 @@ pub(crate) fn client_error(e: &ClientError) -> Error {
     match network_failure(e) {
         Some(w) => Error::ForeignUnavailable(w),
         None => Error::Client { code: e.code.as_str().to_string(), detail: e.detail.clone() },
-    }
-}
-
-fn collect_signers(v: &Value, out: &mut Vec<String>) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m {
-                if k == "computed_by" {
-                    if let Some(s) = x.as_str() {
-                        let h = s.split('#').next().unwrap_or("").to_string();
-                        if !out.contains(&h) {
-                            out.push(h);
-                        }
-                    }
-                } else {
-                    collect_signers(x, out);
-                }
-            }
-        }
-        Value::Array(a) => a.iter().for_each(|x| collect_signers(x, out)),
-        _ => {}
     }
 }
 
