@@ -64,8 +64,7 @@ fn prefetch_with_a_page_size_and_of_a_function_name() {
     r.set_offline(true);
     let reply = r.get(VERSE).unwrap();
     assert_eq!(reply.status, 200);
-    let value = receipt(&reply.body).get("value").cloned().unwrap();
-    let lex = s(&value, "value");
+    let lex = s(&receipt(&reply.body), "value");
     let sha = lex.split(':').next().unwrap();
     assert!(r.store().blob(sha).unwrap().is_some(), "the blob is held");
 }
@@ -80,7 +79,7 @@ fn refresh_picks_up_a_new_version_published_on_the_mesh() {
     let h1 = r.get(CHRISTMAS).unwrap();
     assert_eq!(h1.status, 200);
     let old = r.get(USD).unwrap();
-    assert_eq!(s(&receipt(&old.body).get("value").cloned().unwrap(), "value"), "1.1617");
+    assert_eq!(s(&receipt(&old.body), "value"), "1.1617");
     // The upstream publishes a correction of USD on 2026-10-30, and a new holiday version.
     let t = "2026-11-03T09:00:00.000000Z";
     let line = |fn_: &str, args: Value, value: Value| {
@@ -117,13 +116,13 @@ fn refresh_picks_up_a_new_version_published_on_the_mesh() {
     assert_eq!(f.cells, 1);
     assert_eq!(f.versions, 2);
     let new = r.get(USD).unwrap();
-    assert_eq!(s(&receipt(&new.body).get("value").cloned().unwrap(), "value"), "1.1777");
+    assert_eq!(s(&receipt(&new.body), "value"), "1.1777");
     assert_eq!(s(&receipt(&new.body), "tx"), t);
     let h2 = r.get(CHRISTMAS).unwrap();
-    assert_eq!(s(&receipt(&h2.body).get("value").cloned().unwrap(), "value"), "false");
+    assert_eq!(receipt(&h2.body).get("value"), Some(&Value::Bool(false)));
     // As of before the correction, the old version still answers.
     let at = r.get(&format!("{USD_FULL}?asof=2026-11-01T00:00:00.000000Z")).unwrap();
-    assert_eq!(s(&receipt(&at.body).get("value").cloned().unwrap(), "value"), "1.1617");
+    assert_eq!(s(&receipt(&at.body), "value"), "1.1617");
     // A second refresh adds nothing.
     assert_eq!(r.refresh().unwrap().versions, 0);
 }

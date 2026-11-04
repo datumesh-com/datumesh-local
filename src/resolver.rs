@@ -544,7 +544,36 @@ impl Resolver {
     /// `page` is the page size asked for (the mesh's default when `None`); `blobs` fetches
     /// the content of blob values too (one request each).
     pub fn prefetch(&self, target: &str, page: Option<usize>, blobs: bool) -> Result<Prefetched, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let text = self.aliases().expand_request(target);
+        let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
+        let name = name_of(&rest).to_string();
+        let host = host_of(&name).to_string();
+        let mut out = Prefetched { target: rest.clone(), ..Default::default() };
+        if is_unrooted(&host) {
+            return Err(Error::Request(format!("{name} is local: nothing to prefetch")));
+        }
+        s.may_fetch(&host).map_err(Error::ForeignUnavailable)?;
+        if s.import_name(&name).map_err(|e| client_error(&e))? {
+            out.names = 1;
+        } else {
+            return Err(Error::Client { code: "E_NAME_UNBOUND".into(), detail: name });
+        }
+        if rest == name {
+            return Ok(out);
+        }
+        if !rest.contains('*') {
+            let r = self.get(&rest)?;
+            out.members = usize::from(r.receipt().is_some());
+            return Ok(out);
+        }
+        let mesh = self.mesh();
+        let t = mesh.resolve(&rest, true).map_err(|e| Error::Request(format!("{rest}: {e:?}")))?;
+        let slice_rest = t.rest().to_string();
+        self.pull_slice(&host, &slice_rest, &t, page, blobs, &mut out)?;
+        s.index.hold_slice(&slice_rest, &host, out.members, &s.now())?;
+        out.target = slice_rest;
+        Ok(out)
     }
 
     fn pull_slice(
@@ -632,7 +661,62 @@ impl Resolver {
     /// (their pages again), single cells (through `/versions` where the host lists it, else
     /// their envelope now), and forwarded answers; then reloads the alias map.
     pub fn refresh(&self) -> Result<Refreshed, Error> {
-        Err(Error::Request("not implemented yet".into()))
+        let s = &self.shared;
+        let mut out = Refreshed::default();
+        if self.offline() {
+            return Err(Error::ForeignUnavailable("offline: the resolver is offline".into()));
+        }
+        let mesh = self.mesh();
+        for (name, host) in s.index.names()? {
+            if is_unrooted(&host) || s.may_fetch(&host).is_err() {
+                continue;
+            }
+            out.names += 1;
+            if let Err(e) = s.import_name(&name) {
+                out.failed.push((name, rejection_detail(&e)));
+            }
+        }
+        let slices = s.index.slices()?;
+        for (rest, host) in &slices {
+            let t = match mesh.resolve(rest, true) {
+                Ok(t) => t,
+                Err(e) => {
+                    out.failed.push((rest.clone(), format!("{e:?}")));
+                    continue;
+                }
+            };
+            let mut p = Prefetched::default();
+            match self.pull_slice(host, rest, &t, None, false, &mut p) {
+                Ok(()) => {
+                    out.slices += 1;
+                    out.versions += p.versions;
+                    s.index.hold_slice(rest, host, p.members, &s.now())?;
+                }
+                Err(e) => out.failed.push((rest.clone(), e.to_string())),
+            }
+        }
+        for c in s.index.cells()? {
+            if c.slice.is_some() || is_unrooted(&c.host) || s.may_fetch(&c.host).is_err() {
+                continue;
+            }
+            out.cells += 1;
+            match self.refresh_cell(&c) {
+                Ok(n) => out.versions += n,
+                Err(e) => out.failed.push((c.rest.clone(), e.to_string())),
+            }
+        }
+        for f in s.index.all_forwarded()? {
+            let Ok(t) = mesh.resolve(&f.rest, false) else { continue };
+            let why = "refreshed".to_string();
+            match self.forward(&t, why) {
+                Ok(r) if r.status == 200 => out.forwarded += 1,
+                Ok(r) => out.failed.push((f.rest.clone(), String::from_utf8_lossy(&r.body).into_owned())),
+                Err(e) => out.failed.push((f.rest.clone(), e.to_string())),
+            }
+        }
+        mesh.clear_memo();
+        self.reload_aliases()?;
+        Ok(out)
     }
 
     fn refresh_cell(&self, c: &crate::index::HeldCell) -> Result<usize, Error> {
