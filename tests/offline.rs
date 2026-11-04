@@ -130,20 +130,32 @@ fn the_cli_writes_the_envelope_and_exits_3() {
     drop(up);
 }
 
-/// The envelope checked by the core, as a client would: pending datumesh-core 0.3.7, whose
-/// `ErrorCode` has `E_FOREIGN_UNAVAILABLE` (0.3.6's is closed and does not, so its check
-/// refuses the envelope with E_ENVELOPE).
+/// The envelope checked by the core, as a client would (datumesh-core 0.3.7: the code, its
+/// 502 and its detail), for each failure.
 #[test]
-#[ignore = "pending datumesh-core 0.3.7: core 0.3.6's ErrorCode has no E_FOREIGN_UNAVAILABLE"]
 fn the_envelope_passes_the_core_check() {
     let up = upstream();
     let dir = TempDir::new("offline-core");
     let r = resolver(&dir, &up);
     r.set_offline(true);
-    let reply = r.get(USD).unwrap();
     let cell_id = "0".repeat(64);
     let request = datumesh_core::Request::new(&cell_id, None).unwrap();
+    let reply = r.get(USD).unwrap();
     let a = datumesh_core::check_answer(reply.status, &reply.body, &datumesh_core::Keys::new(), &request).unwrap();
+    assert_eq!(a.error, Some(datumesh_core::ErrorCode::ForeignUnavailable));
     assert_eq!(a.error.map(|c| c.as_str()), Some(FOREIGN_UNAVAILABLE));
+    assert_eq!(a.detail, Some(datumesh_core::ForeignDetail::Offline));
+    // The network down: refused, also checked.
+    let dir2 = TempDir::new("offline-core-refused");
+    let mut c = config(&dir2, &up);
+    c.peers.insert(HOST.to_string(), "http://127.0.0.1:1".to_string());
+    let r = datumesh_local::Resolver::open(c).unwrap();
+    let reply = r.get(USD).unwrap();
+    let a = datumesh_core::check_answer(reply.status, &reply.body, &datumesh_core::Keys::new(), &request).unwrap();
+    assert_eq!(a.detail, Some(datumesh_core::ForeignDetail::Refused));
+    // The same bytes as core's builder writes.
+    assert_eq!(reply.body, datumesh_core::Answer::foreign_unavailable(datumesh_core::ForeignDetail::Refused).to_json());
+    // A status other than 502 fails the check.
+    assert!(datumesh_core::check_answer(503, &reply.body, &datumesh_core::Keys::new(), &request).is_err());
     let _ = Value::Null;
 }

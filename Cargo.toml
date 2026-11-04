@@ -38,7 +38,7 @@ resolver = [
 wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
-datumesh-core = "0.3.6"
+datumesh-core = "0.3.7"
 # The call syntax (parse_call) without the engine for wasm; with it for the resolver.
 datumesh-formula = { version = "0.2.0", default-features = false }
 # SQLite explicitly (the store's `sqlite` feature), not through the store's defaults; the
@@ -55,7 +55,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 wasm-bindgen = { version = "0.2.129", optional = true }
 
 [dev-dependencies]
-datumesh-core = { version = "0.3.6", features = ["sign"] }
+datumesh-core = { version = "0.3.7", features = ["sign"] }
 
 # The engine signs and the store verifies many receipts in the tests: curve25519 and sha2
 # are optimised even in test builds.
