@@ -482,3 +482,83 @@ pub(crate) fn stored_descriptor(signature: &Value) -> Value {
         ("signature".into(), signature.clone()),
     ])
 }
+
+#[cfg(test)]
+mod transport_tests {
+    //! The failure of a fetch that got no answer, named as `E_FOREIGN_UNAVAILABLE`'s
+    //! `detail`, from the client's error text as each platform words it. datumesh-http's
+    //! client hands the transport error over as text (`<url>: <ureq error>`), so the
+    //! classification is of that text; these are the shapes ureq 3.4 and the standard
+    //! library produce on Linux, macOS and Windows.
+
+    use super::transport_kind;
+    use datumesh_core::ForeignDetail::{self, Dns, Network, Refused, Timeout, Tls};
+
+    const URL: &str = "https://mesh-test.datumesh.com/.well-known/datumesh.json";
+
+    fn kind(err: &str) -> Option<ForeignDetail> {
+        transport_kind(&format!("{URL}: {err}"))
+    }
+
+    #[test]
+    fn dns_on_every_platform() {
+        for e in [
+            // Linux (glibc getaddrinfo, through std's lookup error).
+            "io: failed to lookup address information: Temporary failure in name resolution",
+            "io: failed to lookup address information: Name or service not known",
+            "io: failed to lookup address information: No address associated with hostname",
+            // macOS.
+            "io: failed to lookup address information: nodename nor servname provided, or not known",
+            // Windows (WSAHOST_NOT_FOUND, WSATRY_AGAIN, WSANO_DATA, WSANO_RECOVERY).
+            "io: No such host is known. (os error 11001)",
+            "io: This is usually a temporary error during hostname resolution and means that the local server did not receive a response from an authoritative server. (os error 11002)",
+            "io: The requested name is valid, but no data of the requested type was found. (os error 11004)",
+            "io: A non-recoverable error occurred during a database lookup. (os error 11003)",
+            // ureq's own: a name that resolved to no address.
+            "host not found",
+        ] {
+            assert_eq!(kind(e), Some(Dns), "{e}");
+        }
+    }
+
+    #[test]
+    fn refused_timeout_tls_network() {
+        for (e, k) in [
+            ("io: Connection refused (os error 111)", Refused),
+            ("io: Connection refused (os error 61)", Refused),
+            (
+                "io: No connection could be made because the target machine actively refused it. (os error 10061)",
+                Refused,
+            ),
+            ("timeout: global", Timeout),
+            ("io: Connection timed out (os error 110)", Timeout),
+            ("io: Operation timed out (os error 60)", Timeout),
+            (
+                "io: A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond. (os error 10060)",
+                Timeout,
+            ),
+            ("rustls: invalid peer certificate: UnknownIssuer", Tls),
+            ("io: Network is unreachable (os error 101)", Network),
+            ("io: A socket operation was attempted to an unreachable network. (os error 10051)", Network),
+            ("io: Connection reset by peer (os error 104)", Network),
+            ("io: An existing connection was forcibly closed by the remote host. (os error 10054)", Network),
+            ("connection failed", Network),
+        ] {
+            assert_eq!(kind(e), Some(k), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_url_does_not_count_and_answers_are_not_failures() {
+        // A host whose name has the words in it: the error decides.
+        assert_eq!(
+            transport_kind("https://dns.tls.timeout.example/x: io: Connection refused (os error 111)"),
+            Some(Refused)
+        );
+        assert_eq!(transport_kind("https://refused.example/x: io: No such host is known. (os error 11001)"), Some(Dns));
+        // An answer came back: not a transport failure.
+        assert_eq!(transport_kind(&format!("{URL}: status 404")), None);
+        assert_eq!(transport_kind("store: database is locked"), None);
+        assert_eq!(transport_kind("mesh-test.datumesh.com/ecb/fx_rate: the other mesh's history does not end"), None);
+    }
+}
