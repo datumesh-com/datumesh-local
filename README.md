@@ -149,7 +149,7 @@ call parser for `wasm32-unknown-unknown` (`verify`, `parse_call`; JSON in and ou
 
 ## Versions
 
-datumesh-local 0.1.0 follows spec-0.4.2 (plus spec-0.4.3's `E_FOREIGN_UNAVAILABLE` and
+datumesh-local 0.1.1 follows spec-0.4.2 (plus spec-0.4.3's `E_FOREIGN_UNAVAILABLE` and
 unrooted namespaces), on datumesh-core 0.3.7, datumesh-engine 0.4.0, datumesh-formula 0.2.0,
 datumesh-http 0.2.0 and datumesh-store 0.4.0. MSRV 1.97.
 

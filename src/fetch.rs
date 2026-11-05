@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datumesh_core::json::Value;
-use datumesh_core::{Args, Cell, ErrorCode, FunctionDescriptor, Receipt, Reference, Scalar, Type};
+use datumesh_core::{Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, Receipt, Reference, Scalar, Type};
 use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern, SystemClock};
 use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
@@ -64,20 +64,58 @@ pub(crate) fn network_failure(e: &ClientError) -> Option<String> {
     if d.contains(": status ") || d.contains("store:") || d.starts_with("store") {
         return None;
     }
-    let kind = if d.contains("dns") || d.contains("resolve") || d.contains("name or service") || d.contains("lookup") {
-        "dns"
-    } else if d.contains("tls") || d.contains("certificate") || d.contains("rustls") {
-        "tls"
-    } else if d.contains("timeout") || d.contains("timed out") {
-        "timeout"
-    } else if d.contains("refused") {
-        "refused"
-    } else if d.contains("io:") || d.contains("connection") || d.contains("network") || d.contains("unreachable") {
-        "network"
+    let kind = transport_kind(&e.detail)?.as_str();
+    Some(format!("{kind}: {}", e.detail))
+}
+
+/// The failure of a fetch that reached no answer, from the client's error text
+/// (`<url>: <ureq error>`; the URL does not count): `None` when an answer came back.
+///
+/// datumesh-http's client hands ureq's error over as text, so this reads the text: ureq's
+/// own variants (`host not found`, `timeout: ...`, `rustls: ...`, `connection failed`) and
+/// the standard library's I/O errors as each platform words them, with the Windows Sockets
+/// codes (11001-11004 for the resolver, 10060 a timeout, 10061 refused).
+pub(crate) fn transport_kind(detail: &str) -> Option<ForeignDetail> {
+    let err = if detail.starts_with("http://") || detail.starts_with("https://") {
+        detail.split_once(": ").map(|(_, e)| e).unwrap_or("")
+    } else {
+        detail
+    };
+    let d = err.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| d.contains(w));
+    if has(&["status ", "store:", "history", "does not extend"]) || d.starts_with("store") {
+        return None;
+    }
+    let kind = if has(&[
+        "host not found",
+        "failed to lookup address",
+        "name or service not known",
+        "name resolution",
+        "nodename nor servname",
+        "no address associated",
+        "no such host",
+        "hostname resolution",
+        "no data of the requested type",
+        "database lookup",
+        "os error 11001",
+        "os error 11002",
+        "os error 11003",
+        "os error 11004",
+        "dns",
+    ]) {
+        ForeignDetail::Dns
+    } else if has(&["rustls", "tls", "certificate"]) {
+        ForeignDetail::Tls
+    } else if has(&["timeout", "timed out", "did not properly respond", "os error 10060"]) {
+        ForeignDetail::Timeout
+    } else if has(&["refused", "os error 10061"]) {
+        ForeignDetail::Refused
+    } else if has(&["io:", "connection", "network", "unreachable", "reset", "forcibly closed"]) {
+        ForeignDetail::Network
     } else {
         return None;
     };
-    Some(format!("{kind}: {}", e.detail))
+    Some(kind)
 }
 
 /// What happened during one request's evaluation (per thread: the mesh evaluates a request

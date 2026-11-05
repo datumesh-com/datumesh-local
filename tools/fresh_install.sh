@@ -7,7 +7,7 @@
 #   tools/fresh_install.sh [toolchain] [version]
 set -e
 tag="${1:-1.99}"
-version="${2:-0.1.0}"
+version="${2:-0.1.1}"
 name="datumesh-fresh-install-$$"
 docker run -d --name "$name" "rust:$tag" sleep infinity > /dev/null
 trap 'docker rm -f "$name" > /dev/null 2>&1 || true' EXIT

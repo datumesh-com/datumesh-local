@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1 (unreleased)
+
+- Fixed: on Windows, a host name that does not resolve answered `E_FOREIGN_UNAVAILABLE` with
+  `detail` `network` instead of `dns` (the resolver's errors are worded differently there:
+  WSAHOST_NOT_FOUND 11001, WSATRY_AGAIN 11002, WSANO_RECOVERY 11003, WSANO_DATA 11004). The
+  failure is now named from the error's platform shapes (Linux, macOS, Windows; ureq's own
+  `host not found`), timeouts (10060) and refusals (10061) included, and the URL in the
+  error no longer counts ([#1](https://github.com/datumesh-com/datumesh-local/issues/1)).
+
+## 0.1.0 (2026-11-04)
 
 The first release (step 1.8a): the Datumesh local resolver.
 

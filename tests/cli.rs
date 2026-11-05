@@ -131,5 +131,5 @@ fn usage_errors_and_serve_elsewhere_than_localhost() {
     assert!(err.contains("127.0.0.1 only"), "{err}");
     let (code, out, _) = run(&dir, &["--version"]);
     assert_eq!(code, 0);
-    assert!(out.starts_with("datumesh 0.1.0"));
+    assert!(out.starts_with(&format!("datumesh {}", env!("CARGO_PKG_VERSION"))));
 }
