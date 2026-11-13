@@ -1,8 +1,10 @@
 //! Licence inheritance (spec-0.4.3 8.5, datumesh-engine 0.4.1) as the local resolver meets
 //! it: the receipts this machine signs carry the licence the rule gives over their inputs,
-//! with the publisher's declarations from the key document held for its host. Brief test 5's
-//! decided behaviour stands: a function over the restricted NOK cell is forwarded and the
-//! receipt returned is the mesh's.
+//! with the publisher's declarations from the key document held for its host. The gate is that
+//! rule plus "a restricted licence is never signed by an unrooted key" (the user's decision
+//! L1 C, 2026-11-13): an undeclared restricted input is refused here (403, no forward); a
+//! declared one is forwarded and the receipt is the publisher's mesh's (brief test 5); open
+//! and local inputs are computed here.
 
 mod common;
 
@@ -33,33 +35,68 @@ fn fx_cross_over_the_nok_cell_is_the_mesh_s_with_the_declared_licence() {
 }
 
 #[test]
-fn fx_cross_undeclared_over_the_nok_cell_is_unlicensed() {
+fn fx_cross_undeclared_over_the_nok_cell_is_refused_here_without_a_forward() {
     let up = upstream();
     let dir = TempDir::new("inherit-undeclared");
     let r = resolver(&dir, &up);
+    // The inputs and the publisher's key document held first (an explicit fetch).
+    r.prefetch("ecb/fx_rate(base: *, quote: *, date: *)", None, false).unwrap();
+    r.prefetch("ecb/fx_cross_undeclared", None, false).unwrap();
+    r.set_offline(true);
+    let before = up.requests();
     let a = r.get(NOK_UNDECLARED).unwrap();
     assert_eq!(a.status, 403, "{}", String::from_utf8_lossy(&a.body));
     assert_eq!(s(&envelope(&a.body), "outcome"), "unlicensed");
+    assert_eq!(a.source, Source::Local);
+    assert!(a.detail.as_deref().unwrap_or("").contains("not_declared"), "{:?}", a.detail);
+    assert_eq!(up.requests(), before, "no round trip");
+    r.set_offline(false);
     let b = r.get(r#"ecb/fx_cross_undeclared(base: "USD", quote: "GBP", date: 2026-10-30)"#).unwrap();
     assert_eq!(b.status, 200);
     assert_eq!(s(&receipt(&b.body), "licence"), "CC-BY-4.0");
+    assert_eq!(s(&receipt(&b.body), "computed_by"), format!("local.invalid#{}", r.key_id()));
 }
 
 #[test]
-fn strip_niqqud_over_uxlc_carries_the_declared_licence() {
+fn strip_niqqud_over_uxlc_is_forwarded_its_licence_being_restricted() {
     let up = upstream();
     let dir = TempDir::new("inherit-strip");
     let r = resolver(&dir, &up);
     let a = r.get(STRIP).unwrap();
     assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));
+    // https://tanach.us/License.html is restricted under 8.5; the publisher declared it for
+    // strip_niqqud, so the mesh computes it and its receipt is returned.
+    assert_eq!(a.source, Source::Forwarded { mesh: HOST.into() });
     let rc = receipt(&a.body);
-    assert_eq!(s(&rc, "computed_by"), format!("local.invalid#{}", r.key_id()));
+    assert!(s(&rc, "computed_by").starts_with("mesh-test.datumesh.com#"));
     assert_eq!(s(&rc, "licence"), UXLC_LICENCE);
     assert_eq!(s(&rc, "value"), "Synthtc tst vrs Gn 1:1 (tst dt).");
     // The publisher's key document, with its declarations, is held here.
     let doc = r.store().namespace(HOST).unwrap().unwrap().keydoc;
     let doc = json::parse(&doc).unwrap();
     assert!(doc.get("declarations").and_then(|d| d.get("mesh-test.datumesh.com/scripture/strip_niqqud")).is_some());
+    // Nothing signed here.
+    let id = a.receipt().unwrap().cell().id();
+    assert!(r.store().computed_asof(&id, END).unwrap().is_none());
+}
+
+#[test]
+fn a_local_function_over_a_restricted_input_is_refused() {
+    let up = upstream();
+    let dir = TempDir::new("inherit-local-restricted");
+    let r = resolver(&dir, &up);
+    r.define_formula(
+        "local/nok",
+        r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", quote: "NOK", date: date) * 1"#,
+        &json::parse(
+            br#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": {"of": "NOK", "per": "EUR"}}}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let a = r.get("local/nok(date: 2026-10-30)").unwrap();
+    assert_eq!(a.status, 403, "{}", String::from_utf8_lossy(&a.body));
+    assert_eq!(a.source, Source::Local);
 }
 
 #[test]
