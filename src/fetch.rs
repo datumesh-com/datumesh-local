@@ -15,7 +15,7 @@ use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
 
 use crate::config::Config;
-use crate::gate::{is_unrooted, LicenceGate};
+use crate::gate::{is_unrooted, GateDecision, LicenceGate};
 use crate::index::{HeldCell, Index};
 use crate::key::MachineKey;
 
@@ -127,8 +127,10 @@ pub(crate) fn transport_kind(detail: &str) -> Option<ForeignDetail> {
 /// on the thread that asks).
 #[derive(Default, Debug)]
 pub(crate) struct Ctx {
-    /// The gate refused an input: why.
+    /// The gate forwards the request (a declared restricted input): why.
     pub(crate) refused: Option<String>,
+    /// The gate refuses the request (`unlicensed` here): why.
+    pub(crate) unlicensed: Option<String>,
     /// A foreign input could not be fetched: why.
     pub(crate) unavailable: Option<String>,
     /// Another mesh answered a fetch with a failure.
@@ -336,25 +338,41 @@ impl Shared {
     }
 
     /// The gate's decision on an input receipt held in the store.
-    fn gate_check(&self, receipt_hash: &str) -> Result<(), EvalError> {
+    fn gate_check(&self, function: &str, receipt_hash: &str) -> Result<(), EvalError> {
         if receipt_hash.starts_with("slice:") {
             return Ok(());
         }
         let Some(bytes) = self.store.receipt(receipt_hash) else { return Ok(()) };
         let Ok(r) = Receipt::from_json(&bytes) else { return Ok(()) };
-        if self.gate.permits(r.licence(), r.signer_host()) {
-            return Ok(());
+        let publisher = host_of(function);
+        let declarations = self
+            .store
+            .namespace(publisher)
+            .ok()
+            .flatten()
+            .and_then(|n| datumesh_core::KeyDocument::from_json(publisher, &n.keydoc).ok())
+            .and_then(|d| d.declarations);
+        let input = format!("the input {}/{} under {}", r.cell().ns, r.cell().fn_name, r.licence());
+        match self.gate.permits(function, r.licence(), r.signer_host(), declarations.as_ref(), &self.now()) {
+            GateDecision::Compute => Ok(()),
+            GateDecision::Forward => {
+                let why = format!(
+                    "{input}, declared for {function} by its publisher: a restricted licence is not signed here"
+                );
+                note(|c| {
+                    c.refused.get_or_insert(why.clone());
+                });
+                Err(EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why)))
+            }
+            GateDecision::Refuse(reason) => {
+                let why = format!("licence inheritance (SPEC 8.5) refuses {function}: {input}: {}", reason.as_str());
+                note(|c| {
+                    c.unlicensed.get_or_insert(why.clone());
+                });
+                Err(EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why)))
+            }
+            _ => Ok(()),
         }
-        let why = format!(
-            "the input {}/{} is licensed {}, which is not open here",
-            r.cell().ns,
-            r.cell().fn_name,
-            r.licence()
-        );
-        note(|c| {
-            c.refused.get_or_insert(why.clone());
-        });
-        Err(EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why)))
     }
 }
 
@@ -383,7 +401,8 @@ impl Runtime for Gated {
         inputs: &mut dyn Inputs,
         budget: &mut Budget,
     ) -> Result<Scalar, EvalError> {
-        let mut through = Through { inner: inputs, shared: &self.shared };
+        let function = format!("{}/{}", cell.ns, cell.fn_name);
+        let mut through = Through { inner: inputs, shared: &self.shared, function };
         self.inner.evaluate(descriptor, cell, &mut through, budget)
     }
 
@@ -395,6 +414,8 @@ impl Runtime for Gated {
 struct Through<'a> {
     inner: &'a mut dyn Inputs,
     shared: &'a Shared,
+    /// The function evaluated (its full name): its publisher's declarations decide.
+    function: String,
 }
 
 fn unavailable(why: String) -> EvalError {
@@ -480,14 +501,14 @@ impl Inputs for Through<'_> {
     fn read_cell(&mut self, fn_name: &str, args: &Args) -> Result<Input, EvalError> {
         self.cell(fn_name, args)?;
         let i = self.inner.read_cell(fn_name, args)?;
-        self.shared.gate_check(&i.receipt_hash)?;
+        self.shared.gate_check(&self.function, &i.receipt_hash)?;
         Ok(i)
     }
 
     fn read_asof(&mut self, fn_name: &str, args: &Args, t: &str) -> Result<Input, EvalError> {
         self.cell(fn_name, args)?;
         let i = self.inner.read_asof(fn_name, args, t)?;
-        self.shared.gate_check(&i.receipt_hash)?;
+        self.shared.gate_check(&self.function, &i.receipt_hash)?;
         Ok(i)
     }
 
@@ -495,7 +516,7 @@ impl Inputs for Through<'_> {
         self.name(fn_name)?;
         let members = self.inner.read_slice(fn_name, pattern)?;
         for m in &members {
-            self.shared.gate_check(&m.input.receipt_hash)?;
+            self.shared.gate_check(&self.function, &m.input.receipt_hash)?;
         }
         Ok(members)
     }
@@ -504,7 +525,7 @@ impl Inputs for Through<'_> {
         self.cell(fn_name, args)?;
         let vs = self.inner.read_versions(fn_name, args, from, to)?;
         for i in &vs {
-            self.shared.gate_check(&i.receipt_hash)?;
+            self.shared.gate_check(&self.function, &i.receipt_hash)?;
         }
         Ok(vs)
     }

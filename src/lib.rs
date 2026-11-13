@@ -47,8 +47,10 @@
 //!   envelope, signature against the publisher's key document, hashes), imported into the
 //!   store, then answered from it, so later answers, online or offline, have the same bytes;
 //! - a computed cell evaluates here, its foreign inputs fetched the same way, when the
-//!   [`LicenceGate`] permits every input; otherwise the request is forwarded to the configured
-//!   mesh and that mesh's answer (its receipt, its signature) is returned and kept;
+//!   [`LicenceGate`] (licence inheritance, spec-0.4.3 8.5) lets it compute over every input;
+//!   over a restricted input its publisher declared, the request is forwarded to the
+//!   configured mesh and that mesh's answer (its receipt, its signature) is returned and kept;
+//!   over an undeclared one the answer is `unlicensed` (403), here;
 //! - a foreign cell that is not held and cannot be fetched (offline, the network down, a host
 //!   not allowed) answers `error` with [`FOREIGN_UNAVAILABLE`] (HTTP 502), never
 //!   `not_covered`.

@@ -8,35 +8,25 @@
   // test mesh when you no longer use it.
   "allowlist": ["datumesh.com", "mesh-test.datumesh.com"],
 
-  // The licence gate. A function evaluates on this machine when every input's licence is on
-  // this list, or the input is local (under local.invalid); otherwise the request is
-  // forwarded to forward_mesh and its answer (signed by that mesh) is returned.
-  // The list holds SPDX ids, and licence URLs exactly as receipts write them.
-  // Share-alike entries (CC-BY-SA-4.0, ODbL-1.0) are "open for delivery": they may be
-  // delivered and computed over here; the obligations they put on derived cells are not the
-  // gate's to decide. Licence inheritance on derived cells (spec-0.4.3 section 8.5) is the
-  // engine's job, and the lineage policy is step 3.4's, not the gate's.
-  // https://tanach.us/License.html is the UXLC's licence (scripture decision 6a): open for
-  // delivery here, although the inheritance rule ranks every https:// licence as restricted.
-  "open_licences": [
-    "CC0-1.0",
-    "CC-BY-4.0",
-    "CC-BY-SA-4.0",
-    "ODbL-1.0",
-    "OGL-UK-3.0",
-    "PDDL-1.0",
-    "Apache-2.0",
-    "MIT",
-    "https://tanach.us/License.html"
-  ],
+  // The licence gate (since 0.1.2) is the engine's licence inheritance (spec-0.4.3 8.5) and
+  // needs no configuration: an input under an open licence (CC0-1.0, PDDL-1.0, MIT,
+  // Apache-2.0, CC-BY-4.0, OGL-UK-3.0, CC-BY-SA-4.0, ODbL-1.0) or a local one is computed
+  // over here, the result carrying the inherited licence; an input under any other licence
+  // (every https:// one included) is restricted: when the function's publisher declares it
+  // (its key document's declarations) the request is forwarded to forward_mesh, since a
+  // restricted licence is never signed by this machine's key; otherwise it is answered
+  // unlicensed here. Restricted cells the mesh delivers are held like any other: the licence
+  // binds computation, not delivery. The open_licences list of 0.1.0 and 0.1.1 is no longer
+  // used; a file that has it still loads (deprecated, ignored).
 
-  // The mesh that answers what the gate does not let this machine compute.
+  // The mesh that answers what the gate forwards (declared restricted inputs).
   "forward_mesh": "mesh-test.datumesh.com",
 
   // true: no fetch at all; a cell not held answers error E_FOREIGN_UNAVAILABLE.
   "offline": false,
 
-  // The licence of the receipts this machine signs (until the engine inherits licences).
+  // The licence of the receipts this machine signs for cells without inputs (8.5's "no
+  // inputs": the mesh's own licence); every other receipt carries the inherited licence.
   "licence": "CC-BY-4.0",
 
   // Origins to use instead of https://<host> for some hosts (tests, private networks).

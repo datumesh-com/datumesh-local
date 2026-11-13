@@ -40,13 +40,16 @@ pub struct Config {
     pub aliases_file: PathBuf,
     /// The only hosts fetched from.
     pub allowlist: Vec<String>,
-    /// The licence gate's open list.
+    /// Deprecated since 0.1.2, ignored: the open list of 0.1.0 and 0.1.1, no longer a
+    /// computation gate (the gate is the engine's licence inheritance, [`crate::gate`]). Still
+    /// read from a configuration file that has it.
     pub open_licences: Vec<String>,
     /// The mesh requests the gate refuses are forwarded to.
     pub forward_mesh: Option<String>,
     /// No fetch at all.
     pub offline: bool,
-    /// The licence of the receipts this machine signs.
+    /// The licence of the receipts this machine signs for cells without inputs (SPEC 8.5:
+    /// the mesh's own licence); every other receipt carries the inherited licence.
     pub licence: String,
     /// Origins to use instead of `https://<host>` for some hosts.
     pub peers: BTreeMap<String, String>,

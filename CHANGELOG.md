@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.2 (unreleased)
+
+- The licence gate is the engine's rule (the user's decision L1 C): licence inheritance
+  (spec-0.4.3 8.5, datumesh-engine 0.4.1, core's `inherit_licence`) with the publisher's
+  declarations from the key document held for the function's namespace host, plus "a
+  restricted licence is never signed by an unrooted key". Open and local inputs are computed
+  here, the result carrying the inherited licence; a declared restricted input is forwarded
+  (brief test 5 unchanged); an undeclared one is answered `unlicensed` (403) here without a
+  round trip. Consequence: `strip_niqqud` over the UXLC (an `https://` licence, restricted
+  under 8.5) is forwarded, no longer computed here.
+- `LicenceGate::permits(function, licence, signer_host, declarations, issued)` returns a
+  `GateDecision` (`Compute`, `Forward`, `Refuse(reason)`); `LicenceGate::new()` takes no list.
+  Breaking for callers of 0.1.1's `LicenceGate::new(&open)` and `permits(licence, signer)`.
+- The open list is no longer a computation gate and is not installed; `open_licences` in an
+  existing configuration file is accepted and ignored (deprecated).
+- The publisher's key document (its declarations) is fetched and kept on every import of a
+  name (get, prefetch, refresh) and before every forward.
+- Restricted cells the mesh delivers are still held (the user's decision L2 i): delivery is
+  allowed; the licence binds computation.
+- datumesh-engine 0.4.1, datumesh-http 0.2.1; receipts signed here carry the inherited
+  licence (the configured `licence` only for cells without inputs).
+
 ## 0.1.1 (unreleased)
 
 - Fixed: on Windows, a host name that does not resolve answered `E_FOREIGN_UNAVAILABLE` with

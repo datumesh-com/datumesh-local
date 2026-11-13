@@ -218,7 +218,7 @@ impl Resolver {
         cc.allowed = Some(config.allowlist.clone());
         cc.timeout = config.timeout;
         let client = Client::new(cc);
-        let gate = LicenceGate::new(&config.open_licences);
+        let gate = LicenceGate::new();
         let offline = AtomicBool::new(config.offline);
         let shared = Arc::new(Shared { config, key, store, client, index, gate, offline });
         publish_key_document(&shared)?;
@@ -408,6 +408,11 @@ impl Resolver {
         let (reply, ctx) = fetch::with_ctx(|| mesh.cell(&rest, None));
         for c in &ctx.added {
             mesh.stored_version_added(c);
+        }
+        if let Some(why) = ctx.unlicensed {
+            let mut r = Reply::new(403, datumesh_http::envelope::unlicensed(), Source::Local);
+            r.detail = Some(why);
+            return Ok(r);
         }
         if let Some(why) = ctx.refused {
             return self.forward(&target, why);
