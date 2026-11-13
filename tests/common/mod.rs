@@ -21,6 +21,8 @@ use datumesh_store::{SqliteStore, Store};
 pub const HOST: &str = "mesh-test.datumesh.com";
 pub const KEY_FROM: &str = "2026-01-01T00:00:00.000000Z";
 pub const END: &str = "9999-12-31T23:59:59.999999Z";
+pub const RESTRICTED: &str = "https://mesh-test.datumesh.com/licences/restricted-test";
+pub const UXLC_LICENCE: &str = "https://tanach.us/License.html";
 
 pub const USD: &str = r#"ecb/fx_rate(base: "EUR", quote: "USD", date: 2026-10-30)"#;
 pub const USD_FULL: &str = r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", quote: "USD", date: 2026-10-30)"#;
@@ -109,6 +111,26 @@ pub fn upstream_with(slice_page: usize) -> Upstream {
         }
     };
     let doc = datumesh_http::keydoc::with_key(HOST, None, &upstream_key(), KEY_FROM).unwrap();
+    // The test mesh's declarations (spec-0.4.3 9.2), as http 0.2.1's deploy/licences.sh makes
+    // them: fx_cross over the restricted test licence, strip_niqqud over the UXLC's.
+    let (doc, _) = datumesh_http::keydoc::with_declaration(
+        HOST,
+        &doc,
+        "mesh-test.datumesh.com/ecb/fx_cross",
+        RESTRICTED,
+        "2026-09-01T00:00:00.000000Z",
+        None,
+    )
+    .unwrap();
+    let (doc, _) = datumesh_http::keydoc::with_declaration(
+        HOST,
+        &doc,
+        "mesh-test.datumesh.com/scripture/strip_niqqud",
+        UXLC_LICENCE,
+        "2026-11-02T00:00:00.000000Z",
+        None,
+    )
+    .unwrap();
     store.put_namespace(HOST, &doc, KEY_FROM).unwrap();
     datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("ecb.jsonl")).unwrap();
     datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("scripture.jsonl")).unwrap();
