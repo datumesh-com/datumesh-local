@@ -8,7 +8,7 @@
   // test mesh when you no longer use it.
   "allowlist": ["datumesh.com", "mesh-test.datumesh.com"],
 
-  // The licence gate (since 0.1.2) is the engine's licence inheritance (spec-0.4.3 8.5) and
+  // The licence gate (since 0.2.0) is the engine's licence inheritance (spec-0.4.3 8.5) and
   // needs no configuration: an input under an open licence (CC0-1.0, PDDL-1.0, MIT,
   // Apache-2.0, CC-BY-4.0, OGL-UK-3.0, CC-BY-SA-4.0, ODbL-1.0) or a local one is computed
   // over here, the result carrying the inherited licence; an input under any other licence

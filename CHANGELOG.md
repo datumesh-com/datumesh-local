@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.2 (unreleased)
+## 0.2.0 (2026-11-13)
+
+Released as 0.2.0, not 0.1.2: the gate's public API changes (`LicenceGate::new(&[String])`, `open()` and `permits(&str, &str) -> bool` replaced), which is breaking for a 0.1.x crate (the user's decision, 2026-11-13).
 
 - The licence gate is the engine's rule (the user's decision L1 C): licence inheritance
   (spec-0.4.3 8.5, datumesh-engine 0.4.1, core's `inherit_licence`) with the publisher's

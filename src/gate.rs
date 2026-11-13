@@ -1,5 +1,5 @@
 //! The licence gate: whether this machine may compute over an input (the user's decision L1 C,
-//! 2026-11-13). Since 0.1.2 it is the engine's rule, licence inheritance (spec-0.4.3 8.5,
+//! 2026-11-13). Since 0.2.0 it is the engine's rule, licence inheritance (spec-0.4.3 8.5,
 //! datumesh-core's `inherit_licence`, with the declarations of the function's publisher from
 //! the key document of `cell.ns`'s host held in the local store), plus one rule of this
 //! resolver's own: **a restricted licence is never signed by an unrooted key**. A receipt

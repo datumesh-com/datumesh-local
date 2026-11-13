@@ -40,7 +40,7 @@ pub struct Config {
     pub aliases_file: PathBuf,
     /// The only hosts fetched from.
     pub allowlist: Vec<String>,
-    /// Deprecated since 0.1.2, ignored: the open list of 0.1.0 and 0.1.1, no longer a
+    /// Deprecated since 0.2.0, ignored: the open list of 0.1.0 and 0.1.1, no longer a
     /// computation gate (the gate is the engine's licence inheritance, [`crate::gate`]). Still
     /// read from a configuration file that has it.
     pub open_licences: Vec<String>,

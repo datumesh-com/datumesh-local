@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-local"
-version = "0.1.2"
+version = "0.2.0"
 description = "The Datumesh local resolver: the mesh's engine over a local SQLite store, the unrooted local.invalid namespace, explicit fetches, prefetch, a licence gate, export and import, and a localhost endpoint."
 edition = "2021"
 rust-version = "1.97"

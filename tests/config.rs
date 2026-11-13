@@ -16,7 +16,7 @@ fn first_run_installs_the_default_files() {
     assert_eq!(c.allowlist, vec!["datumesh.com".to_string(), "mesh-test.datumesh.com".to_string()]);
     assert_eq!(c.forward_mesh.as_deref(), Some("mesh-test.datumesh.com"));
     assert!(!c.offline);
-    // Since 0.1.2 the gate is the engine's inheritance rule (spec-0.4.3 8.5): the installed
+    // Since 0.2.0 the gate is the engine's inheritance rule (spec-0.4.3 8.5): the installed
     // file has no open list, and says so.
     assert!(!cfg.contains("\"open_licences\""), "{cfg}");
     assert!(cfg.contains("8.5"), "{cfg}");
