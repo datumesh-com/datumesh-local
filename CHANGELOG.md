@@ -22,7 +22,7 @@
 - datumesh-engine 0.4.1, datumesh-http 0.2.1; receipts signed here carry the inherited
   licence (the configured `licence` only for cells without inputs).
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-11-05)
 
 - Fixed: on Windows, a host name that does not resolve answered `E_FOREIGN_UNAVAILABLE` with
   `detail` `network` instead of `dns` (the resolver's errors are worded differently there:

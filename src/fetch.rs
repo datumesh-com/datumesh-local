@@ -371,7 +371,6 @@ impl Shared {
                 });
                 Err(EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why)))
             }
-            _ => Ok(()),
         }
     }
 }
