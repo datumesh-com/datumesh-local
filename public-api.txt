@@ -72,16 +72,30 @@ pub const datumesh_local::config::DEFAULT_ALIASES: &str
 pub const datumesh_local::config::DEFAULT_CONFIG: &str
 pub fn datumesh_local::config::default_dirs() -> core::result::Result<(std::path::PathBuf, std::path::PathBuf), datumesh_local::Error>
 pub mod datumesh_local::gate
+#[non_exhaustive] pub enum datumesh_local::gate::GateDecision
+pub datumesh_local::gate::GateDecision::Compute
+pub datumesh_local::gate::GateDecision::Forward
+pub datumesh_local::gate::GateDecision::Refuse(datumesh_core::licence::LicenceReason)
+impl core::clone::Clone for datumesh_local::gate::GateDecision
+pub fn datumesh_local::gate::GateDecision::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::gate::GateDecision
+impl core::cmp::PartialEq for datumesh_local::gate::GateDecision
+pub fn datumesh_local::gate::GateDecision::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::gate::GateDecision
+pub fn datumesh_local::gate::GateDecision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_local::gate::GateDecision
+impl core::marker::StructuralPartialEq for datumesh_local::gate::GateDecision
 pub struct datumesh_local::gate::LicenceGate
 impl datumesh_local::gate::LicenceGate
-pub fn datumesh_local::gate::LicenceGate::new(&[alloc::string::String]) -> datumesh_local::gate::LicenceGate
-pub fn datumesh_local::gate::LicenceGate::open(&self) -> &[alloc::string::String]
-pub fn datumesh_local::gate::LicenceGate::permits(&self, &str, &str) -> bool
+pub fn datumesh_local::gate::LicenceGate::new() -> datumesh_local::gate::LicenceGate
+pub fn datumesh_local::gate::LicenceGate::permits(&self, &str, &str, &str, core::option::Option<&datumesh_core::licence::Declarations>, &str) -> datumesh_local::gate::GateDecision
 impl core::clone::Clone for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::gate::LicenceGate
 impl core::cmp::PartialEq for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::eq(&self, &Self) -> bool
+impl core::default::Default for datumesh_local::gate::LicenceGate
+pub fn datumesh_local::gate::LicenceGate::default() -> Self
 impl core::fmt::Debug for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::gate::LicenceGate
@@ -287,14 +301,15 @@ pub fn datumesh_local::bundle::Imported::fmt(&self, &mut core::fmt::Formatter<'_
 impl core::marker::StructuralPartialEq for datumesh_local::bundle::Imported
 pub struct datumesh_local::LicenceGate
 impl datumesh_local::gate::LicenceGate
-pub fn datumesh_local::gate::LicenceGate::new(&[alloc::string::String]) -> datumesh_local::gate::LicenceGate
-pub fn datumesh_local::gate::LicenceGate::open(&self) -> &[alloc::string::String]
-pub fn datumesh_local::gate::LicenceGate::permits(&self, &str, &str) -> bool
+pub fn datumesh_local::gate::LicenceGate::new() -> datumesh_local::gate::LicenceGate
+pub fn datumesh_local::gate::LicenceGate::permits(&self, &str, &str, &str, core::option::Option<&datumesh_core::licence::Declarations>, &str) -> datumesh_local::gate::GateDecision
 impl core::clone::Clone for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::gate::LicenceGate
 impl core::cmp::PartialEq for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::eq(&self, &Self) -> bool
+impl core::default::Default for datumesh_local::gate::LicenceGate
+pub fn datumesh_local::gate::LicenceGate::default() -> Self
 impl core::fmt::Debug for datumesh_local::gate::LicenceGate
 pub fn datumesh_local::gate::LicenceGate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::gate::LicenceGate
