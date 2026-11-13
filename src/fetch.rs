@@ -54,6 +54,11 @@ pub(crate) fn store_err(e: impl std::fmt::Display) -> ClientError {
 /// as `E_FOREIGN_UNAVAILABLE`'s detail: `dns`, `tls`, `timeout`, `refused` or `network`.
 /// `None` for an answer that came back (a status, a check that failed).
 pub(crate) fn network_failure(e: &ClientError) -> Option<String> {
+    // The client's own (typed) classification, where it gives one (http 0.2.1: the
+    // publisher's key document): its detail starts with the kind.
+    if e.foreign_detail().is_some() {
+        return Some(e.detail.clone());
+    }
     if e.code != ErrorCode::InputUnavailable && e.code != ErrorCode::KeyUnavailable && e.code != ErrorCode::MeshDoc {
         return None;
     }
@@ -226,6 +231,27 @@ impl Shared {
         Ok(())
     }
 
+    /// The key document of a function's publisher (the host of its namespace), fetched
+    /// through the client and put in the store when it differs: its declarations (SPEC 9.2,
+    /// 8.5) are what the engine's licence inheritance reads (as http's
+    /// `Foreign::ensure_publisher`). On explicit fetches only: a name's import (get, prefetch,
+    /// refresh) and a forward.
+    pub(crate) fn ensure_publisher(&self, host: &str) -> Result<(), ClientError> {
+        if is_unrooted(host) {
+            return Ok(());
+        }
+        self.patient(|| self.client.publisher_key_document(host))?;
+        let bytes = self
+            .client
+            .key_document_bytes(host)
+            .ok_or_else(|| ClientError { code: ErrorCode::KeyUnavailable, detail: host.to_string() })?;
+        let stored = self.store.namespace(host).map_err(store_err)?;
+        if stored.as_ref().map(|n| n.keydoc.as_slice()) != Some(bytes.as_slice()) {
+            self.store.put_namespace(host, &bytes, &self.now()).map_err(store_err)?;
+        }
+        Ok(())
+    }
+
     /// A descriptor by hash from `host`, into the store.
     pub(crate) fn import_descriptor(&self, host: &str, fn_hash: &str) -> Result<(), ClientError> {
         if self.store.descriptor(fn_hash).is_some() {
@@ -244,7 +270,7 @@ impl Shared {
         let Some(b) = self.patient(|| self.client.binding(&host, name, None))? else {
             return Ok(false);
         };
-        self.ensure_namespace(&host)?;
+        self.ensure_publisher(&host)?;
         self.import_descriptor(&host, &b.fn_hash)?;
         let local = self.store.resolve_binding(name, END).map_err(store_err)?;
         match local {

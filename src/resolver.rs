@@ -441,6 +441,13 @@ impl Resolver {
         if let Err(w) = s.may_fetch(&mesh) {
             return Ok(Reply::unavailable(w));
         }
+        // The publisher's key document (its declarations) brought up to date, as for a
+        // prefetch: what the forwarded answer is checked and kept against.
+        if let Err(e) = s.ensure_publisher(host_of(&target.cell.ns)) {
+            if let Some(w) = network_failure(&e) {
+                return Ok(Reply::unavailable(w));
+            }
+        }
         let mut req = Request::new(target.cell_id(), target.asof()).map_err(|e| Error::Request(format!("{e:?}")))?;
         if let Some(p) = &target.pin {
             req = req.with_pin(p).map_err(|e| Error::Request(format!("{e:?}")))?;
