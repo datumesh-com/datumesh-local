@@ -180,7 +180,7 @@ call parser for `wasm32-unknown-unknown` (`verify`, `parse_call`; JSON in and ou
 
 ## Versions
 
-datumesh-local 0.2.1 follows spec-0.5.0 (classes in requests, describe, the loopback mesh
+datumesh-local 0.2.2 (0.2.1 was tagged, not published) follows spec-0.5.0 (classes in requests, describe, the loopback mesh
 document), on datumesh-core 0.3.8, datumesh-engine 0.4.2, datumesh-formula 0.3.0, datumesh-http
 0.2.2 and datumesh-store 0.4.1. 0.2.0 followed spec-0.4.2 (with spec-0.4.3's
 `E_FOREIGN_UNAVAILABLE` and unrooted namespaces). MSRV 1.97.

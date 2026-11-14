@@ -55,8 +55,16 @@ pub(crate) fn store_err(e: impl std::fmt::Display) -> ClientError {
 /// `None` for an answer that came back (a status, a check that failed).
 pub(crate) fn network_failure(e: &ClientError) -> Option<String> {
     // The client's own (typed) classification, where it gives one (http 0.2.1: the
-    // publisher's key document): its detail starts with the kind.
-    if e.foreign_detail().is_some() {
+    // publisher's key document): its detail starts with the kind. Its catch-all `network` is
+    // refined by the text where that names the failure: http 0.2.2 calls the Windows
+    // resolver's error (os error 11001-11004) `network`.
+    if let Some(kind) = e.foreign_detail() {
+        if kind == datumesh_core::ForeignDetail::Network {
+            let why = e.detail.split_once(": ").map(|(_, w)| w).unwrap_or("");
+            if let Some(better) = transport_kind(why).filter(|k| *k != kind) {
+                return Some(format!("{}: {why}", better.as_str()));
+            }
+        }
         return Some(e.detail.clone());
     }
     if e.code != ErrorCode::InputUnavailable && e.code != ErrorCode::KeyUnavailable && e.code != ErrorCode::MeshDoc {
@@ -655,7 +663,10 @@ mod transport_tests {
         use datumesh_http::client::ClientError;
         let e = |detail: &str| ClientError { code: ErrorCode::ForeignUnavailable, detail: detail.to_string() };
         let win = format!("network: {URL}: io: No such host is known. (os error 11001)");
-        assert_eq!(super::network_failure(&e(&win)), Some(format!("dns: {URL}: io: No such host is known. (os error 11001)")));
+        assert_eq!(
+            super::network_failure(&e(&win)),
+            Some(format!("dns: {URL}: io: No such host is known. (os error 11001)"))
+        );
         // A specific kind from the client stays, and a network failure the text cannot name stays network.
         let tls = format!("tls: {URL}: rustls: invalid peer certificate");
         assert_eq!(super::network_failure(&e(&tls)), Some(tls.clone()));

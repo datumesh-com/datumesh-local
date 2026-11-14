@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.2.1 (2026-11-14)
+## 0.2.2 (2026-11-14)
+
+The first published release for spec-0.5.0: 0.2.1, below, with one fix. The tag `v0.2.1` was
+pushed, but its release run stopped before publishing: on windows-latest a peer name that does
+not resolve gave `E_FOREIGN_UNAVAILABLE` detail `network`, not `dns`. datumesh-http 0.2.2
+names only the Linux resolver's wording `dns`; its catch-all `network` is now refined by the
+failure text, which knows the Windows resolver's codes (os error 11001-11004). Tags are not
+moved, so the fix ships as 0.2.2, and 0.2.1 was never on crates.io.
+
+## 0.2.1 (2026-11-14, tagged, not published)
 
 Additive (the public API adds `Resolver::define_class` and `Resolver::describe`), and the
 behaviour of spec-0.5.0 (classes in requests, describe, the loopback mesh document).
