@@ -645,4 +645,23 @@ mod transport_tests {
         assert_eq!(transport_kind("store: database is locked"), None);
         assert_eq!(transport_kind("mesh-test.datumesh.com/ecb/fx_rate: the other mesh's history does not end"), None);
     }
+
+    #[test]
+    fn the_clients_catch_all_network_is_refined_by_the_text() {
+        // datumesh-http 0.2.2's typed classification names only the Linux resolver's wording
+        // `dns`; the Windows resolver's failure reaches it as an I/O error it calls `network`
+        // (the v0.2.1 release run on windows-latest). The text decides where it can.
+        use datumesh_core::ErrorCode;
+        use datumesh_http::client::ClientError;
+        let e = |detail: &str| ClientError { code: ErrorCode::ForeignUnavailable, detail: detail.to_string() };
+        let win = format!("network: {URL}: io: No such host is known. (os error 11001)");
+        assert_eq!(super::network_failure(&e(&win)), Some(format!("dns: {URL}: io: No such host is known. (os error 11001)")));
+        // A specific kind from the client stays, and a network failure the text cannot name stays network.
+        let tls = format!("tls: {URL}: rustls: invalid peer certificate");
+        assert_eq!(super::network_failure(&e(&tls)), Some(tls.clone()));
+        let reset = format!("network: {URL}: io: Connection reset by peer (os error 104)");
+        assert_eq!(super::network_failure(&e(&reset)), Some(reset.clone()));
+        let odd = format!("network: {URL}: something else");
+        assert_eq!(super::network_failure(&e(&odd)), Some(odd.clone()));
+    }
 }
