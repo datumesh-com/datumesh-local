@@ -41,7 +41,9 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 |---|---|
 | `get <request>...` | the envelope (SPEC 5.5) of each, on stdout; a line per answer on stderr (outcome, source, signer, label) |
 | `define <name> --formula <source> --signature <json>` | a formula function (also `--stored`, `--descriptor <file>`) |
-| `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format) |
+| `define <name> --class <file>` | a class (16.1: keys, methods, order, steward), under `local/` only (owner `local.invalid`) |
+| `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format); class lines too |
+| `describe <id>` | a class name, a key encoding, an object id, a short id or a cell id (16.8): the answer on stdout, exit 0 for 200, 3 for anything else |
 | `explain <request> [--depth n]` | the lineage, as nested envelopes |
 | `find <text> [--remote]` | names held here (and the forward mesh's) |
 | `prefetch <slice or function>... [--page n] [--blobs]` | pull a slice's pages (or a function's binding and descriptor), keys included |
@@ -52,8 +54,15 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 | `key` | the machine id and this machine's (public) key document |
 
 A request is a call, `name(arg: value, ...)` (positional by the function's order, an
-`@alias`, a pin `name@<hash>(...)`, `?asof=<instant>`), or a cell URI. Exit status: 0 when
-every answer carries a receipt, 3 when one does not, 2 for a usage error, 1 for a failure.
+`@alias`, a pin `name@<hash>(...)`, `?asof=<instant>`), or a cell URI. Since 0.2.1 a call may
+be a method call of a class, `N(keys).m(args)` or `N[label]` (through the class's `lookup`),
+with unquoted values by position type and a bare name through the alias map; it gives the same
+cell and receipt as its plain read. The envelope then carries `resolved` (the canonical call,
+each alias, method, default and lookup resolution, and the alias map's `tx`), and the stderr line
+of `get` names the canonical call. A class is fetched from its forward mesh once, through its
+bindings and its describe answer (checked against the class hash), and then answered from the
+store. Exit status: 0 when every answer carries a receipt, 3 when one does not, 2 for a usage
+error, 1 for a failure.
 `--offline` (or `DATUMESH_OFFLINE=1`) fetches nothing; `--home <dir>` (or `DATUMESH_HOME`)
 keeps configuration and data in one directory.
 
@@ -110,14 +119,13 @@ A function under a rooted namespace may not read a local one: `define` refuses i
 ## The localhost endpoint
 
 `datumesh serve` binds 127.0.0.1 only (any other address is refused) and serves the mesh's
-endpoints over the local store, `/cell` through the resolver (fetch, gate, forward). The mesh
-document it serves is **local-only**: its URLs are `http://127.0.0.1:<port>/...`, which
-spec-0.4.3 (section 9.6) does not allow, since mesh-document URLs are `https://`. It is not
-valid under spec-0.4.3 until spec-0.4.4, which is to say: "for an unrooted host (a name under
-.invalid), mesh-document URLs and poll may be http:// on a loopback address only (127.0.0.1,
-[::1], localhost); rooted hosts stay https-only". The links in answers (a job's `poll`, a
-slice page's `next`, `Link: rel="canonical"`) point at `https://local.invalid/...` and cannot
-be followed: `.invalid` never resolves.
+endpoints over the local store, `/cell` through the resolver (fetch, gate, forward) and
+`/describe/{id}` as `describe` does. Its mesh document is the unrooted host's, and its URLs are
+`http://127.0.0.1:<port>/...`: spec-0.5.0 (sections 9.6 and 2.5) lets an unrooted host (a name
+under `.invalid`) use `http://` on a loopback address only (127.0.0.1, [::1], localhost); rooted
+hosts stay https-only. The links in answers (a job's `poll`, a slice page's `next`,
+`Link: rel="canonical"`) point at `https://local.invalid/...` and cannot be followed: `.invalid`
+never resolves.
 
 ## The licence gate
 
@@ -172,9 +180,10 @@ call parser for `wasm32-unknown-unknown` (`verify`, `parse_call`; JSON in and ou
 
 ## Versions
 
-datumesh-local 0.2.0 follows spec-0.4.2 (plus spec-0.4.3's `E_FOREIGN_UNAVAILABLE` and
-unrooted namespaces), on datumesh-core 0.3.7, datumesh-engine 0.4.1, datumesh-formula 0.2.0,
-datumesh-http 0.2.1 and datumesh-store 0.4.0. MSRV 1.97.
+datumesh-local 0.2.1 follows spec-0.5.0 (classes in requests, describe, the loopback mesh
+document), on datumesh-core 0.3.8, datumesh-engine 0.4.2, datumesh-formula 0.3.0, datumesh-http
+0.2.2 and datumesh-store 0.4.1. 0.2.0 followed spec-0.4.2 (with spec-0.4.3's
+`E_FOREIGN_UNAVAILABLE` and unrooted namespaces). MSRV 1.97.
 
 ## License
 

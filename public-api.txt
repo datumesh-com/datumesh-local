@@ -414,6 +414,9 @@ pub fn datumesh_local::Resolver::set_offline(&self, bool)
 pub fn datumesh_local::Resolver::store(&self) -> &alloc::rcs::arc::Arc<(dyn datumesh_store::Store + core::marker::Send + core::marker::Sync)>
 pub fn datumesh_local::Resolver::verify(&self, &[u8]) -> datumesh_core::json::Value
 impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::define_class(&self, &str, &[u8]) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
+pub fn datumesh_local::Resolver::describe(&self, &str) -> core::result::Result<datumesh_local::Reply, datumesh_local::Error>
+impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::export(&self) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) -> core::result::Result<datumesh_local::bundle::Imported, datumesh_local::Error>
 impl core::fmt::Debug for datumesh_local::Resolver

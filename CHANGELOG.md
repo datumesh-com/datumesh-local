@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.1 (2026-11-14)
+
+Additive (the public API adds `Resolver::define_class` and `Resolver::describe`), and the
+behaviour of spec-0.5.0 (classes in requests, describe, the loopback mesh document).
+
+- Requests: `get` and `explain` take the method form of a call, `N(keys).m(args)` and
+  `N[label]`, through formula 0.3.0's `parse_call`, with unquoted values by position type,
+  the asof default (the call's asof, or now) and bare names through the alias map. The
+  envelope carries `resolved` when the call resolved something (its canonical call, each
+  alias, method, default and lookup resolution, the alias map's `tx` for a bare name). A
+  method call and its plain read give the same cell, receipt and envelope apart from
+  `resolved`. The stderr line of `get` names the canonical call.
+- Classes: a class the store does not hold is fetched from its forward mesh once (the
+  bindings resource names it by its class hash, and its describe answer is checked against
+  that hash), with its method functions and its lookup cell; a later call is answered from
+  the store, offline too. A call that does not parse or bind is answered by the mesh, with
+  no network. Alias prefixes (`ecb/`) are expanded on the callee and are not alias
+  resolutions.
+- describe (16.8): `Resolver::describe(id)` and `datumesh describe <id>` (exit 0 for 200, 3
+  for anything else): a class name, a key encoding, an object id, a short id or a cell id.
+  Answered from the store where it can, else by the host's describe endpoint, checked with
+  core's `check_describe_with` (a failed check is an error). `serve` answers
+  `/describe/{id}`, and its mesh document lists it.
+- Local classes: `Resolver::define_class` and `define <name> --class <file>` under `local/`
+  (owner `local.invalid`); `publish` accepts class lines under `local/`.
+- WASM: `parse_call`'s result carries `resolved`; its environment takes `classes`, `now`,
+  `lookups` and `aliases_tx`.
+- Loopback: the mesh document of the unrooted host is valid on the loopback origin
+  (spec-0.5.0 9.6, 2.5); the notes that said it was local-only until spec-0.5.0 are gone.
+- Dependencies: datumesh-core 0.3.8, datumesh-formula 0.3.0, datumesh-store 0.4.1,
+  datumesh-engine 0.4.2, datumesh-http 0.2.2.
+
 ## 0.2.0 (2026-11-13)
 
 Released as 0.2.0, not 0.1.2: the gate's public API changes (`LicenceGate::new(&[String])`, `open()` and `permits(&str, &str) -> bool` replaced), which is breaking for a 0.1.x crate (the user's decision, 2026-11-13).
