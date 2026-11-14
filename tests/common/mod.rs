@@ -182,3 +182,153 @@ pub fn receipt(body: &[u8]) -> Value {
 pub fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
+
+// ---------------------------------------------------------------------------------------------
+// The classes world (spec-0.5.0, section 16), modelled on the live check of the test mesh:
+//
+// * `scripture/verse`: keys `corpus`, `book`, `chapter`, `verse`, all `none`; methods `text`
+//   (stored, a blob, with an `edition` argument) and `consonantal` (a formula over `text`);
+// * `ecb/fx_pair`: keys `base`, `quote`, `none`; methods `rate` (stored) and `cross` (a formula
+//   whose `date` has `"default": "asof"`);
+// * `ecb/fx_named`: like `fx_pair`, with a `lookup` method `named` (label to key, 16.7).
+//
+// `tests/data/classes-functions.jsonl` holds the method functions (bound at `CLASSES_BIND`), the
+// classes are bound at `CLASSES_AT` (their descriptors name the functions' hashes, so the class
+// lines are written here), `tests/data/classes-cells.jsonl` the cells (at `TV`).
+
+pub const CLASSES_BIND: &str = "2026-02-01T00:00:00.000000Z";
+pub const CLASSES_AT: &str = "2026-02-02T00:00:00.000000Z";
+/// The tx of every stored cell of the classes world.
+pub const TV: &str = "2026-03-02T16:00:00.000000Z";
+/// An asof after the cells.
+pub const ASOF: &str = "2026-03-02T18:00:00.000000Z";
+/// The date of the world's FX cells.
+pub const DAY: &str = "2026-03-02";
+pub const VERSE_CLASS: &str = "mesh-test.datumesh.com/scripture/verse";
+pub const PAIR_CLASS: &str = "mesh-test.datumesh.com/ecb/fx_pair";
+pub const NAMED_CLASS: &str = "mesh-test.datumesh.com/ecb/fx_named";
+
+fn class_line(name: &str, keys: &str, order: &[&str], methods: &[(&str, String)], lookup: Option<&str>) -> Value {
+    let ms: Vec<String> = methods.iter().map(|(m, h)| format!("\"{m}\":\"{h}\"")).collect();
+    let os: Vec<String> = order.iter().map(|o| format!("\"{o}\"")).collect();
+    let lk = lookup.map(|l| format!("\"lookup\":\"{l}\",")).unwrap_or_default();
+    let descriptor = format!(
+        r#"{{"keys":{keys},"methods":{{{}}},{lk}"order":[{}],"steward":{{"namespace":"{HOST}","process":"https://{HOST}/classes/change"}}}}"#,
+        ms.join(","),
+        os.join(",")
+    );
+    Value::Object(vec![
+        ("bound".into(), Value::String(CLASSES_AT.into())),
+        ("class".into(), Value::String(name.into())),
+        ("descriptor".into(), json::parse(descriptor.as_bytes()).unwrap()),
+    ])
+}
+
+/// The upstream with the classes world published: the method functions, the classes, the cells.
+pub fn upstream_classes() -> Upstream {
+    let up = upstream();
+    let key = upstream_key();
+    datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &data("classes-functions.jsonl")).unwrap();
+    let hash = |name: &str| -> String {
+        up.store.resolve_name(name, END).unwrap().unwrap_or_else(|| panic!("{name} unbound"))
+    };
+    let none_str = r#"{"key_normalisation":"none","type":"string"}"#;
+    let pair_keys = format!(r#"{{"base":{none_str},"quote":{none_str}}}"#);
+    let verse_keys = format!(
+        r#"{{"book":{none_str},"chapter":{{"type":"number","unit":"1"}},"corpus":{none_str},"verse":{{"type":"number","unit":"1"}}}}"#
+    );
+    let lines = [
+        class_line(
+            VERSE_CLASS,
+            &verse_keys,
+            &["corpus", "book", "chapter", "verse"],
+            &[
+                ("consonantal", hash(&format!("{VERSE_CLASS}/consonantal"))),
+                ("text", hash(&format!("{VERSE_CLASS}/text"))),
+            ],
+            None,
+        ),
+        class_line(
+            PAIR_CLASS,
+            &pair_keys,
+            &["base", "quote"],
+            &[("cross", hash(&format!("{PAIR_CLASS}/cross"))), ("rate", hash(&format!("{PAIR_CLASS}/rate")))],
+            None,
+        ),
+        class_line(
+            NAMED_CLASS,
+            &pair_keys,
+            &["base", "quote"],
+            &[("named", hash(&format!("{NAMED_CLASS}/named"))), ("rate", hash(&format!("{NAMED_CLASS}/rate")))],
+            Some("named"),
+        ),
+    ];
+    let dir = TempDir::new("classes");
+    let path = dir.path().join("classes.jsonl");
+    let text: String = lines.iter().map(|l| String::from_utf8(l.to_jcs()).unwrap() + "\n").collect();
+    std::fs::write(&path, text).unwrap();
+    let p = datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &path).unwrap();
+    assert_eq!(p.classes, 3);
+    datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &data("classes-cells.jsonl")).unwrap();
+    up.mesh.clear_memo();
+    up
+}
+
+/// The class descriptors the upstream's store holds, by name, and the descriptors of their
+/// methods' functions: what a client of the mesh holds for core's describe check.
+pub fn held_classes(
+    up: &Upstream,
+) -> (std::collections::BTreeMap<String, datumesh_core::ClassDescriptor>, Vec<datumesh_core::FunctionDescriptor>) {
+    let mut held = std::collections::BTreeMap::new();
+    let mut functions = Vec::new();
+    for name in [VERSE_CLASS, PAIR_CLASS, NAMED_CLASS] {
+        let b = up.store.resolve_class_binding(name, END).unwrap().expect("a bound class");
+        let bytes = up.store.class(&b.class_hash).unwrap().expect("a stored class");
+        let c = datumesh_core::ClassDescriptor::from_json(&bytes).unwrap();
+        for h in c.methods.values() {
+            functions.push(datumesh_core::FunctionDescriptor::from_json(&up.store.descriptor(h).unwrap()).unwrap());
+        }
+        held.insert(name.to_string(), c);
+    }
+    (held, functions)
+}
+
+pub const ALIASES_TX: &str = "2026-11-10T00:00:00.000000Z";
+
+/// A resolver as `resolver`, with the alias map's file replaced by one that also has the bare
+/// name `xcross` (the pair's `cross` method function) and a `tx` of `ALIASES_TX`.
+pub fn resolver_with_aliases(dir: &TempDir, upstream: &Upstream) -> Resolver {
+    let c = config(dir, upstream);
+    std::fs::write(
+        &c.aliases_file,
+        format!(
+            r#"{{"ecb/": "{HOST}/ecb/", "local/": "local.invalid/", "scripture/": "{HOST}/scripture/", "tx": "{ALIASES_TX}", "xcross": "{PAIR_CLASS}/cross"}}"#
+        ),
+    )
+    .unwrap();
+    Resolver::open(c).unwrap()
+}
+
+/// The envelope of `body` without its `resolved` member (the one thing a method call's answer has
+/// that the plain read's has not).
+pub fn without_resolved(body: &[u8]) -> Value {
+    match envelope(body) {
+        Value::Object(m) => Value::Object(m.into_iter().filter(|(k, _)| k != "resolved").collect()),
+        other => other,
+    }
+}
+
+/// Today's date in UTC, from the system clock.
+pub fn today() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let z = secs.div_euclid(86400) + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}

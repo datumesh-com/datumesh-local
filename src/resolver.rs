@@ -528,6 +528,23 @@ impl Resolver {
         self.bind(&name, &d.canonical(), &d.hash(), &now)
     }
 
+    /// Defines a class from a descriptor (JSON, as an author writes it, 16.1) as `name`, under
+    /// `local/` only (owner `local.invalid`): `define_class`, `put_class`, `bind_class` from now.
+    /// [`Defined::fn_hash`] is the class hash. Since spec-0.5.0 (CONTRACT-local-0.5.0 item 5).
+    pub fn define_class(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
+        let _ = (name, descriptor);
+        todo!("spec-0.5.0: local classes")
+    }
+
+    /// describe (SPEC 16.8): `id` is a class name, a cell id, an object id, a short id or an
+    /// object's key encoding. Answered from local classes when the local store holds the class,
+    /// else by the forward mesh's describe endpoint; the answer is checked with core's
+    /// `check_describe_with` against the descriptors held. Since spec-0.5.0.
+    pub fn describe(&self, id: &str) -> Result<Reply, Error> {
+        let _ = id;
+        todo!("spec-0.5.0: describe")
+    }
+
     fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
         let s = &self.shared;
         if !datumesh_formula::names::is_function_name(name) {
