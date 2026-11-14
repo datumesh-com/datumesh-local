@@ -12,6 +12,7 @@
 //! | `answered` | receipts this machine signed and answered with (for export) |
 //! | `quarantine` | imported receipts signed by another machine's local key, not trusted |
 //! | `trusted` | other machines' local keys trusted with `import --trust-key`: their key entries |
+//! | `objects` | objects this machine described by key encoding (16.8), by object id: a short id answers from them |
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS forwarded (rest TEXT PRIMARY KEY, mesh TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS answered (receipt TEXT PRIMARY KEY, cell_id TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quarantine (receipt TEXT PRIMARY KEY, key_id TEXT NOT NULL, bytes BLOB NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS trusted (key_id TEXT PRIMARY KEY, entry TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS objects (object_id TEXT PRIMARY KEY, encoding TEXT NOT NULL, at TEXT NOT NULL);
 ";
 
 /// A forwarded answer as cached.
@@ -86,6 +88,29 @@ impl Index {
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, Error> {
         let c = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&c).map_err(e)
+    }
+
+    /// Records an object described by its key encoding, by its object id.
+    pub(crate) fn hold_object(&self, object_id: &str, encoding: &str, at: &str) -> Result<(), Error> {
+        self.with(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO objects (object_id, encoding, at) VALUES (?1, ?2, ?3)",
+                params![object_id, encoding, at],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// The key encodings of the described objects whose object id starts with `prefix` (an object
+    /// id, or a short id).
+    pub(crate) fn objects_with(&self, prefix: &str) -> Result<Vec<String>, Error> {
+        self.with(|c| {
+            let mut s = c.prepare(
+                "SELECT DISTINCT encoding FROM objects WHERE substr(object_id, 1, length(?1)) = ?1 ORDER BY encoding",
+            )?;
+            let rows = s.query_map(params![prefix], |r| r.get(0))?;
+            rows.collect()
+        })
     }
 
     /// Records a held name.

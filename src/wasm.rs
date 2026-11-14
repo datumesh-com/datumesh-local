@@ -111,15 +111,16 @@ pub fn parse_call(text: &str, env: &str) -> String {
             if let Some(h) = &r.fn_hash {
                 reference.push(("fn_hash".into(), s(h)));
             }
-            String::from_utf8_lossy(
-                &Value::Object(vec![
-                    ("ok".into(), Value::Bool(true)),
-                    ("reference".into(), Value::Object(reference)),
-                    ("uri".into(), s(&call.uri())),
-                ])
-                .to_jcs(),
-            )
-            .into_owned()
+            let mut members = vec![
+                ("ok".to_string(), Value::Bool(true)),
+                ("reference".into(), Value::Object(reference)),
+                ("uri".into(), s(&call.uri())),
+            ];
+            // What the call resolved (5.5, 16.7), when it did: an alias, a method, a default or a lookup.
+            if let Some(member) = call.resolved.as_ref().and_then(crate::resolved_member) {
+                members.push(("resolved".into(), member));
+            }
+            String::from_utf8_lossy(&Value::Object(members).to_jcs()).into_owned()
         }
         Err(e) => failure(e.code(), &e.to_string()),
     }

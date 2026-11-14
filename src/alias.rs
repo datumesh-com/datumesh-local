@@ -100,6 +100,30 @@ impl AliasMap {
         }
     }
 
+    /// A request with its callee's prefix entry expanded (`ecb/fx_pair(...)`, the `ecb/` entry), and
+    /// nothing else: a bare name is left to the call's own alias resolution, which the answer records
+    /// (16.7), and a `cell://` URI is as it is.
+    pub(crate) fn expand_prefix(&self, text: &str) -> String {
+        let t = text.trim();
+        if t.starts_with("cell://") {
+            return t.to_string();
+        }
+        let end = t.find(['(', '@', '?', '[']).unwrap_or(t.len());
+        let head = t[..end].trim_end();
+        if !head.contains('/') || is_full(head) {
+            return t.to_string();
+        }
+        let best = self
+            .entries
+            .iter()
+            .filter(|(k, _)| k.ends_with('/') && head.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len());
+        match best {
+            Some((k, v)) => format!("{v}{}{}", &head[k.len()..], &t[head.len()..]),
+            None => t.to_string(),
+        }
+    }
+
     /// A request (a call `name(args)`, `name@<hash>(args)`, a slice, or a function name) with
     /// its name expanded; a `cell://` URI as it is.
     pub fn expand_request(&self, text: &str) -> String {

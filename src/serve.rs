@@ -3,12 +3,10 @@
 //! there fetches, gates and forwards as the CLI does). Links in the mesh document and in
 //! answers are `http://127.0.0.1:<port>/...`.
 //!
-//! **The mesh document served here is local-only.** Its endpoint URLs are
-//! `http://127.0.0.1:<port>/...`, which spec-0.4.3 (9.6) does not allow: a mesh document's
-//! URLs are `https://`. A client checking it under spec-0.4.3 refuses it, and it is not
-//! valid anywhere but on this machine until spec-0.4.4, which is to say: "for an unrooted host
-//! (a name under .invalid), mesh-document URLs and poll may be http:// on a loopback address
-//! only (`127.0.0.1`, `[::1]`, `localhost`); rooted hosts stay https-only". The links the mesh's
+//! The mesh document served here is the unrooted host's, on the loopback origin: its endpoint
+//! URLs are `http://127.0.0.1:<port>/...`, which spec-0.5.0 allows for an unrooted host (a name
+//! under .invalid) on a loopback address only (`127.0.0.1`, `[::1]`, `localhost`); rooted hosts
+//! stay https-only. `/describe/{id}` is answered by [`Resolver::describe`] (16.8). The links the mesh's
 //! handlers put in answers (a job's `poll`, a slice page's `next`, the `Link: rel="canonical"`
 //! header) point at `https://local.invalid/...` and cannot be followed: `.invalid` never
 //! resolves.
@@ -64,20 +62,42 @@ pub(crate) fn oneshot(mesh: &Mesh, path: &str) -> Result<(u16, Vec<u8>), Error> 
 
 /// The endpoint's router: the mesh's handlers, `/cell` through the resolver.
 pub fn router(resolver: Arc<Resolver>) -> Router {
-    resolver.mesh().router().layer(axum::middleware::from_fn_with_state(resolver, cell))
+    resolver
+        .mesh()
+        .router()
+        .layer(axum::middleware::from_fn_with_state(resolver.clone(), describe))
+        .layer(axum::middleware::from_fn_with_state(resolver, cell))
 }
 
+/// `/cell/{rest}`: the answer through the resolver (fetch, gate, forward).
 async fn cell(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
     if req.method() != axum::http::Method::GET || !path.starts_with("/cell/") {
         return next.run(req).await;
     }
-    let mut rest = path["/cell/".len()..].to_string();
+    // The request is percent-encoded as a URL path carries it: decoded once, as a request is written.
+    let mut rest = percent_decode(&path["/cell/".len()..]);
     if let Some(q) = req.uri().query() {
         rest.push('?');
-        rest.push_str(q);
+        rest.push_str(&percent_decode(q));
     }
     let answer = tokio::task::spawn_blocking(move || r.get(&rest)).await;
+    answer_response(answer)
+}
+
+/// `/describe/{id}` (16.8): the describe answer through the resolver (local classes, else forwarded).
+async fn describe(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if req.method() != axum::http::Method::GET || !path.starts_with("/describe/") {
+        return next.run(req).await;
+    }
+    let id = percent_decode(&path["/describe/".len()..]);
+    let answer = tokio::task::spawn_blocking(move || r.describe(&id)).await;
+    answer_response(answer)
+}
+
+/// An answer as the endpoint serves it: its status, its envelope, and its headers.
+fn answer_response(answer: Result<Result<crate::Reply, Error>, tokio::task::JoinError>) -> Response {
     match answer {
         Ok(Ok(reply)) => {
             let mut resp =
@@ -97,6 +117,25 @@ async fn cell(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> Respo
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// The bytes of a percent-encoded path segment (a `%XX` is one byte; anything else is as it is).
+fn percent_decode(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The endpoint, bound.

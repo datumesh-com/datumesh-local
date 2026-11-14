@@ -1,5 +1,6 @@
 //! The resolver: answers, definitions, prefetch and refresh, verification.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +13,7 @@ use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_store::{SqliteStore, Store};
 
 use crate::alias::AliasMap;
+use crate::classes::{with_resolved, Parse};
 use crate::config::Config;
 use crate::fetch::{self, host_of, name_of, network_failure, Gated, Shared, END};
 use crate::gate::{is_unrooted, LicenceGate};
@@ -56,12 +58,12 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn new(status: u16, body: Vec<u8>, source: Source) -> Reply {
+    pub(crate) fn new(status: u16, body: Vec<u8>, source: Source) -> Reply {
         Reply { status, body, source, label: None, detail: None }
     }
 
     /// [`crate::FOREIGN_UNAVAILABLE`], core's envelope.
-    fn unavailable(detail: String) -> Reply {
+    pub(crate) fn unavailable(detail: String) -> Reply {
         Reply {
             status: FOREIGN_UNAVAILABLE_STATUS,
             body: foreign_unavailable_envelope(kind_of(&detail)),
@@ -310,7 +312,7 @@ impl Resolver {
         });
     }
 
-    fn mesh_reply(&self, r: datumesh_http::envelope::Reply, source: Source) -> Reply {
+    pub(crate) fn mesh_reply(&self, r: datumesh_http::envelope::Reply, source: Source) -> Reply {
         let mut reply = Reply::new(r.status, r.body.to_vec(), source);
         self.label_of(&mut reply);
         reply
@@ -320,13 +322,30 @@ impl Resolver {
     /// `?asof=`), a cell URI, or the rest of one; short names expanded by the alias map. See
     /// the crate documentation for where answers come from.
     pub fn get(&self, request: &str) -> Result<Reply, Error> {
+        let text = self.aliases().expand_prefix(request);
+        match self.parse_request(&text) {
+            Parse::Call { rest, resolved, fetched } => {
+                let reply = self.answer(&rest, &Cell::new(fetched))?;
+                Ok(match resolved {
+                    Some(r) => with_resolved(reply, &r),
+                    None => reply,
+                })
+            }
+            Parse::Answered(reply) => Ok(reply),
+            // A call the parse refuses: the mesh's own answer to it, which needs no network.
+            Parse::Malformed => Ok(self.mesh_reply(self.mesh().cell(&text, None), Source::Local)),
+            Parse::Plain => self.answer(&self.aliases().expand_request(request), &Cell::new(false)),
+        }
+    }
+
+    /// The answer to a cell URI's rest (or a URI, `cell://`), fetching what it needs from its host
+    /// when it is not held (`fetched` notes that a fetch happened).
+    pub(crate) fn answer(&self, text: &str, fetched: &Cell<bool>) -> Result<Reply, Error> {
         let s = &self.shared;
-        let text = self.aliases().expand_request(request);
-        let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
+        let rest = text.strip_prefix("cell://").unwrap_or(text).to_string();
         let name = name_of(&rest).to_string();
         let host = host_of(&name).to_string();
         let mesh = self.mesh();
-        let mut fetched = false;
         let foreign = !is_unrooted(&host) && datumesh_formula::names::is_function_name(&name);
         if foreign {
             let pin = pin_of(&rest);
@@ -343,7 +362,7 @@ impl Resolver {
                     None => s.import_name(&name),
                 };
                 match r {
-                    Ok(_) => fetched = true,
+                    Ok(_) => fetched.set(true),
                     Err(e) => {
                         if let Some(why) = network_failure(&e) {
                             return Ok(Reply::unavailable(why));
@@ -395,13 +414,13 @@ impl Resolver {
                             });
                         }
                         mesh.stored_version_added(&id);
-                        fetched = true;
+                        fetched.set(true);
                     }
                     // The host's answer without a receipt (not_covered, unlicensed, ...).
                     None => return Ok(Reply::new(f.status, f.body, Source::Fetched)),
                 }
             }
-            let source = if fetched { Source::Fetched } else { Source::Local };
+            let source = if fetched.get() { Source::Fetched } else { Source::Local };
             return Ok(self.mesh_reply(mesh.cell(&rest, None), source));
         }
         // Evaluated here (or a local stored cell): foreign inputs fetched, inputs gated.
@@ -425,7 +444,7 @@ impl Resolver {
                 return Ok(Reply::error(e.code, rejection_detail(&e)));
             }
         }
-        let source = if fetched || !ctx.added.is_empty() { Source::Fetched } else { Source::Local };
+        let source = if fetched.get() || !ctx.added.is_empty() { Source::Fetched } else { Source::Local };
         let reply = self.mesh_reply(reply, source);
         if let Some(r) = reply.receipt() {
             if r.signer_host() == LOCAL_HOST && !r.inputs().is_empty() {
@@ -528,23 +547,6 @@ impl Resolver {
         self.bind(&name, &d.canonical(), &d.hash(), &now)
     }
 
-    /// Defines a class from a descriptor (JSON, as an author writes it, 16.1) as `name`, under
-    /// `local/` only (owner `local.invalid`): `define_class`, `put_class`, `bind_class` from now.
-    /// [`Defined::fn_hash`] is the class hash. Since spec-0.5.0 (CONTRACT-local-0.5.0 item 5).
-    pub fn define_class(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
-        let _ = (name, descriptor);
-        todo!("spec-0.5.0: local classes")
-    }
-
-    /// describe (SPEC 16.8): `id` is a class name, a cell id, an object id, a short id or an
-    /// object's key encoding. Answered from local classes when the local store holds the class,
-    /// else by the forward mesh's describe endpoint; the answer is checked with core's
-    /// `check_describe_with` against the descriptors held. Since spec-0.5.0.
-    pub fn describe(&self, id: &str) -> Result<Reply, Error> {
-        let _ = id;
-        todo!("spec-0.5.0: describe")
-    }
-
     fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
         let s = &self.shared;
         if !datumesh_formula::names::is_function_name(name) {
@@ -587,7 +589,7 @@ impl Resolver {
             let mut formula = None;
             for (k, x) in m.iter_mut() {
                 let full = match (k.as_str(), &*x) {
-                    ("function" | "formula", Value::String(n)) => Some(aliases.expand(n)),
+                    ("function" | "formula" | "class", Value::String(n)) => Some(aliases.expand(n)),
                     _ => None,
                 };
                 if let Some(full) = full {
@@ -596,7 +598,7 @@ impl Resolver {
                     }
                     if k == "formula" {
                         formula = Some(full.clone());
-                    } else {
+                    } else if k == "function" {
                         names.push(full.clone());
                     }
                     *x = Value::String(full);
@@ -695,8 +697,14 @@ impl Resolver {
 
     /// The lineage of a cell as nested envelopes (`/explain`, depth-bounded), from the store.
     pub fn explain(&self, request: &str, depth: Option<usize>) -> Result<Reply, Error> {
-        let text = self.aliases().expand_request(request);
-        let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
+        let rest = match self.parse_request(&self.aliases().expand_prefix(request)) {
+            Parse::Answered(reply) => return Ok(reply),
+            Parse::Call { rest, .. } => rest,
+            Parse::Malformed | Parse::Plain => {
+                let text = self.aliases().expand_request(request);
+                text.strip_prefix("cell://").unwrap_or(&text).to_string()
+            }
+        };
         let mut path = format!("/explain/{}", crate::serve::encode_path(&rest));
         if let Some(d) = depth {
             path.push(if rest.contains('?') { '&' } else { '?' });
@@ -1060,11 +1068,25 @@ fn check_rooting(name: &str, d: &FunctionDescriptor) -> Result<(), Error> {
 }
 
 /// Callees for a definition: the store's bindings, a foreign name fetched when not held.
-struct Callees<'a> {
-    shared: &'a Shared,
+pub(crate) struct Callees<'a> {
+    pub(crate) shared: &'a Shared,
 }
 
 impl datumesh_formula::definition::Callees for Callees<'_> {
+    fn class_descriptor(&self, class_hash: &str) -> Result<Option<datumesh_core::ClassDescriptor>, String> {
+        match self.shared.store.class(class_hash).map_err(|e| e.to_string())? {
+            Some(b) => datumesh_core::ClassDescriptor::from_json(&b).map(Some).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    fn function_descriptor(&self, fn_hash: &str) -> Result<Option<Value>, String> {
+        match self.shared.store.descriptor(fn_hash) {
+            Some(b) => json::parse(&b).map(Some).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    }
+
     fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
         let s = self.shared;
         let host = host_of(name);

@@ -6,7 +6,9 @@
 //!   define <name> --formula <source> --signature <json>
 //!   define <name> --stored --signature <json>
 //!   define <name> --descriptor <file>
+//!   define <name> --class <file>       a class (16.1), under local/ only
 //!   publish <file.jsonl>               define plus put_version, under local/ only
+//!   describe <id>                      a class, object, cell or short id (16.8), as the endpoint serves it
 //!   explain <request> [--depth <n>]    the lineage, as nested envelopes
 //!   find <text> [--remote]             names held (and, with --remote, the forward mesh's)
 //!   prefetch <slice or function>... [--page <n>] [--blobs]
@@ -18,12 +20,13 @@
 //!   key                                the machine id and this machine's key document (public)
 //! ```
 //!
-//! A request is a call (`name(arg: value, ...)`, short names from the alias map) or a cell
-//! URI. `get` writes each envelope exactly as the localhost endpoint serves it on stdout, and
-//! a line per answer on stderr: the outcome, where it came from, the signer and its label
-//! (`local, verifies only on this machine` for this machine's receipts). Exit status: 0 when
-//! every answer carries a receipt, 3 when one does not (`not_covered`, `error`, ...), 2 for a
-//! usage error, 1 for a failure. `--home` keeps configuration and data in one directory
+//! A request is a call (`name(arg: value, ...)`, `N(keys).m(args)`, `N[label]`, short names from the
+//! alias map) or a cell URI. `get` writes each envelope exactly as the localhost endpoint serves it on
+//! stdout, and a line per answer on stderr: the outcome, where it came from, the signer and its label
+//! (`local, verifies only on this machine` for this machine's receipts), and for a call the canonical
+//! call it resolved to. Exit status: 0 when every answer carries a receipt, 3 when one does not
+//! (`not_covered`, `error`, ...), 2 for a usage error, 1 for a failure. `describe` exits 0 for an
+//! answer (200), 3 for any other. `--home` keeps configuration and data in one directory
 //! (also `DATUMESH_HOME`); `--offline` (also `DATUMESH_OFFLINE=1`) fetches nothing.
 
 use std::io::Write;
@@ -34,10 +37,11 @@ use datumesh_core::json::{self, Value};
 
 use crate::{Config, Error, Resolver, Source};
 
-const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publish|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
+const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
   get <request>...
-  define <name> (--formula <source> | --stored | --descriptor <file>) [--signature <json>]
+  define <name> (--formula <source> | --stored | --descriptor <file> | --class <file>) [--signature <json>]
   publish <file.jsonl>
+  describe <id>
   explain <request> [--depth <n>]
   find <text> [--remote]
   prefetch <slice or function>... [--page <n>] [--blobs]
@@ -188,6 +192,11 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                     Source::Unavailable => "not held, not fetched".to_string(),
                 };
                 let mut line = format!("{} ({source})", reply.outcome().unwrap_or_default());
+                if let Some(call) = reply.envelope().and_then(|v| {
+                    v.get("resolved").and_then(|r| r.get("call")).and_then(Value::as_str).map(str::to_string)
+                }) {
+                    line.push_str(&format!("; as {call}"));
+                }
                 if let Some(rc) = receipt {
                     line.push_str(&format!("; signer {}", rc.computed_by()));
                 }
@@ -202,7 +211,7 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             Ok(code)
         }
         "define" => {
-            let a = Args::parse(rest, &["--formula", "--signature", "--descriptor"], &["--stored"])?;
+            let a = Args::parse(rest, &["--formula", "--signature", "--descriptor", "--class"], &["--stored"])?;
             let [name] = a.positional.as_slice() else {
                 return Err(Failure::Usage("define: one name".into()));
             };
@@ -216,8 +225,10 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 r.define_stored(name, &sig.ok_or_else(|| Failure::Usage("--stored needs --signature".into()))?)?
             } else if let Some(f) = a.value("--descriptor") {
                 r.define(name, &std::fs::read(f).map_err(io)?)?
+            } else if let Some(f) = a.value("--class") {
+                r.define_class(name, &std::fs::read(f).map_err(io)?)?
             } else {
-                return Err(Failure::Usage("define: --formula, --stored or --descriptor".into()));
+                return Err(Failure::Usage("define: --formula, --stored, --descriptor or --class".into()));
             };
             jline(
                 out,
@@ -244,6 +255,16 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 ]),
             )?;
             Ok(0)
+        }
+        "describe" => {
+            let a = Args::parse(rest, &[], &[])?;
+            let [id] = a.positional.as_slice() else {
+                return Err(Failure::Usage("describe: one id".into()));
+            };
+            let reply = r.describe(id)?;
+            out.write_all(&reply.body).map_err(io)?;
+            out.write_all(b"\n").map_err(io)?;
+            Ok(if reply.status == 200 { 0 } else { 3 })
         }
         "explain" => {
             let a = Args::parse(rest, &["--depth"], &[])?;
