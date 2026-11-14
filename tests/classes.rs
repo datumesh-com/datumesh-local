@@ -269,7 +269,10 @@ fn explain_takes_a_method_call() {
     assert_eq!(want.status, 200, "{}", String::from_utf8_lossy(&want.body));
     let m = r.explain(&method, Some(2)).unwrap();
     assert_eq!(m.status, 200, "{}", String::from_utf8_lossy(&m.body));
-    assert!(String::from_utf8_lossy(&m.body).contains(&format!("{PAIR_CLASS}/rate")));
+    // A receipt cell carries the namespace and the function name as separate members (SPEC 4.1):
+    // the method `rate` of the class, read as an input of `cross`.
+    let body = String::from_utf8_lossy(&m.body);
+    assert!(body.contains(r#""fn":"rate""#) && body.contains(&format!(r#""ns":"{PAIR_CLASS}""#)), "{body}");
     // The same lineage: the same receipts (the hashes of the cell and of its inputs).
     let hashes = |b: &[u8]| {
         let t = String::from_utf8_lossy(b).into_owned();
@@ -337,19 +340,24 @@ fn a_local_class_is_defined_and_called() {
     std::fs::write(
         &file,
         concat!(
-            r#"{"cell": {"fn": "local/pair/rate", "args": {"base": {"type": "string", "value": "EUR"}, "date": {"type": "date", "value": "2026-03-02"}, "quote": {"type": "string", "value": "USD"}}}, "value": {"type": "number", "value": "1.2"}, "tx": "2026-03-02T16:00:00.000000Z", "asof": "2026-03-02T16:00:00.000000Z", "licence": "CC0-1.0", "summary": "A rate."}"#,
+            r#"{"cell": {"fn": "local/pair/rate", "args": {"base": {"type": "string", "value": "EUR"}, "date": {"type": "date", "value": "2099-03-02"}, "quote": {"type": "string", "value": "USD"}}}, "value": {"type": "number", "value": "1.2"}, "tx": "2099-03-02T16:00:00.000000Z", "asof": "2099-03-02T16:00:00.000000Z", "licence": "CC0-1.0", "summary": "A rate."}"#,
             "\n"
         ),
     )
     .unwrap();
     r.publish(&file).unwrap();
-    let m = r.get("local/pair(EUR, USD).rate(2026-03-02)").unwrap();
+    let m = r.get("local/pair(EUR, USD).rate(2099-03-02)?asof=2099-03-03T00:00:00.000000Z").unwrap();
     assert_eq!(m.status, 200, "{}", String::from_utf8_lossy(&m.body));
-    let plain = r.get(r#"local/pair/rate(base: "EUR", quote: "USD", date: 2026-03-02)"#).unwrap();
+    let plain = r
+        .get(r#"local/pair/rate(base: "EUR", quote: "USD", date: 2099-03-02)?asof=2099-03-03T00:00:00.000000Z"#)
+        .unwrap();
     assert_eq!(receipt(&m.body).to_jcs(), receipt(&plain.body).to_jcs());
     assert_eq!(without_resolved(&m.body), without_resolved(&plain.body));
     let (c, rs, _) = resolved_of(&m.body);
-    assert_eq!(c, r#"local.invalid/pair/rate(base: "EUR", date: 2026-03-02, quote: "USD")"#);
+    assert_eq!(
+        c,
+        r#"local.invalid/pair/rate(base: "EUR", date: 2099-03-02, quote: "USD")?asof=2099-03-03T00:00:00.000000Z"#
+    );
     assert!(rs.iter().any(|x| x.1 == "method" && x.2 == "local.invalid/pair/rate"), "{rs:?}");
     // Not under local/: refused, and nothing is stored.
     let e = r.define_class("example.org/pair", local_class(&rate.fn_hash).as_bytes());
@@ -371,7 +379,7 @@ fn publish_accepts_class_lines() {
     std::fs::write(
         &file,
         format!(
-            r#"{{"class": "local/pair", "bound": "2026-03-01T00:00:00.000000Z", "descriptor": {descriptor}}}{}"#,
+            r#"{{"class": "local/pair", "bound": "2099-03-01T00:00:00.000000Z", "descriptor": {descriptor}}}{}"#,
             "\n"
         ),
     )
