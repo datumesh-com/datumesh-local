@@ -138,19 +138,24 @@ fn a_local_function_over_local_inputs() {
             "\n",
             r#"{"formula": "local/shout", "bound": "2026-11-03T00:00:00.000000Z", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}, "source": "upper(local.invalid/note(k: k))"}"#,
             "\n",
-            r#"{"formula": "local/answer", "bound": "2026-11-03T00:00:00.000000Z", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}, "source": "\"forty-two\""}"#,
-            "\n"
         ),
     )
     .unwrap();
     r.publish(&file).unwrap();
+    // A formula with no inputs is refused (1.8b item 10), in publish as in define.
+    let answer = dir.path().join("answer.jsonl");
+    std::fs::write(
+        &answer,
+        concat!(
+            r#"{"formula": "local/answer", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}, "source": "\"forty-two\""}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    assert!(matches!(r.publish(&answer), Err(datumesh_local::Error::NoInputs { .. })));
     // Over a local CC0-1.0 cell: CC0-1.0, signed here.
     let a = r.get(r#"local/shout(k: "a")"#).unwrap();
     assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));
     assert_eq!(s(&receipt(&a.body), "licence"), "CC0-1.0");
-    // No inputs: the mesh's own licence, this resolver's configured one.
-    let b = r.get(r#"local/answer(k: "a")"#).unwrap();
-    assert_eq!(b.status, 200, "{}", String::from_utf8_lossy(&b.body));
-    assert_eq!(s(&receipt(&b.body), "licence"), r.config().licence);
     let _ = Value::Null;
 }

@@ -224,10 +224,12 @@ fn define_of_a_rooted_function_over_an_unrooted_input_is_refused() {
 fn publish_two_stored_cells_under_local() {
     let up = upstream();
     let dir = TempDir::new("mcp-publish");
-    let srv = server(&up, &dir);
+    // Rule A: the function binds at the resolver's now, so the cells' tx is that instant (or later).
+    let clock = ManualClock::new("2026-11-15T12:00:00.000000Z");
+    let srv = McpServer::new(Arc::new(resolver_at(&dir, &up, &clock)));
     let cell = |day: &str, n: &str| {
         format!(
-            r#"{{"cell":{{"fn":"local/level","args":{{"day":{{"type":"date","value":"{day}"}}}}}},"value":{{"type":"number","value":"{n}"}},"tx":"2026-11-02T00:00:00.000000Z","asof":"2026-11-02T00:00:00.000000Z","licence":"CC0-1.0","summary":"A level."}}"#
+            r#"{{"cell":{{"fn":"local/level","args":{{"day":{{"type":"date","value":"{day}"}}}}}},"value":{{"type":"number","value":"{n}"}},"tx":"2026-11-15T12:00:00.000000Z","asof":"2026-11-02T00:00:00.000000Z","licence":"CC0-1.0","summary":"A level."}}"#
         )
     };
     let lines = format!(
