@@ -95,3 +95,74 @@ fn serve_answers_with_the_mesh_handlers_over_the_local_store() {
     let _ = tx.send(());
     rt.block_on(handle).unwrap().unwrap();
 }
+
+// ---------------------------------------------------------------------------------------------
+// CONTRACT-1.8b L7: links in answers served on 127.0.0.1.
+
+/// Runs `f` against a server over `r`'s store, then stops it.
+fn serving(r: Arc<datumesh_local::Resolver>, f: impl FnOnce(SocketAddr)) {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let server = rt.block_on(Server::bind(r, "127.0.0.1:0".parse().unwrap())).unwrap();
+    let addr = server.local_addr();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = rt.spawn(server.run(async {
+        let _ = rx.await;
+    }));
+    f(addr);
+    let _ = tx.send(());
+    rt.block_on(handle).unwrap().unwrap();
+}
+
+#[test]
+fn a_slice_page_s_next_is_on_the_loopback_origin() {
+    let up = upstream();
+    let dir = TempDir::new("serve-next");
+    let r = Arc::new(resolver(&dir, &up));
+    r.prefetch(FX_SLICE, None, false).unwrap();
+    serving(r, |addr| {
+        let (status, _, body) = get(addr, &format!("/slice/{}?limit=1", encode_path(FX_SLICE)));
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        let page = json::parse(&body).unwrap();
+        let next = page.get("next").and_then(Value::as_str).unwrap_or_else(|| panic!("no next in {page:?}"));
+        assert!(next.starts_with(&format!("http://127.0.0.1:{}/", addr.port())), "{next}");
+    });
+}
+
+#[test]
+fn the_canonical_link_stays_on_https_by_name_without_a_port() {
+    let up = upstream();
+    let dir = TempDir::new("serve-link");
+    let r = Arc::new(resolver(&dir, &up));
+    r.define_formula(
+        "local/closed",
+        r#"mesh-test.datumesh.com/ecb/holiday(calendar: "TARGET", date: date)"#,
+        &json::parse(
+            br#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": "boolean"}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    serving(r, |addr| {
+        for call in [USD, "local/closed(date: 2026-12-25)"] {
+            let (status, h, body) = get(addr, &format!("/cell/{}", encode_path(call)));
+            assert_eq!(status, 200, "{call}: {}", String::from_utf8_lossy(&body));
+            let link = header(&h, "link").unwrap_or_else(|| panic!("{call}: no Link header in {h:?}"));
+            assert!(link.contains(r#"rel="canonical""#), "{link}");
+            let url = link.trim_start_matches('<').split('>').next().unwrap();
+            assert!(
+                url.starts_with("https://local.invalid/") || url.starts_with("https://mesh-test.datumesh.com/"),
+                "{url}"
+            );
+            let authority = url["https://".len()..].split('/').next().unwrap();
+            assert!(!authority.contains(':'), "a port in {url}");
+        }
+    });
+}
+
+#[test]
+fn a_pending_poll_link_is_rewritten_to_the_loopback_origin() {
+    assert_eq!(
+        datumesh_local::serve::loopback_link("http://127.0.0.1:7733", "https://local.invalid/jobs/abc"),
+        "http://127.0.0.1:7733/jobs/abc"
+    );
+}

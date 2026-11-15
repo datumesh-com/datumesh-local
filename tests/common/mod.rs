@@ -10,10 +10,12 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::SigningKey;
+use datumesh_engine::Clock;
+use datumesh_http::publish::{publish_stored_with, PublishOptions};
 use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_local::{Config, Resolver};
 use datumesh_store::{SqliteStore, Store};
@@ -30,6 +32,35 @@ pub const GBP: &str = r#"ecb/fx_rate(base: "EUR", quote: "GBP", date: 2026-10-29
 pub const CHRISTMAS: &str = r#"ecb/holiday(calendar: "TARGET", date: 2026-12-25)"#;
 pub const VERSE: &str = r#"scripture/verse_text(corpus: "quran", book: "1", chapter: 1, verse: 2, edition: "uthmani")"#;
 pub const FX_SLICE: &str = "mesh-test.datumesh.com/ecb/fx_rate(base: *, quote: *, date: *)";
+
+/// A clock that says what it was last told (CONTRACT-1.8b L4: clock-controlled resolvers).
+pub struct ManualClock(Mutex<String>);
+
+impl ManualClock {
+    pub fn new(now: &str) -> Arc<ManualClock> {
+        Arc::new(ManualClock(Mutex::new(now.to_string())))
+    }
+    pub fn set(&self, now: &str) {
+        *self.0.lock().unwrap() = now.to_string();
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> String {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// The upstream's publishing options: the clock is `KEY_FROM`, so the seeds' historical
+/// starts are not earlier than the mesh clock (rule A, CONTRACT-1.8b shared rules).
+pub fn seed_options() -> PublishOptions {
+    PublishOptions { clock: Arc::new(ManualClock(Mutex::new(KEY_FROM.to_string()))), backfill: None }
+}
+
+/// Publishes the file at `path` into `store` as the test mesh, with a clock of `KEY_FROM`.
+pub fn publish_seed(store: &(dyn Store + Send + Sync), path: &Path) {
+    publish_stored_with(store, &upstream_key(), HOST, &[HOST.to_string()], path, &seed_options()).unwrap();
+}
 
 /// A directory removed when dropped.
 pub struct TempDir(pub PathBuf);
@@ -87,13 +118,54 @@ impl Upstream {
         let path = dir.path().join("more.jsonl");
         let text: String = lines.iter().map(|l| String::from_utf8(l.to_jcs()).unwrap() + "\n").collect();
         std::fs::write(&path, text).unwrap();
-        datumesh_http::publish::publish_stored(&*self.store, &upstream_key(), HOST, &path).unwrap();
+        publish_seed(&*self.store, &path);
         self.mesh.clear_memo();
     }
 }
 
 /// Starts the upstream; `slice_page` is its default slice page size.
 pub fn upstream_with(slice_page: usize) -> Upstream {
+    build_upstream(slice_page, false)
+}
+
+/// An upstream whose `/cell` answers carry a receipt `value` changed after signing (L3 test 2).
+pub fn upstream_tampering() -> Upstream {
+    build_upstream(1000, true)
+}
+
+fn tampered(body: &[u8]) -> Vec<u8> {
+    match json::parse(body) {
+        Ok(Value::Object(mut m)) => {
+            for (k, v) in m.iter_mut() {
+                if k == "receipt" {
+                    if let Value::Object(r) = v {
+                        for (k2, v2) in r.iter_mut() {
+                            if k2 == "value" {
+                                *v2 = Value::String("9.9".into());
+                            }
+                        }
+                    }
+                }
+            }
+            Value::Object(m).to_jcs()
+        }
+        _ => body.to_vec(),
+    }
+}
+
+async fn tamper_cell(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let is_cell = req.uri().path().starts_with("/cell/");
+    let res = next.run(req).await;
+    if !is_cell || res.status() != axum::http::StatusCode::OK {
+        return res;
+    }
+    let (mut parts, body) = res.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    axum::response::Response::from_parts(parts, axum::body::Body::from(tampered(&bytes)))
+}
+
+fn build_upstream(slice_page: usize, tamper: bool) -> Upstream {
     let dir = TempDir::new("upstream");
     // UPSTREAM_DATABASE_URL: the upstream on PostgreSQL, as the test mesh runs (an empty
     // database of its own, made by the caller, for one test: tools/refresh_pg.sh); else on
@@ -132,8 +204,8 @@ pub fn upstream_with(slice_page: usize) -> Upstream {
     )
     .unwrap();
     store.put_namespace(HOST, &doc, KEY_FROM).unwrap();
-    datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("ecb.jsonl")).unwrap();
-    datumesh_http::publish::publish_stored(&*store, &upstream_key(), HOST, &data("scripture.jsonl")).unwrap();
+    publish_seed(&*store, &data("ecb.jsonl"));
+    publish_seed(&*store, &data("scripture.jsonl"));
     let mut config = MeshConfig::new(HOST);
     config.rate.enabled = false;
     config.cross_mesh = false;
@@ -144,12 +216,15 @@ pub fn upstream_with(slice_page: usize) -> Upstream {
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicU64::new(0));
     let counted = requests.clone();
-    let router = mesh.router().layer(axum::middleware::from_fn(
-        move |req: axum::extract::Request, next: axum::middleware::Next| {
+    let mut router = mesh.router();
+    if tamper {
+        router = router.layer(axum::middleware::from_fn(tamper_cell));
+    }
+    let router =
+        router.layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
             counted.fetch_add(1, Ordering::SeqCst);
             next.run(req)
-        },
-    ));
+        }));
     rt.spawn(async move {
         axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
     });
@@ -169,6 +244,20 @@ pub fn config(dir: &TempDir, upstream: &Upstream) -> Config {
 
 pub fn resolver(dir: &TempDir, upstream: &Upstream) -> Resolver {
     Resolver::open(config(dir, upstream)).unwrap()
+}
+
+/// A resolver on `clock` (every "now" it uses), reaching `upstream` for the test mesh.
+pub fn resolver_at(dir: &TempDir, upstream: &Upstream, clock: &Arc<ManualClock>) -> Resolver {
+    Resolver::open_with_clock(config(dir, upstream), clock.clone()).unwrap()
+}
+
+/// A second machine: its own directory, config host `laptop.invalid`, on `clock`.
+pub const LAPTOP: &str = "laptop.invalid";
+
+pub fn laptop_at(dir: &TempDir, upstream: &Upstream, clock: &Arc<ManualClock>) -> Resolver {
+    let mut c = config(dir, upstream);
+    c.host = LAPTOP.to_string();
+    Resolver::open_with_clock(c, clock.clone()).unwrap()
 }
 
 pub fn envelope(body: &[u8]) -> Value {
@@ -228,7 +317,7 @@ fn class_line(name: &str, keys: &str, order: &[&str], methods: &[(&str, String)]
 pub fn upstream_classes() -> Upstream {
     let up = upstream();
     let key = upstream_key();
-    datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &data("classes-functions.jsonl")).unwrap();
+    publish_seed(&*up.store, &data("classes-functions.jsonl"));
     let hash = |name: &str| -> String {
         up.store.resolve_name(name, END).unwrap().unwrap_or_else(|| panic!("{name} unbound"))
     };
@@ -267,9 +356,9 @@ pub fn upstream_classes() -> Upstream {
     let path = dir.path().join("classes.jsonl");
     let text: String = lines.iter().map(|l| String::from_utf8(l.to_jcs()).unwrap() + "\n").collect();
     std::fs::write(&path, text).unwrap();
-    let p = datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &path).unwrap();
+    let p = publish_stored_with(&*up.store, &key, HOST, &[HOST.to_string()], &path, &seed_options()).unwrap();
     assert_eq!(p.classes, 3);
-    datumesh_http::publish::publish_stored(&*up.store, &key, HOST, &data("classes-cells.jsonl")).unwrap();
+    publish_seed(&*up.store, &data("classes-cells.jsonl"));
     up.mesh.clear_memo();
     up
 }
@@ -331,4 +420,65 @@ pub fn today() -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The id of the cell `<ns>/<fn_name>` (hash `fn_hash`) with `args` (the JSON object text of its
+/// arguments, in canonical form).
+pub fn cell_id_of(ns: &str, fn_name: &str, fn_hash: &str, args: &str) -> String {
+    let text = format!(r#"{{"args":{args},"fn":"{fn_name}","fn_hash":"{fn_hash}","ns":"{ns}"}}"#);
+    datumesh_core::Cell::from_json(text.as_bytes()).unwrap().id()
+}
+
+/// The key document the upstream holds for itself, as a resolver fetches it.
+pub fn upstream_keys(up: &Upstream) -> datumesh_core::Keys {
+    let doc = up.store.namespace(HOST).unwrap().unwrap().keydoc;
+    let mut keys = datumesh_core::Keys::new();
+    keys.insert_response(HOST, 200, Some(&doc));
+    keys
+}
+
+/// The full JSON of a receipt (its payload and its `sig`), as the mesh serves it.
+pub fn receipt_bytes(r: &datumesh_core::Receipt) -> Vec<u8> {
+    let Value::Object(mut m) = json::parse(r.payload()).unwrap() else { panic!("a receipt payload is an object") };
+    m.push(("sig".to_string(), Value::String(r.sig().to_string())));
+    m.sort_by(|a, b| a.0.cmp(&b.0));
+    Value::Object(m).to_jcs()
+}
+
+/// The file's permission bits (unix; 0o600 elsewhere, where there are none to check).
+pub fn mode_of(path: &Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        0o600
+    }
+}
+
+/// The 32 bytes of a lowercase hex seed.
+pub fn seed_of(hex: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+    }
+    out
+}
+
+/// The `keys` of a key document.
+pub fn key_entries_of(doc: &[u8]) -> Vec<Value> {
+    match json::parse(doc).unwrap().get("keys") {
+        Some(Value::Array(k)) => k.clone(),
+        other => panic!("no keys in the key document: {other:?}"),
+    }
+}
+
+/// A file with `lines` as JSON lines, for `Resolver::publish`.
+pub fn jsonl(dir: &TempDir, name: &str, lines: &[&str]) -> PathBuf {
+    let path = dir.path().join(name);
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
 }
