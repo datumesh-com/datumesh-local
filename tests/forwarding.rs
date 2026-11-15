@@ -75,6 +75,8 @@ fn there_is_no_local_derivation_without_a_declaration() {
     let up = upstream();
     let dir = TempDir::new("fwd-nok-twice");
     let r = resolver(&dir, &up);
+    // The forwarded, mesh-signed answer is held first: the derivation is from a held restricted receipt.
+    assert_eq!(r.get(NOK_FULL).unwrap().status, 200);
     let sig = json::parse(
         br#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": {"of": "NOK", "per": "USD"}}}"#,
     )
