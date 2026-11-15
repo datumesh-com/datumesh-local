@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+CONTRACT-1.8b items 3, 7 and 8 and difference 1.
+
+- Forwarding and holding (L3): a local name that reads a declared restricted computation without a
+  declaration of its own is refused with `unlicensed` (403) here, not forwarded to the mesh.
+- Alias map (L6): the file is `{"entries": [{"short", "full", "tx"}, ...]}`; each entry takes
+  effect at its `tx`, and a request is resolved at its asof (`?asof=`, else now). `resolved`
+  carries `aliases_tx`, the greatest `tx` of the entries that applied. The older shape
+  `{<short>: <full>, ..., "tx": T}` is still read. A prefix alias in a formula source (`@ecb/...`)
+  is expanded before the definition, so the hash equals that of the full name. A bare name for a
+  class outside `datumesh.com/std/` is refused with a local error.
+- Serve (L7): the `poll` and `next` links of this machine's host are on the loopback origin
+  (`http://127.0.0.1:<port>/...`); `Link: rel="canonical"` stays `https://<host>/...`, and the
+  endpoint now sends it on answers about now.
+- Defaults: the default alias map's `tx` is 2026-01-01.
+
 ## 0.2.2 (2026-11-14)
 
 The first published release for spec-0.5.0: 0.2.1, below, with one fix. The tag `v0.2.1` was

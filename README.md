@@ -168,9 +168,33 @@ the data directory (`$XDG_DATA_HOME/datumesh` on Linux). Members: `allowlist` (d
 `store`, `key_file`, `aliases_file`. `open_licences`, the open list of 0.1.0 and 0.1.1, is
 deprecated: still accepted, ignored (the gate needs no configuration).
 
-The alias map (`aliases.json`) is a file, read at start and by `refresh`: one JSON object
-mapping short names and prefixes to full names, plus `tx`, the instant it was taken. The
-default is `local/` → `local.invalid/`, `ecb/` and `scripture/` → the test mesh's.
+The alias map (`aliases.json`) is a file, read at start and by `refresh`. Its default is
+`local/` → `local.invalid/`, `ecb/` and `scripture/` → the test mesh's.
+
+### Alias map file
+
+The file is `{"entries": [{"short": ..., "full": ..., "tx": ...}, ...]}`. Each entry says that
+`short` stands for `full` from the instant `tx` on (a lexical instant, SPEC 3.4).
+
+- A `short` ending in `/` is a prefix entry, and its `full` ends in `/` too:
+  `{"short": "ecb/", "full": "mesh-test.datumesh.com/ecb/", "tx": "2026-11-10T00:00:00.000000Z"}`.
+  A call `ecb/fx_rate(...)` names `mesh-test.datumesh.com/ecb/fx_rate(...)`.
+- A bare `short` (no `/`) may stand for any full name. A request (`get`, `prefetch`, `describe`)
+  that resolves a bare name to a class (a class is bound at that name) not under
+  `datumesh.com/std/` is refused with a local error (`Error::Request`; the message names
+  `datumesh.com/std/`). It is not an envelope: a define code is not an answer's error. A bare
+  name for a function (not a class) is not limited.
+- A request is resolved at its asof (`?asof=`, else now): for each short name, the entry with
+  the greatest `tx` not after that instant. An entry with a later `tx` does not exist yet.
+  The answer's `resolved.aliases_tx` is the greatest `tx` among the entries that applied.
+- A formula source may write a prefix alias as `@ecb/fx_rate(...)`: it is expanded to the full
+  name before the formula is defined, so its hash is that of the source written in full. A
+  bare `@name` is looked up among the bare entries.
+- The older shape, `{"<short>": "<full>", ..., "tx": "<instant>"}`, is still read: every entry
+  gets that `tx`.
+
+Step 2.2 generates this file from the cells `datumesh.com/std/default(name: "<short>")`: each
+cell's value is the entry's `full`, and its receipt's `tx` is the entry's `tx`.
 
 ## wasm
 

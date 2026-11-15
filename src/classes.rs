@@ -17,10 +17,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{check_describe_with, Arg, ClassDescriptor, ErrorCode, FunctionDescriptor, Resolved, Scalar};
+use datumesh_core::{
+    check_describe_with, Arg, ClassDescriptor, ErrorCode, FunctionDescriptor, Resolution, ResolutionKind, Resolved,
+    Scalar,
+};
 use datumesh_formula::call::{parse_call, CallEnv};
 use datumesh_http::client::{pct, ClientError};
 
+use crate::alias::{request_asof, request_head, AliasMap};
 use crate::fetch::{host_of, name_of, network_failure, Shared, END};
 use crate::gate::is_unrooted;
 use crate::resolver::{client_error, Callees, Reply, Resolver, Source};
@@ -37,6 +41,8 @@ pub(crate) enum Parse {
     Answered(Reply),
     /// A call that does not parse or bind: the mesh's own answer to it (no network).
     Malformed,
+    /// A bare name for a class not under `datumesh.com/std/`: refused, with the reason (a local error).
+    Refused(String),
     /// Not a call (a cell URI, a bare name): the request as the cell path reads it.
     Plain,
 }
@@ -46,6 +52,18 @@ pub(crate) struct Env<'a> {
     resolver: &'a Resolver,
     fetched: Cell<bool>,
     unavailable: RefCell<Option<Reply>>,
+    /// The alias map as it stands at the request's asof.
+    aliases: AliasMap,
+    /// The request's asof (`?asof=`), when it has one.
+    asof: Option<String>,
+    /// The refusal of a bare class name, when the call resolved one (see [`Env::alias`]).
+    refused: RefCell<Option<String>>,
+}
+
+/// The refusal of a bare name for a class outside `datumesh.com/std/` (the user's rule, item 8):
+/// a local error (not an envelope: a define code is not an answer's error, SPEC 5.5).
+fn bare_class_error(alias: &str, full: &str) -> String {
+    format!("{alias} is {full}, a class: a bare class name resolves only to datumesh.com/std/ names")
 }
 
 impl Env<'_> {
@@ -84,7 +102,15 @@ fn store(e: impl std::fmt::Display) -> String {
 
 impl CallEnv for Env<'_> {
     fn alias(&self, alias: &str) -> Result<Option<String>, String> {
-        Ok(self.resolver.aliases().bare().get(alias).cloned())
+        let Some(full) = self.aliases.bare().get(alias).cloned() else { return Ok(None) };
+        // A bare name for a class resolves only to a datumesh.com/std/ class (the user's rule; a bare
+        // name for a function is not a class name and is not limited).
+        if !full.starts_with("datumesh.com/std/") && self.bound_class(&full, self.asof.as_deref())?.is_some() {
+            let why = bare_class_error(alias, &full);
+            *self.refused.borrow_mut() = Some(why.clone());
+            return Err(why);
+        }
+        Ok(Some(full))
     }
 
     fn bound(&self, name: &str, asof: Option<&str>) -> Result<Option<FunctionDescriptor>, String> {
@@ -154,7 +180,8 @@ impl CallEnv for Env<'_> {
     }
 
     fn aliases_tx(&self) -> Result<Option<String>, String> {
-        Ok(Some(self.resolver.aliases().tx().to_string()))
+        let tx = self.aliases.tx();
+        Ok((!tx.is_empty()).then(|| tx.to_string()))
     }
 
     fn now(&self) -> Result<Option<String>, String> {
@@ -193,6 +220,41 @@ pub(crate) fn with_resolved(mut reply: Reply, resolved: &Resolved) -> Reply {
     members.push(("resolved".into(), member));
     reply.body = Value::Object(members).to_jcs();
     reply
+}
+
+/// A call whose prefix alias (`fx/fx_rate`, the `fx/` entry) was expanded before the parse
+/// (`text` is the expanded request, `request` as written): the parse's `resolved` gets that
+/// alias resolution first, and the snapshot's `aliases_tx` (16.7; CONTRACT-1.8b L6).
+pub(crate) fn note_prefix(parse: Parse, request: &str, text: &str, aliases: &AliasMap) -> Parse {
+    let (written, expanded) = (request_head(request), request_head(text));
+    if written == expanded {
+        return parse;
+    }
+    let Ok(alias) = Resolution::new(written, ResolutionKind::Alias, expanded) else { return parse };
+    let with_tx = |r: Resolved| match aliases.tx() {
+        "" => Some(r),
+        tx => r.with_aliases_tx(tx).ok(),
+    };
+    match parse {
+        Parse::Call { rest, resolved, fetched } => {
+            let resolved = match resolved {
+                Some(mut r) => {
+                    r.resolutions.insert(0, alias);
+                    Some(r)
+                }
+                None => Resolved::new(&rest, vec![alias]).ok(),
+            };
+            Parse::Call { rest, resolved: resolved.and_then(with_tx), fetched }
+        }
+        Parse::Answered(reply) => {
+            let call = text.trim().strip_prefix("cell://").unwrap_or(text.trim());
+            match Resolved::new(call, vec![alias]).ok().and_then(with_tx) {
+                Some(r) => Parse::Answered(with_resolved(reply, &r)),
+                None => Parse::Answered(reply),
+            }
+        }
+        other => other,
+    }
 }
 
 /// A transport failure of a fetch, as the envelope's detail names it.
@@ -267,8 +329,15 @@ impl Shared {
 
 impl Resolver {
     /// Parses a request in the call form (see the module documentation).
-    pub(crate) fn parse_request(&self, text: &str) -> Parse {
-        let env = Env { resolver: self, fetched: Cell::new(false), unavailable: RefCell::new(None) };
+    pub(crate) fn parse_request(&self, text: &str, aliases: &AliasMap) -> Parse {
+        let env = Env {
+            resolver: self,
+            fetched: Cell::new(false),
+            unavailable: RefCell::new(None),
+            aliases: aliases.clone(),
+            asof: request_asof(text),
+            refused: RefCell::new(None),
+        };
         match parse_call(text, &env) {
             Ok(call) => {
                 if call.cell.args.values().any(|a| matches!(a, Arg::Slice)) {
@@ -281,6 +350,9 @@ impl Resolver {
                 }
             }
             Err(_) => {
+                if let Some(why) = env.refused.into_inner() {
+                    return Parse::Refused(why);
+                }
                 if let Some(reply) = env.unavailable.into_inner() {
                     return Parse::Answered(reply);
                 }
@@ -290,6 +362,31 @@ impl Resolver {
                     Parse::Plain
                 }
             }
+        }
+    }
+
+    /// A bare name `alias` that the expansion `full` gives, at `asof`: refused when `full` is a class
+    /// not under `datumesh.com/std/` (the same rule as a call's bare name, [`Env::alias`]). Names
+    /// with a `/` are not bare and pass.
+    pub(crate) fn check_bare_class(&self, alias: &str, full: &str, asof: Option<&str>) -> Result<(), Error> {
+        if alias.contains('/')
+            || full.starts_with("datumesh.com/std/")
+            || !datumesh_formula::names::is_function_name(full)
+        {
+            return Ok(());
+        }
+        let env = Env {
+            resolver: self,
+            fetched: Cell::new(false),
+            unavailable: RefCell::new(None),
+            aliases: self.aliases_at(asof),
+            asof: asof.map(str::to_string),
+            refused: RefCell::new(None),
+        };
+        match env.bound_class(full, asof) {
+            Ok(Some(_)) => Err(Error::Request(bare_class_error(alias, full))),
+            Ok(None) => Ok(()),
+            Err(e) => Err(Error::Request(e)),
         }
     }
 
@@ -328,7 +425,7 @@ impl Resolver {
     /// [`crate::Defined::fn_hash`] is the class hash. Since spec-0.5.0.
     pub fn define_class(&self, name: &str, descriptor: &[u8]) -> Result<crate::Defined, Error> {
         let s = &self.shared;
-        let full = self.aliases().expand(name);
+        let full = self.aliases_at(None).expand(name);
         if host_of(&full) != LOCAL_HOST || !datumesh_formula::names::is_function_name(&full) {
             return Err(Error::Request(format!("{name}: a class is defined under local/ only")));
         }
@@ -356,7 +453,9 @@ impl Resolver {
     /// is checked before it is returned. Since spec-0.5.0.
     pub fn describe(&self, id: &str) -> Result<Reply, Error> {
         let s = &self.shared;
-        let full = self.aliases().expand(id);
+        let asof = request_asof(id);
+        let full = self.aliases_at(asof.as_deref()).expand(id);
+        self.check_bare_class(request_head(id), request_head(&full), asof.as_deref())?;
         let local = self.mesh().describe(&full);
         if local.status != 404 {
             if local.status == 200 && full.contains('(') {

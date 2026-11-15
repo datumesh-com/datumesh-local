@@ -12,7 +12,7 @@ use datumesh_http::client::{Client, ClientConfig, ClientError};
 use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_store::{SqliteStore, Store};
 
-use crate::alias::AliasMap;
+use crate::alias::{request_asof, request_head, AliasMap};
 use crate::classes::{with_resolved, Parse};
 use crate::config::Config;
 use crate::fetch::{self, host_of, name_of, network_failure, Gated, Shared, END};
@@ -55,11 +55,14 @@ pub struct Reply {
     /// Why, for an answer that is not the cell's (`E_FOREIGN_UNAVAILABLE`'s failure, the
     /// gate's reason to forward).
     pub detail: Option<String>,
+    /// The `Link: rel="canonical"` target of an answer about now (the as-of form of the cell,
+    /// on `https://<host>/cell/...`, name-based): as the mesh gives it. `None` otherwise.
+    pub canonical: Option<String>,
 }
 
 impl Reply {
     pub(crate) fn new(status: u16, body: Vec<u8>, source: Source) -> Reply {
-        Reply { status, body, source, label: None, detail: None }
+        Reply { status, body, source, label: None, detail: None, canonical: None }
     }
 
     /// [`crate::FOREIGN_UNAVAILABLE`], core's envelope.
@@ -70,6 +73,7 @@ impl Reply {
             source: Source::Unavailable,
             label: None,
             detail: Some(detail),
+            canonical: None,
         }
     }
 
@@ -79,7 +83,14 @@ impl Reply {
         } else {
             datumesh_http::envelope::error_reply(code)
         };
-        Reply { status: r.status, body: r.body.to_vec(), source: Source::Local, label: None, detail: Some(detail) }
+        Reply {
+            status: r.status,
+            body: r.body.to_vec(),
+            source: Source::Local,
+            label: None,
+            detail: Some(detail),
+            canonical: None,
+        }
     }
 
     /// The envelope, parsed.
@@ -264,7 +275,7 @@ impl Resolver {
         let shared = Arc::new(Shared { config, clock, key, store, client, index, gate, offline });
         publish_key_document(&shared)?;
         let r = Resolver {
-            mesh: RwLock::new(build_mesh(&shared, &aliases, None)?),
+            mesh: RwLock::new(build_mesh(&shared, &aliases.at(&shared.now()), None)?),
             shared,
             aliases: RwLock::new(Arc::new(aliases)),
             base_url: RwLock::new(None),
@@ -308,19 +319,31 @@ impl Resolver {
         self.aliases.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
+    /// The alias map as it stands at `asof` (a request's `?asof=`; `None`: now).
+    pub(crate) fn aliases_at(&self, asof: Option<&str>) -> AliasMap {
+        let now = self.shared.now();
+        self.aliases().at(asof.unwrap_or(&now))
+    }
+
     /// Reads the alias map's file again (a refreshed snapshot).
     pub fn reload_aliases(&self) -> Result<(), Error> {
         let m = AliasMap::load(&self.shared.config.aliases_file)?;
         let base = self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone();
-        let mesh = build_mesh(&self.shared, &m, base)?;
+        let mesh = build_mesh(&self.shared, &m.at(&self.shared.now()), base)?;
         *self.aliases.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(m);
         *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
         Ok(())
     }
 
+    /// The base URL the endpoint serves on, when one is served (`serve`): the origin of the
+    /// loopback links (CONTRACT-1.8b L7).
+    pub(crate) fn loopback_origin(&self) -> Option<String> {
+        self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
     /// Serves the mesh's links under this base URL (`serve`: `http://127.0.0.1:<port>`).
     pub(crate) fn set_base_url(&self, base: Option<String>) -> Result<(), Error> {
-        let mesh = build_mesh(&self.shared, &self.aliases(), base.clone())?;
+        let mesh = build_mesh(&self.shared, &self.aliases_at(None), base.clone())?;
         *self.base_url.write().unwrap_or_else(|p| p.into_inner()) = base;
         *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
         Ok(())
@@ -353,6 +376,7 @@ impl Resolver {
 
     pub(crate) fn mesh_reply(&self, r: datumesh_http::envelope::Reply, source: Source) -> Reply {
         let mut reply = Reply::new(r.status, r.body.to_vec(), source);
+        reply.canonical = r.canonical;
         self.label_of(&mut reply);
         reply
     }
@@ -361,8 +385,10 @@ impl Resolver {
     /// `?asof=`), a cell URI, or the rest of one; short names expanded by the alias map. See
     /// the crate documentation for where answers come from.
     pub fn get(&self, request: &str) -> Result<Reply, Error> {
-        let text = self.aliases().expand_prefix(request);
-        match self.parse_request(&text) {
+        let aliases = self.aliases_at(request_asof(request).as_deref());
+        let text = aliases.expand_prefix(request);
+        let parsed = crate::classes::note_prefix(self.parse_request(&text, &aliases), request, &text, &aliases);
+        match parsed {
             Parse::Call { rest, resolved, fetched } => {
                 let reply = self.answer(&rest, &Cell::new(fetched))?;
                 Ok(match resolved {
@@ -372,8 +398,9 @@ impl Resolver {
             }
             Parse::Answered(reply) => Ok(reply),
             // A call the parse refuses: the mesh's own answer to it, which needs no network.
+            Parse::Refused(why) => Err(Error::Request(why)),
             Parse::Malformed => Ok(self.mesh_reply(self.mesh().cell(&text, None), Source::Local)),
-            Parse::Plain => self.answer(&self.aliases().expand_request(request), &Cell::new(false)),
+            Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false)),
         }
     }
 
@@ -473,6 +500,13 @@ impl Resolver {
             return Ok(r);
         }
         if let Some(why) = ctx.refused {
+            // A local name (a formula here) reading a declared restricted computation: no
+            // declaration of its own, so it is refused here, not forwarded (CONTRACT-1.8b L3).
+            if is_unrooted(host_of(&target.cell.ns)) {
+                let mut r = Reply::new(403, datumesh_http::envelope::unlicensed(), Source::Local);
+                r.detail = Some(why);
+                return Ok(r);
+            }
             return self.forward(&target, why);
         }
         if let Some(why) = ctx.unavailable {
@@ -564,19 +598,16 @@ impl Resolver {
         start: Option<&str>,
     ) -> Result<Defined, Error> {
         let s = &self.shared;
-        let name = self.aliases().expand(name);
+        let aliases = self.aliases_at(None);
+        let name = aliases.expand(name);
+        // A prefix alias in the source (`@ecb/fx_rate`) is expanded first: the hash is that of the full name.
+        let source = aliases.expand_source(source);
         let now = s.now();
         let start = start.unwrap_or(&now).to_string();
         let callees = Callees { shared: s };
-        let def = datumesh_formula::definition::define_function(
-            &name,
-            source,
-            signature,
-            &self.aliases().bare(),
-            &callees,
-            &now,
-        )
-        .map_err(|e| Error::Define(e.to_string()))?;
+        let def =
+            datumesh_formula::definition::define_function(&name, &source, signature, &aliases.bare(), &callees, &now)
+                .map_err(|e| Error::Define(e.to_string()))?;
         if def.descriptor.inputs.is_empty() {
             return Err(Error::NoInputs { function: name });
         }
@@ -586,7 +617,7 @@ impl Resolver {
 
     /// Defines a stored function `name` with `signature`, bound from now.
     pub fn define_stored(&self, name: &str, signature: &Value) -> Result<Defined, Error> {
-        let name = self.aliases().expand(name);
+        let name = self.aliases_at(None).expand(name);
         let d = FunctionDescriptor::from_value(&fetch::stored_descriptor(signature))
             .map_err(|e| Error::Define(e.to_string()))?;
         let now = self.shared.now();
@@ -596,7 +627,7 @@ impl Resolver {
     /// Defines a function from a descriptor (JSON) as `name`, bound from now: the rooting
     /// rule checked on its `inputs`.
     pub fn define(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
-        let name = self.aliases().expand(name);
+        let name = self.aliases_at(None).expand(name);
         let d = FunctionDescriptor::from_json(descriptor).map_err(|e| Error::Define(e.to_string()))?;
         if d.lang != "stored" && d.inputs.is_empty() {
             return Err(Error::NoInputs { function: name });
@@ -638,7 +669,7 @@ impl Resolver {
     pub fn publish_cells(&self, path: &Path) -> Result<PublishedCells, Error> {
         let s = &self.shared;
         let text = std::fs::read_to_string(path).map_err(|e| Error::Request(format!("{}: {e}", path.display())))?;
-        let aliases = self.aliases();
+        let aliases = self.aliases_at(None);
         let mut kept = String::new();
         let mut formulas = Vec::new();
         let mut names = Vec::new();
@@ -785,11 +816,13 @@ impl Resolver {
 
     /// The lineage of a cell as nested envelopes (`/explain`, depth-bounded), from the store.
     pub fn explain(&self, request: &str, depth: Option<usize>) -> Result<Reply, Error> {
-        let rest = match self.parse_request(&self.aliases().expand_prefix(request)) {
+        let aliases = self.aliases_at(request_asof(request).as_deref());
+        let rest = match self.parse_request(&aliases.expand_prefix(request), &aliases) {
             Parse::Answered(reply) => return Ok(reply),
+            Parse::Refused(why) => return Err(Error::Request(why)),
             Parse::Call { rest, .. } => rest,
             Parse::Malformed | Parse::Plain => {
-                let text = self.aliases().expand_request(request);
+                let text = aliases.expand_request(request);
                 text.strip_prefix("cell://").unwrap_or(&text).to_string()
             }
         };
@@ -873,7 +906,9 @@ impl Resolver {
     /// the content of blob values too (one request each).
     pub fn prefetch(&self, target: &str, page: Option<usize>, blobs: bool) -> Result<Prefetched, Error> {
         let s = &self.shared;
-        let text = self.aliases().expand_request(target);
+        let asof = request_asof(target);
+        let text = self.aliases_at(asof.as_deref()).expand_request(target);
+        self.check_bare_class(request_head(target), request_head(&text), asof.as_deref())?;
         let rest = text.strip_prefix("cell://").unwrap_or(&text).to_string();
         let name = name_of(&rest).to_string();
         let host = host_of(&name).to_string();

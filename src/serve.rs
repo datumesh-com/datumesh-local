@@ -24,9 +24,10 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use datumesh_core::json::{self, Value};
 use datumesh_http::Mesh;
 
-use crate::{Error, Resolver};
+use crate::{Error, Resolver, LOCAL_HOST};
 
 /// Percent-encodes what a URI path cannot carry as itself (spaces, quotes, non-ASCII).
 pub fn encode_path(rest: &str) -> String {
@@ -60,13 +61,63 @@ pub(crate) fn oneshot(mesh: &Mesh, path: &str) -> Result<(u16, Vec<u8>), Error> 
     })
 }
 
-/// The endpoint's router: the mesh's handlers, `/cell` through the resolver.
+/// A link on the loopback origin: `url`'s scheme and host replaced by `origin` (for example
+/// `https://local.invalid/jobs/abc` on `http://127.0.0.1:7733` gives `http://127.0.0.1:7733/jobs/abc`).
+/// CONTRACT-1.8b L7: the `poll` and `next` links of this endpoint's answers.
+pub fn loopback_link(origin: &str, url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let path = rest.find('/').map_or("/", |i| &rest[i..]);
+    format!("{origin}{path}")
+}
+
+/// The endpoint's router: the mesh's handlers, `/cell` through the resolver. The `poll` and
+/// `next` links of this machine's host are on the loopback origin (CONTRACT-1.8b L7); the
+/// `Link: rel="canonical"` header stays as the mesh gives it.
 pub fn router(resolver: Arc<Resolver>) -> Router {
     resolver
         .mesh()
         .router()
         .layer(axum::middleware::from_fn_with_state(resolver.clone(), describe))
-        .layer(axum::middleware::from_fn_with_state(resolver, cell))
+        .layer(axum::middleware::from_fn_with_state(resolver.clone(), cell))
+        .layer(axum::middleware::from_fn_with_state(resolver, loopback))
+}
+
+/// The answer's `poll` and `next` members that name this machine's host, rewritten onto the
+/// loopback origin; any other answer is as it is.
+async fn loopback(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> Response {
+    let res = next.run(req).await;
+    let Some(origin) = r.loopback_origin() else { return res };
+    let is_json = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|c| c.to_str().ok())
+        .is_some_and(|c| c.starts_with("application/json"));
+    if !is_json {
+        return res;
+    }
+    let (mut parts, body) = res.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 << 20).await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let Ok(Value::Object(mut members)) = json::parse(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let mut changed = false;
+    for (k, v) in members.iter_mut() {
+        if let ("poll" | "next", Value::String(url)) = (k.as_str(), v) {
+            let local = url.strip_prefix("https://").and_then(|r| r.split('/').next()) == Some(LOCAL_HOST);
+            if local {
+                *url = loopback_link(&origin, url);
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(Value::Object(members).to_jcs()))
 }
 
 /// `/cell/{rest}`: the answer through the resolver (fetch, gate, forward).
@@ -106,6 +157,11 @@ fn answer_response(answer: Result<Result<crate::Reply, Error>, tokio::task::Join
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
             h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            if let Some(l) =
+                reply.canonical.and_then(|c| HeaderValue::from_str(&format!("<{c}>; rel=\"canonical\"")).ok())
+            {
+                h.insert(header::LINK, l);
+            }
             if let Some(l) = reply.label.and_then(|l| HeaderValue::from_str(&l).ok()) {
                 h.insert("datumesh-signer", l);
             }
