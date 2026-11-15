@@ -2,10 +2,13 @@ pub mod datumesh_local
 pub mod datumesh_local::alias
 pub struct datumesh_local::alias::AliasMap
 impl datumesh_local::alias::AliasMap
+pub fn datumesh_local::alias::AliasMap::all(&self) -> &[datumesh_local::alias::Entry]
+pub fn datumesh_local::alias::AliasMap::at(&self, &str) -> datumesh_local::alias::AliasMap
 pub fn datumesh_local::alias::AliasMap::bare(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub fn datumesh_local::alias::AliasMap::entries(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub fn datumesh_local::alias::AliasMap::entries(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub fn datumesh_local::alias::AliasMap::expand(&self, &str) -> alloc::string::String
 pub fn datumesh_local::alias::AliasMap::expand_request(&self, &str) -> alloc::string::String
+pub fn datumesh_local::alias::AliasMap::expand_source(&self, &str) -> alloc::string::String
 pub fn datumesh_local::alias::AliasMap::from_json(&[u8]) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::load(&std::path::Path) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::tx(&self) -> &str
@@ -17,6 +20,18 @@ pub fn datumesh_local::alias::AliasMap::eq(&self, &Self) -> bool
 impl core::fmt::Debug for datumesh_local::alias::AliasMap
 pub fn datumesh_local::alias::AliasMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::alias::AliasMap
+pub struct datumesh_local::alias::Entry
+pub datumesh_local::alias::Entry::full: alloc::string::String
+pub datumesh_local::alias::Entry::short: alloc::string::String
+pub datumesh_local::alias::Entry::tx: alloc::string::String
+impl core::clone::Clone for datumesh_local::alias::Entry
+pub fn datumesh_local::alias::Entry::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::alias::Entry
+impl core::cmp::PartialEq for datumesh_local::alias::Entry
+pub fn datumesh_local::alias::Entry::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::alias::Entry
+pub fn datumesh_local::alias::Entry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::alias::Entry
 pub mod datumesh_local::bundle
 #[non_exhaustive] pub struct datumesh_local::bundle::Imported
 pub datumesh_local::bundle::Imported::bindings: usize
@@ -53,6 +68,7 @@ pub datumesh_local::config::Config::allowlist: alloc::vec::Vec<alloc::string::St
 pub datumesh_local::config::Config::config_dir: std::path::PathBuf
 pub datumesh_local::config::Config::data_dir: std::path::PathBuf
 pub datumesh_local::config::Config::forward_mesh: core::option::Option<alloc::string::String>
+pub datumesh_local::config::Config::host: alloc::string::String
 pub datumesh_local::config::Config::key_file: std::path::PathBuf
 pub datumesh_local::config::Config::licence: alloc::string::String
 pub datumesh_local::config::Config::offline: bool
@@ -70,7 +86,9 @@ impl core::fmt::Debug for datumesh_local::config::Config
 pub fn datumesh_local::config::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const datumesh_local::config::DEFAULT_ALIASES: &str
 pub const datumesh_local::config::DEFAULT_CONFIG: &str
+pub fn datumesh_local::config::check_host(&str) -> core::result::Result<(), datumesh_local::Error>
 pub fn datumesh_local::config::default_dirs() -> core::result::Result<(std::path::PathBuf, std::path::PathBuf), datumesh_local::Error>
+pub fn datumesh_local::config::is_machine_host(&str) -> bool
 pub mod datumesh_local::gate
 #[non_exhaustive] pub enum datumesh_local::gate::GateDecision
 pub datumesh_local::gate::GateDecision::Compute
@@ -146,8 +164,6 @@ pub fn datumesh_local::index::Index::quarantine(&self, &str, &str, &[u8], &str) 
 pub fn datumesh_local::index::Index::quarantined(&self) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String, alloc::vec::Vec<u8>)>, datumesh_local::Error>
 pub fn datumesh_local::index::Index::release(&self, &str) -> core::result::Result<(), datumesh_local::Error>
 pub fn datumesh_local::index::Index::slices(&self) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, datumesh_local::Error>
-pub fn datumesh_local::index::Index::trust(&self, &str, &str, &str) -> core::result::Result<(), datumesh_local::Error>
-pub fn datumesh_local::index::Index::trusted(&self) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, datumesh_local::Error>
 impl core::fmt::Debug for datumesh_local::index::Index
 pub fn datumesh_local::index::Index::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod datumesh_local::key
@@ -156,15 +172,49 @@ impl datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::entry(&self) -> datumesh_core::json::Value
 pub fn datumesh_local::key::MachineKey::key_id(&self) -> &str
 pub fn datumesh_local::key::MachineKey::load_or_create(&std::path::Path) -> core::result::Result<datumesh_local::key::MachineKey, datumesh_local::Error>
-pub fn datumesh_local::key::MachineKey::signer(&self) -> alloc::string::String
+pub fn datumesh_local::key::MachineKey::load_or_create_at(&std::path::Path, &dyn datumesh_engine::clock::Clock) -> core::result::Result<datumesh_local::key::MachineKey, datumesh_local::Error>
 pub fn datumesh_local::key::MachineKey::signing_key(&self) -> &datumesh_core::sign::SigningKey
 pub fn datumesh_local::key::MachineKey::valid_from(&self) -> &str
 impl core::clone::Clone for datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::clone(&self) -> Self
 impl core::fmt::Debug for datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const datumesh_local::key::RETIRED_KEYS: &str
 pub fn datumesh_local::key::key_entries(&[u8]) -> alloc::vec::Vec<datumesh_core::json::Value>
-pub fn datumesh_local::key::local_key_document(&[datumesh_core::json::Value]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
+pub fn datumesh_local::key::local_key_document(&str, &[datumesh_core::json::Value]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
+pub fn datumesh_local::key::retired_entries(&std::path::Path) -> core::result::Result<alloc::vec::Vec<datumesh_core::json::Value>, datumesh_local::Error>
+pub mod datumesh_local::mcp
+pub enum datumesh_local::mcp::Transport
+pub datumesh_local::mcp::Transport::Http
+pub datumesh_local::mcp::Transport::Http::authorized: bool
+pub datumesh_local::mcp::Transport::Stdio
+impl core::clone::Clone for datumesh_local::mcp::Transport
+pub fn datumesh_local::mcp::Transport::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::mcp::Transport
+impl core::cmp::PartialEq for datumesh_local::mcp::Transport
+pub fn datumesh_local::mcp::Transport::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::mcp::Transport
+pub fn datumesh_local::mcp::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_local::mcp::Transport
+impl core::marker::StructuralPartialEq for datumesh_local::mcp::Transport
+pub struct datumesh_local::mcp::HttpServer
+impl datumesh_local::mcp::HttpServer
+pub fn datumesh_local::mcp::HttpServer::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn datumesh_local::mcp::HttpServer::token_path(&self) -> std::path::PathBuf
+impl core::ops::drop::Drop for datumesh_local::mcp::HttpServer
+pub fn datumesh_local::mcp::HttpServer::drop(&mut self)
+pub struct datumesh_local::mcp::McpServer
+impl datumesh_local::mcp::McpServer
+pub fn datumesh_local::mcp::McpServer::handle(&self, &str, datumesh_local::mcp::Transport) -> core::option::Option<alloc::string::String>
+pub fn datumesh_local::mcp::McpServer::new(alloc::rcs::arc::Arc<datumesh_local::Resolver>) -> datumesh_local::mcp::McpServer
+pub struct datumesh_local::mcp::Token(_)
+impl datumesh_local::mcp::Token
+pub fn datumesh_local::mcp::Token::load_or_create(&std::path::Path) -> core::result::Result<datumesh_local::mcp::Token, datumesh_local::Error>
+impl core::fmt::Debug for datumesh_local::mcp::Token
+pub fn datumesh_local::mcp::Token::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn datumesh_local::mcp::http_router(alloc::rcs::arc::Arc<datumesh_local::mcp::McpServer>, datumesh_local::mcp::Token) -> axum::routing::Router
+pub fn datumesh_local::mcp::serve_http(alloc::rcs::arc::Arc<datumesh_local::Resolver>, u16) -> core::result::Result<datumesh_local::mcp::HttpServer, datumesh_local::Error>
+pub fn datumesh_local::mcp::serve_stdio<R: alloc::io::buf_read::BufRead, W: core::io::write::Write>(alloc::rcs::arc::Arc<datumesh_local::Resolver>, R, W) -> core::result::Result<(), datumesh_local::Error>
 pub mod datumesh_local::serve
 pub struct datumesh_local::serve::Server
 impl datumesh_local::serve::Server
@@ -174,6 +224,7 @@ pub async fn datumesh_local::serve::Server::run(self, impl core::future::future:
 impl core::fmt::Debug for datumesh_local::serve::Server
 pub fn datumesh_local::serve::Server::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn datumesh_local::serve::encode_path(&str) -> alloc::string::String
+pub fn datumesh_local::serve::loopback_link(&str, &str) -> alloc::string::String
 pub fn datumesh_local::serve::router(alloc::rcs::arc::Arc<datumesh_local::Resolver>) -> axum::routing::Router
 #[non_exhaustive] pub enum datumesh_local::Error
 pub datumesh_local::Error::Address(alloc::string::String)
@@ -185,11 +236,24 @@ pub datumesh_local::Error::Config(alloc::string::String)
 pub datumesh_local::Error::Define(alloc::string::String)
 pub datumesh_local::Error::ForeignUnavailable(alloc::string::String)
 pub datumesh_local::Error::Key(alloc::string::String)
+pub datumesh_local::Error::NoInputs
+pub datumesh_local::Error::NoInputs::function: alloc::string::String
 pub datumesh_local::Error::Request(alloc::string::String)
+pub datumesh_local::Error::Rooting(alloc::string::String)
+pub datumesh_local::Error::StartBeforeNow
+pub datumesh_local::Error::StartBeforeNow::name: alloc::string::String
+pub datumesh_local::Error::StartBeforeNow::now: alloc::string::String
+pub datumesh_local::Error::StartBeforeNow::start: alloc::string::String
 pub datumesh_local::Error::Store(alloc::string::String)
+pub datumesh_local::Error::Trust(alloc::string::String)
 pub datumesh_local::Error::UnrootedInput
 pub datumesh_local::Error::UnrootedInput::function: alloc::string::String
 pub datumesh_local::Error::UnrootedInput::input: alloc::string::String
+pub datumesh_local::Error::UntrustedInput
+pub datumesh_local::Error::UntrustedInput::function: alloc::string::String
+pub datumesh_local::Error::UntrustedInput::input: alloc::string::String
+impl datumesh_local::Error
+pub fn datumesh_local::Error::code(&self) -> core::option::Option<&'static str>
 impl core::clone::Clone for datumesh_local::Error
 pub fn datumesh_local::Error::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::Error
@@ -201,6 +265,22 @@ pub fn datumesh_local::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl core::fmt::Display for datumesh_local::Error
 pub fn datumesh_local::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::Error
+#[non_exhaustive] pub enum datumesh_local::RootKind
+pub datumesh_local::RootKind::Formula
+pub datumesh_local::RootKind::Stored
+impl datumesh_local::RootKind
+pub fn datumesh_local::RootKind::as_str(self) -> &'static str
+impl core::clone::Clone for datumesh_local::RootKind
+pub fn datumesh_local::RootKind::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::RootKind
+impl core::cmp::PartialEq for datumesh_local::RootKind
+pub fn datumesh_local::RootKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::RootKind
+pub fn datumesh_local::RootKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_local::RootKind
+pub fn datumesh_local::RootKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_local::RootKind
+impl core::marker::StructuralPartialEq for datumesh_local::RootKind
 #[non_exhaustive] pub enum datumesh_local::Source
 pub datumesh_local::Source::Fetched
 pub datumesh_local::Source::Forwarded
@@ -217,10 +297,13 @@ pub fn datumesh_local::Source::fmt(&self, &mut core::fmt::Formatter<'_>) -> core
 impl core::marker::StructuralPartialEq for datumesh_local::Source
 pub struct datumesh_local::AliasMap
 impl datumesh_local::alias::AliasMap
+pub fn datumesh_local::alias::AliasMap::all(&self) -> &[datumesh_local::alias::Entry]
+pub fn datumesh_local::alias::AliasMap::at(&self, &str) -> datumesh_local::alias::AliasMap
 pub fn datumesh_local::alias::AliasMap::bare(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub fn datumesh_local::alias::AliasMap::entries(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub fn datumesh_local::alias::AliasMap::entries(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub fn datumesh_local::alias::AliasMap::expand(&self, &str) -> alloc::string::String
 pub fn datumesh_local::alias::AliasMap::expand_request(&self, &str) -> alloc::string::String
+pub fn datumesh_local::alias::AliasMap::expand_source(&self, &str) -> alloc::string::String
 pub fn datumesh_local::alias::AliasMap::from_json(&[u8]) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::load(&std::path::Path) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::tx(&self) -> &str
@@ -238,6 +321,7 @@ pub datumesh_local::Config::allowlist: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::Config::config_dir: std::path::PathBuf
 pub datumesh_local::Config::data_dir: std::path::PathBuf
 pub datumesh_local::Config::forward_mesh: core::option::Option<alloc::string::String>
+pub datumesh_local::Config::host: alloc::string::String
 pub datumesh_local::Config::key_file: std::path::PathBuf
 pub datumesh_local::Config::licence: alloc::string::String
 pub datumesh_local::Config::offline: bool
@@ -318,7 +402,7 @@ impl datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::entry(&self) -> datumesh_core::json::Value
 pub fn datumesh_local::key::MachineKey::key_id(&self) -> &str
 pub fn datumesh_local::key::MachineKey::load_or_create(&std::path::Path) -> core::result::Result<datumesh_local::key::MachineKey, datumesh_local::Error>
-pub fn datumesh_local::key::MachineKey::signer(&self) -> alloc::string::String
+pub fn datumesh_local::key::MachineKey::load_or_create_at(&std::path::Path, &dyn datumesh_engine::clock::Clock) -> core::result::Result<datumesh_local::key::MachineKey, datumesh_local::Error>
 pub fn datumesh_local::key::MachineKey::signing_key(&self) -> &datumesh_core::sign::SigningKey
 pub fn datumesh_local::key::MachineKey::valid_from(&self) -> &str
 impl core::clone::Clone for datumesh_local::key::MachineKey
@@ -342,6 +426,29 @@ pub fn datumesh_local::Prefetched::default() -> Self
 impl core::fmt::Debug for datumesh_local::Prefetched
 pub fn datumesh_local::Prefetched::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::Prefetched
+#[non_exhaustive] pub struct datumesh_local::PublishedCell
+pub datumesh_local::PublishedCell::call: alloc::string::String
+pub datumesh_local::PublishedCell::receipt_hash: alloc::string::String
+pub datumesh_local::PublishedCell::uri: alloc::string::String
+impl core::clone::Clone for datumesh_local::PublishedCell
+pub fn datumesh_local::PublishedCell::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::PublishedCell
+impl core::cmp::PartialEq for datumesh_local::PublishedCell
+pub fn datumesh_local::PublishedCell::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::PublishedCell
+pub fn datumesh_local::PublishedCell::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::PublishedCell
+#[non_exhaustive] pub struct datumesh_local::PublishedCells
+pub datumesh_local::PublishedCells::cells: alloc::vec::Vec<datumesh_local::PublishedCell>
+pub datumesh_local::PublishedCells::counts: datumesh_http::publish::Published
+impl core::clone::Clone for datumesh_local::PublishedCells
+pub fn datumesh_local::PublishedCells::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::PublishedCells
+impl core::cmp::PartialEq for datumesh_local::PublishedCells
+pub fn datumesh_local::PublishedCells::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::PublishedCells
+pub fn datumesh_local::PublishedCells::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::PublishedCells
 #[non_exhaustive] pub struct datumesh_local::Quarantined
 pub datumesh_local::Quarantined::bytes: alloc::vec::Vec<u8>
 pub datumesh_local::Quarantined::hash: alloc::string::String
@@ -374,6 +481,7 @@ pub fn datumesh_local::Refreshed::fmt(&self, &mut core::fmt::Formatter<'_>) -> c
 impl core::marker::StructuralPartialEq for datumesh_local::Refreshed
 #[non_exhaustive] pub struct datumesh_local::Reply
 pub datumesh_local::Reply::body: alloc::vec::Vec<u8>
+pub datumesh_local::Reply::canonical: core::option::Option<alloc::string::String>
 pub datumesh_local::Reply::detail: core::option::Option<alloc::string::String>
 pub datumesh_local::Reply::label: core::option::Option<alloc::string::String>
 pub datumesh_local::Reply::source: datumesh_local::Source
@@ -401,15 +509,18 @@ pub fn datumesh_local::Resolver::explain(&self, &str, core::option::Option<usize
 pub fn datumesh_local::Resolver::find(&self, &str, bool) -> core::result::Result<alloc::vec::Vec<datumesh_local::Found>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::get(&self, &str) -> core::result::Result<datumesh_local::Reply, datumesh_local::Error>
 pub fn datumesh_local::Resolver::key_document(&self) -> alloc::vec::Vec<u8>
-pub fn datumesh_local::Resolver::key_id(&self) -> &str
+pub fn datumesh_local::Resolver::key_id(&self) -> alloc::string::String
 pub fn datumesh_local::Resolver::mesh(&self) -> datumesh_http::mesh::Mesh
 pub fn datumesh_local::Resolver::offline(&self) -> bool
 pub fn datumesh_local::Resolver::open(datumesh_local::config::Config) -> core::result::Result<datumesh_local::Resolver, datumesh_local::Error>
+pub fn datumesh_local::Resolver::open_with_clock(datumesh_local::config::Config, alloc::rcs::arc::Arc<(dyn datumesh_engine::clock::Clock + core::marker::Send + core::marker::Sync)>) -> core::result::Result<datumesh_local::Resolver, datumesh_local::Error>
 pub fn datumesh_local::Resolver::prefetch(&self, &str, core::option::Option<usize>, bool) -> core::result::Result<datumesh_local::Prefetched, datumesh_local::Error>
 pub fn datumesh_local::Resolver::publish(&self, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_local::Error>
+pub fn datumesh_local::Resolver::publish_cells(&self, &std::path::Path) -> core::result::Result<datumesh_local::PublishedCells, datumesh_local::Error>
 pub fn datumesh_local::Resolver::quarantined(&self) -> core::result::Result<alloc::vec::Vec<datumesh_local::Quarantined>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::refresh(&self) -> core::result::Result<datumesh_local::Refreshed, datumesh_local::Error>
 pub fn datumesh_local::Resolver::reload_aliases(&self) -> core::result::Result<(), datumesh_local::Error>
+pub fn datumesh_local::Resolver::rotate_key(&self) -> core::result::Result<datumesh_local::Rotated, datumesh_local::Error>
 pub fn datumesh_local::Resolver::set_offline(&self, bool)
 pub fn datumesh_local::Resolver::store(&self) -> &alloc::rcs::arc::Arc<(dyn datumesh_store::Store + core::marker::Send + core::marker::Sync)>
 pub fn datumesh_local::Resolver::verify(&self, &[u8]) -> datumesh_core::json::Value
@@ -419,8 +530,94 @@ pub fn datumesh_local::Resolver::describe(&self, &str) -> core::result::Result<d
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::export(&self) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) -> core::result::Result<datumesh_local::bundle::Imported, datumesh_local::Error>
+impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::revoke_machine(&self, &str) -> core::result::Result<(), datumesh_local::Error>
+pub fn datumesh_local::Resolver::trust_machine(&self, &[u8]) -> core::result::Result<datumesh_local::TrustedMachine, datumesh_local::Error>
+pub fn datumesh_local::Resolver::trusted_machines(&self) -> core::result::Result<alloc::vec::Vec<datumesh_local::TrustedMachine>, datumesh_local::Error>
+impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::root(&self, &datumesh_local::RootPlan) -> core::result::Result<datumesh_local::Rooted, datumesh_local::Error>
 impl core::fmt::Debug for datumesh_local::Resolver
 pub fn datumesh_local::Resolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datumesh_local::RootPlan
+pub datumesh_local::RootPlan::export: core::option::Option<std::path::PathBuf>
+pub datumesh_local::RootPlan::key_path: std::path::PathBuf
+pub datumesh_local::RootPlan::names: alloc::vec::Vec<alloc::string::String>
+pub datumesh_local::RootPlan::namespace: alloc::string::String
+impl core::clone::Clone for datumesh_local::RootPlan
+pub fn datumesh_local::RootPlan::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::RootPlan
+impl core::cmp::PartialEq for datumesh_local::RootPlan
+pub fn datumesh_local::RootPlan::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::RootPlan
+pub fn datumesh_local::RootPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::RootPlan
+#[non_exhaustive] pub struct datumesh_local::Rooted
+pub datumesh_local::Rooted::cells: alloc::vec::Vec<datumesh_local::RootedCell>
+pub datumesh_local::Rooted::computed: alloc::vec::Vec<alloc::string::String>
+pub datumesh_local::Rooted::functions: alloc::vec::Vec<datumesh_local::RootedFunction>
+pub datumesh_local::Rooted::key_id: alloc::string::String
+pub datumesh_local::Rooted::namespace: alloc::string::String
+impl datumesh_local::Rooted
+pub fn datumesh_local::Rooted::to_json(&self) -> datumesh_core::json::Value
+impl core::clone::Clone for datumesh_local::Rooted
+pub fn datumesh_local::Rooted::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::Rooted
+impl core::cmp::PartialEq for datumesh_local::Rooted
+pub fn datumesh_local::Rooted::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::Rooted
+pub fn datumesh_local::Rooted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::Rooted
+#[non_exhaustive] pub struct datumesh_local::RootedCell
+pub datumesh_local::RootedCell::call: alloc::string::String
+pub datumesh_local::RootedCell::from_receipt: alloc::string::String
+pub datumesh_local::RootedCell::uri: alloc::string::String
+pub datumesh_local::RootedCell::value: alloc::string::String
+impl core::clone::Clone for datumesh_local::RootedCell
+pub fn datumesh_local::RootedCell::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::RootedCell
+impl core::cmp::PartialEq for datumesh_local::RootedCell
+pub fn datumesh_local::RootedCell::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::RootedCell
+pub fn datumesh_local::RootedCell::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::RootedCell
+#[non_exhaustive] pub struct datumesh_local::RootedFunction
+pub datumesh_local::RootedFunction::from: alloc::string::String
+pub datumesh_local::RootedFunction::from_hash: alloc::string::String
+pub datumesh_local::RootedFunction::kind: datumesh_local::RootKind
+pub datumesh_local::RootedFunction::to: alloc::string::String
+pub datumesh_local::RootedFunction::to_hash: alloc::string::String
+impl core::clone::Clone for datumesh_local::RootedFunction
+pub fn datumesh_local::RootedFunction::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::RootedFunction
+impl core::cmp::PartialEq for datumesh_local::RootedFunction
+pub fn datumesh_local::RootedFunction::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::RootedFunction
+pub fn datumesh_local::RootedFunction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::RootedFunction
+#[non_exhaustive] pub struct datumesh_local::Rotated
+pub datumesh_local::Rotated::at: alloc::string::String
+pub datumesh_local::Rotated::new_key_id: alloc::string::String
+pub datumesh_local::Rotated::old_key_id: alloc::string::String
+impl core::clone::Clone for datumesh_local::Rotated
+pub fn datumesh_local::Rotated::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::Rotated
+impl core::cmp::PartialEq for datumesh_local::Rotated
+pub fn datumesh_local::Rotated::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::Rotated
+pub fn datumesh_local::Rotated::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::Rotated
+#[non_exhaustive] pub struct datumesh_local::TrustedMachine
+pub datumesh_local::TrustedMachine::host: alloc::string::String
+pub datumesh_local::TrustedMachine::revoked_at: core::option::Option<alloc::string::String>
+pub datumesh_local::TrustedMachine::trusted_from: alloc::string::String
+impl core::clone::Clone for datumesh_local::TrustedMachine
+pub fn datumesh_local::TrustedMachine::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::TrustedMachine
+impl core::cmp::PartialEq for datumesh_local::TrustedMachine
+pub fn datumesh_local::TrustedMachine::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::TrustedMachine
+pub fn datumesh_local::TrustedMachine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::TrustedMachine
 pub const datumesh_local::FOREIGN_UNAVAILABLE: &str
 pub const datumesh_local::FOREIGN_UNAVAILABLE_STATUS: u16
 pub const datumesh_local::LOCAL_HOST: &str
