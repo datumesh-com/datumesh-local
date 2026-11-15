@@ -248,3 +248,150 @@ fn an_unknown_method_is_404_and_a_notification_is_202() {
     assert_eq!(r.status, 202);
     assert!(r.body.is_empty());
 }
+
+// CONTRACT-1.8b R3: refusals no earlier test covered.
+
+const CELL_URI: &str = "cell://mesh-test.datumesh.com/ecb/fx_rate?base=EUR&date=2026-10-30&quote=USD";
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n =
+            (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn post(st: &Started, h: &[(&str, String)], body: &str) -> Response {
+    send(st.addr, "POST", "/mcp", h, body)
+}
+
+fn read_body() -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{{{M},"uri":"{CELL_URI}"}}}}"#)
+}
+
+fn read_headers(addr: SocketAddr) -> Vec<(&'static str, String)> {
+    with(headers(addr, "get"), "Mcp-Method", "resources/read")
+}
+
+#[test]
+fn origin_null_is_403() {
+    let st = start();
+    let h = with(headers(st.addr, "get"), "Origin", "null");
+    assert_eq!(post(&st, &h, GET_BODY).status, 403);
+}
+
+#[test]
+fn delete_is_405() {
+    let st = start();
+    let h = vec![("Host", st.addr.to_string())];
+    assert_eq!(send(st.addr, "DELETE", "/mcp", &h, "").status, 405);
+}
+
+#[test]
+fn a_missing_or_foreign_charset_content_type_is_415() {
+    let st = start();
+    let h = without(headers(st.addr, "get"), "Content-Type");
+    assert_eq!(post(&st, &h, GET_BODY).status, 415);
+    let h = with(headers(st.addr, "get"), "Content-Type", "application/json; charset=latin1");
+    assert_eq!(post(&st, &h, GET_BODY).status, 415);
+}
+
+#[test]
+fn a_header_version_that_differs_from_the_body_is_32020() {
+    let st = start();
+    let body = GET_BODY.replace("2026-07-28", "2025-11-25");
+    let r = post(&st, &headers(st.addr, "get"), &body);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32020");
+}
+
+#[test]
+fn a_method_header_that_differs_from_the_body_is_32020() {
+    let st = start();
+    let h = with(headers(st.addr, "get"), "Mcp-Method", "tools/list");
+    let r = post(&st, &h, GET_BODY);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32020");
+}
+
+#[test]
+fn resources_read_needs_mcp_name_and_takes_the_base64_form() {
+    let st = start();
+    let body = read_body();
+    let h = without(read_headers(st.addr), "Mcp-Name");
+    let r = post(&st, &h, &body);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32020");
+    let sentinel = format!("=?base64?{}?=", base64(CELL_URI.as_bytes()));
+    let h = with(read_headers(st.addr), "Mcp-Name", &sentinel);
+    let r = post(&st, &h, &body);
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+}
+
+#[test]
+fn a_missing_meta_is_32602_and_an_unsupported_version_is_32022() {
+    let st = start();
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get","arguments":{}}}"#;
+    let r = post(&st, &headers(st.addr, "get"), body);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32602");
+
+    let body = GET_BODY.replace("2026-07-28", "2025-11-25");
+    let h = with(headers(st.addr, "get"), "MCP-Protocol-Version", "2025-11-25");
+    let r = post(&st, &h, &body);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32022");
+    let v = r.json();
+    let supported =
+        v.get("error").and_then(|e| e.get("data")).and_then(|d| d.get("supported")).expect("data.supported");
+    assert_eq!(String::from_utf8(supported.to_jcs()).unwrap(), r#"["2026-07-28"]"#);
+}
+
+#[test]
+fn a_wrong_or_absent_token_is_401() {
+    let st = start();
+    let file = std::fs::read_to_string(st.server.token_path()).unwrap();
+    let wrong = "a".repeat(64);
+    assert_ne!(wrong, file.trim());
+    let h = with(headers(st.addr, "define"), "Authorization", &format!("Bearer {wrong}"));
+    let r = post(&st, &h, DEFINE_BODY);
+    assert_eq!(r.status, 401, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-31001");
+
+    let publish = DEFINE_BODY.replace(r#""name":"define""#, r#""name":"publish""#);
+    let r = post(&st, &headers(st.addr, "publish"), &publish);
+    assert_eq!(r.status, 401, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.header("www-authenticate"), Some("Bearer"));
+}
+
+#[test]
+fn initialize_over_http_is_404() {
+    let st = start();
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{{M},"protocolVersion":"2025-11-25"}}}}"#);
+    let h = without(with(headers(st.addr, "get"), "Mcp-Method", "initialize"), "Mcp-Name");
+    let r = post(&st, &h, &body);
+    assert_eq!(r.status, 404, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32601");
+}
+
+#[test]
+fn a_body_that_is_not_json_is_32700_and_a_batch_is_32600() {
+    let st = start();
+    let h = headers(st.addr, "get");
+    let r = post(&st, &h, "{not json");
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32700");
+    let r = post(&st, &h, &format!("[{GET_BODY}]"));
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.error_code(), "-32600");
+}
