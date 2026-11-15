@@ -177,7 +177,8 @@ fn the_export_is_a_bundle_of_the_stored_cells_re_signed_by_the_namespace_key() {
         let day = rc.get("cell").and_then(|c| c.get("args")).and_then(|a| a.get("day")).map(|d| s(d, "value")).unwrap();
         let local = t.r.get(&format!("local/level(day: {day})")).unwrap();
         let lr = receipt(&local.body);
-        assert_eq!(s(rc, "asof"), s(&lr, "asof"));
+        // Q7 a (pending the user): tx = asof = issued = T, since SPEC 8 needs tx <= asof <= issued.
+        assert_eq!(s(rc, "asof"), T);
         assert_eq!(rc.get("value"), lr.get("value"));
         assert_eq!(rc.get("licence"), lr.get("licence"));
         assert_eq!(rc.get("valid"), lr.get("valid"));
