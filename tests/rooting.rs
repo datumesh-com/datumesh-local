@@ -48,7 +48,8 @@ fn setup() -> Setup {
     let up = upstream();
     let dir = TempDir::new("rooting");
     let tmp = TempDir::new("rooting-tmp");
-    let clock = ManualClock::new(T);
+    // Defined and published before the cells' tx (rule A binds at now), then rooted at T.
+    let clock = ManualClock::new("2026-11-15T10:00:00.000000Z");
     let r = resolver_at(&dir, &up, &clock);
     let level = r.define_stored("local/level", &sig(LEVEL_SIG)).unwrap();
     let line = |day: &str, v: &str| {
@@ -58,6 +59,7 @@ fn setup() -> Setup {
     };
     let f = jsonl(&tmp, "level.jsonl", &[&line("2026-11-01", "10"), &line("2026-11-02", "20")]);
     r.publish(&f).unwrap();
+    clock.set(T);
     r.define_formula("local/double", "local.invalid/level(day: day) * 2", &sig(LEVEL_SIG)).unwrap();
     r.define_formula(
         "local/rate_x",
