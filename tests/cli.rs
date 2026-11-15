@@ -16,6 +16,15 @@ fn home(up: &Upstream) -> TempDir {
     dir
 }
 
+/// A home whose machine has the unrooted host `host`.
+fn home_on(up: &Upstream, host: &str) -> TempDir {
+    let dir = home(up);
+    let path = dir.path().join("config.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replacen("\"peers\":", &format!("\"host\": \"{host}\", \"peers\":"), 1)).unwrap();
+    dir
+}
+
 fn run(dir: &TempDir, args: &[&str]) -> (i32, String, String) {
     let mut all = vec!["--home".to_string(), dir.path().to_string_lossy().into_owned()];
     all.extend(args.iter().map(|a| a.to_string()));
@@ -66,7 +75,9 @@ fn get_writes_the_envelope_and_labels_the_signer() {
 #[test]
 fn the_other_commands() {
     let up = upstream();
-    let dir = home(&up);
+    // The exporting machine has a host of its own (1.8b L4): another machine trusts a host, and
+    // never one with its own host's name.
+    let dir = home_on(&up, LAPTOP);
     let (code, out, err) = run(&dir, &["prefetch", "ecb/fx_rate(base: *, quote: *, date: *)"]);
     assert_eq!(code, 0, "{err}");
     let p = json::parse(out.trim_end().as_bytes()).unwrap();
@@ -102,7 +113,25 @@ fn the_other_commands() {
     let (code, out, err) = run(&other, &["--offline", "import", bundle.to_str().unwrap(), "--trust-key", &machine]);
     assert_eq!(code, 0, "{err}");
     let im = json::parse(out.trim_end().as_bytes()).unwrap();
-    assert_eq!(im.get("trusted"), Some(&Value::Array(vec![Value::String(machine.clone())])));
+    assert_eq!(im.get("trusted"), Some(&Value::Array(vec![Value::String(LAPTOP.to_string())])));
+    let (code, out, err) = run(&other, &["trust", "list"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(LAPTOP), "{out}");
+    // A machine on the same host name as the importer is never trusted.
+    let same = home(&up);
+    let same_bundle = same.path().join("same.json");
+    assert_eq!(run(&same, &["export", "--out", same_bundle.to_str().unwrap()]).0, 0);
+    let (_, out, _) = run(&same, &["key"]);
+    let same_machine = s(&json::parse(out.trim_end().as_bytes()).unwrap(), "machine");
+    let (code, _, _) =
+        run(&other, &["--offline", "import", same_bundle.to_str().unwrap(), "--trust-key", &same_machine]);
+    assert_ne!(code, 0);
+    // Rotation prints the old and new key ids.
+    let (code, out, err) = run(&dir, &["key", "rotate"]);
+    assert_eq!(code, 0, "{err}");
+    let rot = json::parse(out.trim_end().as_bytes()).unwrap();
+    assert_eq!(s(&rot, "old_key_id"), machine);
+    assert_ne!(s(&rot, "new_key_id"), machine);
     let (code, out2, _) = run(&other, &["--offline", "get", USD]);
     assert_eq!(code, 0);
     let (_, out1, _) = run(&dir, &["get", USD]);

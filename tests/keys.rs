@@ -166,9 +166,8 @@ fn another_machine_s_receipts_are_quarantined_until_it_is_trusted() {
     let im = t.a.import(&t.bundle, &[]).unwrap();
     assert!(im.failed.is_empty(), "{:?}", im.failed);
     assert_eq!(t.a.quarantined().unwrap().len(), 1);
-    match t.a.get(B1) {
-        Ok(r) => assert_ne!(r.status, 200, "{}", String::from_utf8_lossy(&r.body)),
-        Err(_) => {}
+    if let Ok(r) = t.a.get(B1) {
+        assert_ne!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     }
 }
 
@@ -226,9 +225,8 @@ fn a_revoked_machine_s_later_receipts_do_not_verify() {
         "{}",
         String::from_utf8_lossy(&v.to_jcs())
     );
-    match t.a.get("laptop.invalid/b1(day: 2026-11-02)") {
-        Ok(r) => assert_ne!(r.status, 200, "{}", String::from_utf8_lossy(&r.body)),
-        Err(_) => {}
+    if let Ok(r) = t.a.get("laptop.invalid/b1(day: 2026-11-02)") {
+        assert_ne!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     }
 }
 

@@ -1,6 +1,7 @@
 //! Brief test 6: a working set exported from one resolver and imported into a fresh one
 //! answers the same cells with identical bytes for signed receipts; local receipts import but
-//! are labelled unverifiable, unless their machine key is trusted with --trust-key.
+//! are labelled unverifiable, unless their machine's host is trusted with --trust-key (1.8b L4:
+//! by host, never this machine's own host, never merged into this machine's key document).
 
 mod common;
 
@@ -22,8 +23,15 @@ struct Exported {
 }
 
 fn exported(up: &Upstream) -> Exported {
+    exported_from(up, "local.invalid")
+}
+
+/// The working set of a machine whose unrooted host is `host` (1.8b L4).
+fn exported_from(up: &Upstream, host: &str) -> Exported {
     let dir = TempDir::new("export-a");
-    let a = resolver(&dir, up);
+    let mut c = config(&dir, up);
+    c.host = host.to_string();
+    let a = datumesh_local::Resolver::open(c).unwrap();
     a.prefetch(
         r#"scripture/verse_text(corpus: "quran", book: *, chapter: *, verse: *, edition: "uthmani")"#,
         None,
@@ -87,10 +95,13 @@ fn a_fresh_resolver_answers_the_same_bytes_offline_after_import() {
     assert_eq!(s(&receipt(&own.body), "computed_by"), format!("local.invalid#{}", b.key_id()));
 }
 
+/// The laptop's cell, as the importer names it.
+const LAPTOP_CLOSED: &str = "laptop.invalid/closed(date: 2026-12-25)";
+
 #[test]
 fn a_trusted_machine_key_makes_its_receipts_answer_and_verify() {
     let up = upstream();
-    let e = exported(&up);
+    let e = exported_from(&up, LAPTOP);
     let dir = TempDir::new("import-c");
     let c = resolver(&dir, &up);
     c.set_offline(true);
@@ -98,32 +109,36 @@ fn a_trusted_machine_key_makes_its_receipts_answer_and_verify() {
     assert!(c.import(&e.bundle, &["0123456789abcdef".to_string()]).is_err());
     let im = c.import(&e.bundle, std::slice::from_ref(&e.key_id)).unwrap();
     assert!(im.failed.is_empty(), "{:?}", im.failed);
-    assert_eq!(im.trusted, vec![e.key_id.clone()]);
+    // Trust is by host (1.8b L4).
+    assert_eq!(im.trusted, vec![LAPTOP.to_string()]);
     assert!(im.quarantined.is_empty());
     assert_eq!(im.computed, 1);
-    let r = c.get(CLOSED).unwrap();
-    assert_eq!(r.body, e.closed);
-    assert!(r.label.as_deref().unwrap_or("").contains(&e.key_id), "{:?}", r.label);
+    let r = c.get(LAPTOP_CLOSED).unwrap();
+    // The same receipt; the envelope differs (this machine is not the signer, so its trust is not
+    // `computed`, and the exporter's request was written with a prefix).
+    assert_eq!(receipt(&r.body).to_jcs(), receipt(&e.closed).to_jcs());
+    assert_eq!(r.label.as_deref(), Some("trusted machine laptop.invalid"));
     let v = c.verify(&receipt(&r.body).to_jcs());
     assert_eq!(v.get("ok"), Some(&Value::Bool(true)), "{}", String::from_utf8_lossy(&v.to_jcs()));
-    // The key document here now carries both machines' keys.
+    // Never merged: this machine's key document still has its own key only.
     let doc = json::parse(&c.key_document()).unwrap();
+    assert_eq!(doc.get("host").and_then(Value::as_str), Some("local.invalid"));
     let n = match doc.get("keys") {
         Some(Value::Array(k)) => k.len(),
         _ => 0,
     };
-    assert_eq!(n, 2);
+    assert_eq!(n, 1);
     // Trust survives a restart.
     drop(c);
     let c = resolver(&dir, &up);
     c.set_offline(true);
-    assert_eq!(c.get(CLOSED).unwrap().body, e.closed);
+    assert_eq!(receipt(&c.get(LAPTOP_CLOSED).unwrap().body).to_jcs(), receipt(&e.closed).to_jcs());
 }
 
 #[test]
 fn a_later_import_with_trust_releases_the_quarantine() {
     let up = upstream();
-    let e = exported(&up);
+    let e = exported_from(&up, LAPTOP);
     let dir = TempDir::new("import-d");
     let d = resolver(&dir, &up);
     d.set_offline(true);
@@ -131,7 +146,19 @@ fn a_later_import_with_trust_releases_the_quarantine() {
     let im = d.import(&e.bundle, std::slice::from_ref(&e.key_id)).unwrap();
     assert!(im.failed.is_empty(), "{:?}", im.failed);
     assert!(d.quarantined().unwrap().is_empty());
-    assert_eq!(d.get(CLOSED).unwrap().body, e.closed);
+    assert_eq!(receipt(&d.get(LAPTOP_CLOSED).unwrap().body).to_jcs(), receipt(&e.closed).to_jcs());
+}
+
+#[test]
+fn a_machine_with_this_machines_host_is_never_trusted() {
+    let up = upstream();
+    let e = exported(&up);
+    let dir = TempDir::new("import-e");
+    let d = resolver(&dir, &up);
+    d.set_offline(true);
+    assert!(d.import(&e.bundle, std::slice::from_ref(&e.key_id)).is_err());
+    // Its receipt stays aside, and this machine's document is unchanged.
+    assert_eq!(d.import(&e.bundle, &[]).unwrap().quarantined.len(), 1);
 }
 
 #[test]
