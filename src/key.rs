@@ -32,7 +32,7 @@ impl std::fmt::Debug for MachineKey {
     }
 }
 
-fn parse_hex(s: &str) -> Option<[u8; 32]> {
+pub(crate) fn parse_hex(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 {
         return None;
     }

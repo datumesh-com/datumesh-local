@@ -98,6 +98,8 @@ pub mod mcp;
 #[cfg(feature = "resolver")]
 mod resolver;
 #[cfg(feature = "resolver")]
+mod rooting;
+#[cfg(feature = "resolver")]
 pub mod serve;
 #[cfg(feature = "resolver")]
 mod trust;
@@ -118,6 +120,8 @@ pub use key::MachineKey;
 pub use resolver::{
     Defined, Found, Prefetched, PublishedCell, PublishedCells, Quarantined, Refreshed, Reply, Resolver, Rotated, Source,
 };
+#[cfg(feature = "resolver")]
+pub use rooting::{RootKind, RootPlan, Rooted, RootedCell, RootedFunction};
 #[cfg(feature = "resolver")]
 pub use trust::TrustedMachine;
 
@@ -220,6 +224,9 @@ pub enum Error {
     Define(String),
     /// A bundle could not be read or written.
     Bundle(String),
+    /// A rooting refused (CONTRACT-1.8b L5): the namespace, the key, the key document, a name
+    /// not under this machine's host or not bound here.
+    Rooting(String),
     /// `serve` was asked to bind an address other than 127.0.0.1.
     Address(String),
 }
@@ -245,6 +252,7 @@ impl std::fmt::Display for Error {
             Error::NoInputs { function } => write!(f, "{function} is a formula with no inputs: refused"),
             Error::Define(d) => write!(f, "define: {d}"),
             Error::Bundle(d) => write!(f, "bundle: {d}"),
+            Error::Rooting(d) => write!(f, "rooting: {d}"),
             Error::Address(d) => write!(f, "address: {d}"),
             Error::Trust(d) => write!(f, "trust: {d}"),
             Error::UntrustedInput { function, input } => write!(

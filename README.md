@@ -184,6 +184,32 @@ this machine's `local.invalid` key document, and its receipts verify and answer.
 key, as `trust add` does, and is refused for this machine's own host: see the section above.
 The bundle's key document is never merged into this machine's.)
 
+## Rooting
+
+`datumesh root --namespace <ns> --key <file> [--export <file>] <name>...` republishes this
+machine's names under a rooted namespace `<ns>` (for example `mesh-test.datumesh.com/scratch_1_8b`)
+whose key this machine holds (CONTRACT-1.8b L5). The names (`local/...` or full) are the rooting
+set; `local.invalid/x` becomes `<ns>/x`. The key file is read in place: mode 0600, a 64-hex seed
+on its first line (or a machine key file). It is never written to the configuration, the store
+or the output. The host's key document is fetched through the client (the allowlist or `peers`),
+and the key's id must be in it with a window holding now.
+
+- A stored function keeps its descriptor, so its hash is kept. The latest version of each held
+  cell of it is re-signed by the namespace key: the same cell (rooted), `fn_hash`, arguments,
+  `value`, `valid`, `licence` and `summary`, with `tx` = `asof` = `issued` = now, `publisher` the
+  namespace, and the namespace's host as signer.
+- A formula's inputs in the set are rewritten to the rooted names, so its hash changes. An input
+  that is not in the set, under this machine's host, is refused (`E_UNROOTED_INPUT`).
+- Computed cells are never copied or re-signed: they are listed under `computed`, as rooted calls,
+  so the mesh can recompute them.
+
+Without `--export` this is a dry run: it writes nothing and prints the plan as one JSON line
+(`namespace`, `key_id`, `functions` with `from`, `to`, `from_hash`, `to_hash`, `kind`, `cells`,
+`computed`). With `--export <file>` it also writes a bundle 1 (`datumesh_http::bundle::build`,
+mode 0600, a new file) that `datumesh-mesh import-signed` imports. Checks run in order and the
+first failure is reported with nothing written, not even the export file. Nothing is sent
+anywhere except the key document request.
+
 ## Configuration
 
 `config.json` in the configuration directory (`$XDG_CONFIG_HOME/datumesh`,

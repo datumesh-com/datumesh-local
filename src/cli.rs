@@ -24,6 +24,9 @@
 //!   trust add <key document file>      trust another machine's key document (its host)
 //!   trust revoke <host>                revoke trust from now
 //!   trust list                         the trusted machines
+//!   root --namespace <ns> --key <file> [--export <file>] <name>...
+//!                                      root this machine's names under <ns>, signed by the key of
+//!                                      its host (dry run without --export; CONTRACT-1.8b L5)
 //! ```
 //!
 //! A request is a call (`name(arg: value, ...)`, `N(keys).m(args)`, `N[label]`, short names from the
@@ -41,7 +44,7 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 
-use crate::{Config, Error, Resolver, Source};
+use crate::{Config, Error, Resolver, RootPlan, Source};
 
 const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
   get <request>...
@@ -58,7 +61,8 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publ
   serve [--listen 127.0.0.1:<port>]
   mcp [--http] [--port <n>] [--listen <addr>]
   key [rotate]
-  trust <add <file>|revoke <host>|list>";
+  trust <add <file>|revoke <host>|list>
+  root --namespace <ns> --key <file> [--export <file>] <name>...";
 
 /// Runs the command line (without the program name) with these streams; the exit status.
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -529,6 +533,23 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 }
                 _ => return Err(Failure::Usage("trust: add <file>, revoke <host> or list".into())),
             }
+            Ok(0)
+        }
+        "root" => {
+            let a = Args::parse(rest, &["--namespace", "--key", "--export"], &[])?;
+            let (Some(namespace), Some(key)) = (a.value("--namespace"), a.value("--key")) else {
+                return Err(Failure::Usage("root: --namespace and --key".into()));
+            };
+            if a.positional.is_empty() {
+                return Err(Failure::Usage("root: at least one name".into()));
+            }
+            let plan = RootPlan {
+                namespace: namespace.to_string(),
+                key_path: PathBuf::from(key),
+                names: a.positional.clone(),
+                export: a.value("--export").map(PathBuf::from),
+            };
+            jline(out, r.root(&plan)?.to_json())?;
             Ok(0)
         }
         other => Err(Failure::Usage(format!("unknown command {other}"))),

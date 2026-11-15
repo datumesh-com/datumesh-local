@@ -15,6 +15,12 @@ CONTRACT-1.8b items 3, 7 and 8 and difference 1.
 - Serve (L7): the `poll` and `next` links of this machine's host are on the loopback origin
   (`http://127.0.0.1:<port>/...`); `Link: rel="canonical"` stays `https://<host>/...`, and the
   endpoint now sends it on answers about now.
+- Rooting (L5): `datumesh root --namespace <ns> --key <file> [--export <file>] <name>...` and
+  `Resolver::root(&RootPlan)` republish this machine's names under a rooted namespace, signed by the
+  namespace host's key (read in place, mode 0600, never stored). Stored cells are re-signed with
+  `tx` = `asof` = `issued` = now; formulas are rewritten to the rooted names; computed cells are
+  listed, not copied. Without `--export` it is a dry run that prints the plan as JSON; with it, a
+  bundle 1 is written to a new file (mode 0600). New `Error::Rooting`.
 - Defaults: the default alias map's `tx` is 2026-01-01.
 - Key rotation (L4): `datumesh key rotate` and `Resolver::rotate_key()` make a new key from now;
   the old one is kept as `<key file>.retired-<id>` and listed, with `valid_to`, in
