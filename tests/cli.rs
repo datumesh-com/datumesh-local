@@ -111,7 +111,7 @@ fn the_other_commands() {
     let lines = dir.path().join("p.jsonl");
     std::fs::write(
         &lines,
-        r#"{"function": "local/n", "bound": "2026-11-01T00:00:00.000000Z", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}}"#,
+        r#"{"function": "local/n", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}}"#,
     )
     .unwrap();
     let (code, out, err) = run(&dir, &["publish", lines.to_str().unwrap()]);

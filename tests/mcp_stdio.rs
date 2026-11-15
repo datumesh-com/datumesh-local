@@ -229,7 +229,7 @@ fn publish_two_stored_cells_under_local() {
     let srv = McpServer::new(Arc::new(resolver_at(&dir, &up, &clock)));
     let cell = |day: &str, n: &str| {
         format!(
-            r#"{{"cell":{{"fn":"local/level","args":{{"day":{{"type":"date","value":"{day}"}}}}}},"value":{{"type":"number","value":"{n}"}},"tx":"2026-11-15T12:00:00.000000Z","asof":"2026-11-02T00:00:00.000000Z","licence":"CC0-1.0","summary":"A level."}}"#
+            r#"{{"cell":{{"fn":"local/level","args":{{"day":{{"type":"date","value":"{day}"}}}}}},"value":{{"type":"number","value":"{n}"}},"tx":"2026-11-15T12:00:00.000000Z","asof":"2026-11-15T12:00:00.000000Z","licence":"CC0-1.0","summary":"A level."}}"#
         )
     };
     let lines = format!(
