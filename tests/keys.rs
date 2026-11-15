@@ -250,3 +250,46 @@ fn a_machine_cannot_trust_its_own_host() {
     let a = resolver_at(&dir, &up, &clock);
     assert!(a.trust_machine(&a.key_document()).is_err());
 }
+
+#[test]
+fn a_replacement_key_document_must_keep_every_trusted_key() {
+    let t = two_machines();
+    t.clock.set(T_1040);
+    t.a.trust_machine(&t.b.key_document()).unwrap();
+    let trust = t.a.config().config_dir.join("trust.json");
+
+    // B rotates (K_B1 -> K_B2) and publishes a cell signed by K_B2.
+    t.clock.set(T1);
+    let rot = t.b.rotate_key().unwrap();
+    let (k_b1, k_b2) = (rot.old_key_id, rot.new_key_id);
+    assert_ne!(k_b1, k_b2);
+    t.clock.set(T_1130);
+    let f = jsonl(&t.dir_tmp, "b2.jsonl", &[&cell_line("2026-11-02", "9", T_1130)]);
+    t.b.publish(&f).unwrap();
+    let later = t.b.get("local/b1(day: 2026-11-02)").unwrap();
+    assert_eq!(later.status, 200, "{}", String::from_utf8_lossy(&later.body));
+    assert!(s(&receipt(&later.body), "computed_by").ends_with(&format!("#{k_b2}")));
+
+    // The new document lists K_B1 (retired, with valid_to) and K_B2: accepted.
+    let new_doc = t.b.key_document();
+    let entries = key_entries_of(&new_doc);
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|e| s(e, "id") == k_b1 && e.get("valid_to").is_some()));
+    t.a.trust_machine(&new_doc).unwrap();
+    let _ = t.a.import(&t.b.export().unwrap(), &[]);
+    let v = t.a.verify(&receipt(&later.body).to_jcs());
+    assert_eq!(v.get("ok"), Some(&Value::Bool(true)), "{}", String::from_utf8_lossy(&v.to_jcs()));
+
+    // A document for the same host listing only K_B2 drops K_B1: refused, nothing changes.
+    let before = std::fs::read(&trust).unwrap();
+    let Value::Object(members) = json::parse(&new_doc).unwrap() else { panic!("key document is not an object") };
+    let only_b2: Vec<Value> = entries.into_iter().filter(|e| s(e, "id") == k_b2).collect();
+    assert_eq!(only_b2.len(), 1);
+    let members: Vec<(String, Value)> = members
+        .into_iter()
+        .map(|(k, v)| if k == "keys" { (k, Value::Array(only_b2.clone())) } else { (k, v) })
+        .collect();
+    let e = t.a.trust_machine(&Value::Object(members).to_jcs()).unwrap_err();
+    assert!(matches!(e, Error::Trust(..)), "{e:?}");
+    assert_eq!(std::fs::read(&trust).unwrap(), before);
+}
