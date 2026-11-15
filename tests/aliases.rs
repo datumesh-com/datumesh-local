@@ -136,3 +136,28 @@ fn a_prefix_alias_in_a_formula_source_is_expanded_before_hashing() {
     let e = r.define_formula("local/c", r#"@nope/x(base: "EUR", date: date) * 2"#, &sig).unwrap_err();
     assert!(e.to_string().contains("E_FORMULA_ALIAS"), "{e}");
 }
+
+/// A prefix request's `resolved.call` is the full canonical call (SPEC 16.7): labelled arguments
+/// sorted, values as literals, `?asof=` when the request had one; never the cell URI's form.
+#[test]
+fn a_prefix_requests_resolved_call_is_the_canonical_call() {
+    let up = upstream();
+    let dir = TempDir::new("aliases-canonical");
+    let r = open_with(&dir, &up, &map(&[entry("ecb/", "mesh-test.datumesh.com/ecb/", TX_A)]));
+    let full = r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", date: 2026-10-30, quote: "USD")"#;
+    let a = r.get(&format!("ecb/{CALL}?asof=2026-11-11T00:00:00.000000Z")).unwrap();
+    assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));
+    assert_eq!(s(&resolved(&a.body), "call"), format!("{full}?asof=2026-11-11T00:00:00.000000Z"));
+    // Positional, and answered without a receipt (offline, not held): the same canonical call.
+    let dir2 = TempDir::new("aliases-canonical-offline");
+    let r2 = open_with(&dir2, &up, &map(&[entry("ecb/", "mesh-test.datumesh.com/ecb/", TX_A)]));
+    assert_eq!(r2.get(&format!("ecb/{CALL}?asof=2026-11-11T00:00:00.000000Z")).unwrap().status, 200);
+    r2.set_offline(true);
+    let b = r2.get("ecb/fx_rate(EUR, GBP, 2026-10-29)").unwrap();
+    assert_eq!(
+        s(&resolved(&b.body), "call"),
+        r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", date: 2026-10-29, quote: "GBP")"#,
+        "{}",
+        String::from_utf8_lossy(&b.body)
+    );
+}
