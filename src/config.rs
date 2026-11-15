@@ -30,8 +30,9 @@ pub const DEFAULT_ALIASES: &str = include_str!("../defaults/aliases.json");
 pub struct Config {
     /// Where `config.json`, the machine key and the alias map are.
     pub config_dir: PathBuf,
-    /// This machine's host (config member `host`). Only `local.invalid` is supported until the
-    /// machine-host work (CONTRACT-1.8b L4); [`crate::Resolver::open_with_clock`] refuses any other.
+    /// This machine's host (config member `host`, default `local.invalid`): a name under
+    /// `.invalid` (CONTRACT-1.8b L4). Its cells are `<host>/...`, its receipts say `computed_by`
+    /// `<host>#<key id>`, and `local/` in names and aliases means `<host>/`.
     pub host: String,
     /// Where the store and the resolver's index are.
     pub data_dir: PathBuf,
@@ -58,6 +59,26 @@ pub struct Config {
     pub peers: BTreeMap<String, String>,
     /// The time limit of one request to a mesh.
     pub timeout: Duration,
+}
+
+/// Whether `host` is a machine's host: a name under `.invalid` (RFC 2606), lowercase labels of
+/// letters, digits and hyphens, at least one label before `.invalid` (CONTRACT-1.8b L4).
+pub fn is_machine_host(host: &str) -> bool {
+    host.strip_suffix(".invalid").is_some_and(|stem| {
+        !stem.is_empty()
+            && stem
+                .split('.')
+                .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+    })
+}
+
+/// Checks a configured host (see [`is_machine_host`]): `Error::Config` otherwise.
+pub fn check_host(host: &str) -> Result<(), Error> {
+    if is_machine_host(host) {
+        Ok(())
+    } else {
+        Err(Error::Config(format!("host {host}: must be a name under .invalid (CONTRACT-1.8b L4)")))
+    }
 }
 
 /// The platform's configuration and data directories for Datumesh.
@@ -195,7 +216,8 @@ impl Config {
                     c.host = match x {
                         Value::String(s) => s.clone(),
                         _ => return Err(Error::Config("host: not a string".into())),
-                    }
+                    };
+                    check_host(&c.host)?;
                 }
                 "allowlist" => c.allowlist = strings(x, k)?,
                 "open_licences" => c.open_licences = strings(x, k)?,

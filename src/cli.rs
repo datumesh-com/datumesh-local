@@ -20,6 +20,10 @@
 //!   mcp                                MCP over stdio (stdout carries only MCP messages)
 //!   mcp --http [--port <n>] [--listen <addr>]  MCP over Streamable HTTP on loopback (default port 7734)
 //!   key                                the machine id and this machine's key document (public)
+//!   key rotate                         a new key from now; the old one retired (CONTRACT-1.8b L4)
+//!   trust add <key document file>      trust another machine's key document (its host)
+//!   trust revoke <host>                revoke trust from now
+//!   trust list                         the trusted machines
 //! ```
 //!
 //! A request is a call (`name(arg: value, ...)`, `N(keys).m(args)`, `N[label]`, short names from the
@@ -53,7 +57,8 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publ
   verify <file or ->
   serve [--listen 127.0.0.1:<port>]
   mcp [--http] [--port <n>] [--listen <addr>]
-  key";
+  key [rotate]
+  trust <add <file>|revoke <host>|list>";
 
 /// Runs the command line (without the program name) with these streams; the exit status.
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -130,6 +135,15 @@ impl Args {
 
 fn s(v: impl Into<String>) -> Value {
     Value::String(v.into())
+}
+
+/// A trusted machine as the `trust` commands print it.
+fn trusted_json(m: &crate::TrustedMachine) -> Value {
+    Value::Object(vec![
+        ("host".into(), s(m.host.clone())),
+        ("revoked_at".into(), m.revoked_at.clone().map_or(Value::Null, s)),
+        ("trusted_from".into(), s(m.trusted_from.clone())),
+    ])
 }
 
 fn jline(out: &mut dyn Write, v: Value) -> Result<(), Failure> {
@@ -473,13 +487,48 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             }
         }
         "key" => {
-            jline(
-                out,
-                Value::Object(vec![
-                    ("key_document".into(), json::parse(&r.key_document()).unwrap_or(Value::Null)),
-                    ("machine".into(), s(r.key_id())),
-                ]),
-            )?;
+            let a = Args::parse(rest, &[], &[])?;
+            match a.positional.as_slice() {
+                [] => jline(
+                    out,
+                    Value::Object(vec![
+                        ("key_document".into(), json::parse(&r.key_document()).unwrap_or(Value::Null)),
+                        ("machine".into(), s(r.key_id())),
+                    ]),
+                )?,
+                [c] if c == "rotate" => {
+                    let rot = r.rotate_key()?;
+                    jline(
+                        out,
+                        Value::Object(vec![
+                            ("at".into(), s(rot.at)),
+                            ("new_key_id".into(), s(rot.new_key_id)),
+                            ("old_key_id".into(), s(rot.old_key_id)),
+                        ]),
+                    )?
+                }
+                _ => return Err(Failure::Usage("key: no argument, or rotate".into())),
+            }
+            Ok(0)
+        }
+        "trust" => {
+            let a = Args::parse(rest, &[], &[])?;
+            match a.positional.as_slice() {
+                [c, file] if c == "add" => {
+                    let m = r.trust_machine(&std::fs::read(file).map_err(io)?)?;
+                    jline(out, trusted_json(&m))?;
+                }
+                [c, host] if c == "revoke" => {
+                    r.revoke_machine(host)?;
+                    let m = r.trusted_machines()?.into_iter().find(|m| &m.host == host);
+                    jline(out, m.as_ref().map_or(Value::Null, trusted_json))?;
+                }
+                [c] if c == "list" => {
+                    let list = r.trusted_machines()?.iter().map(trusted_json).collect();
+                    jline(out, Value::Object(vec![("machines".into(), Value::Array(list))]))?;
+                }
+                _ => return Err(Failure::Usage("trust: add <file>, revoke <host> or list".into())),
+            }
             Ok(0)
         }
         other => Err(Failure::Usage(format!("unknown command {other}"))),

@@ -99,6 +99,8 @@ pub mod mcp;
 mod resolver;
 #[cfg(feature = "resolver")]
 pub mod serve;
+#[cfg(feature = "resolver")]
+mod trust;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
@@ -114,8 +116,10 @@ pub use gate::LicenceGate;
 pub use key::MachineKey;
 #[cfg(feature = "resolver")]
 pub use resolver::{
-    Defined, Found, Prefetched, PublishedCell, PublishedCells, Quarantined, Refreshed, Reply, Resolver, Source,
+    Defined, Found, Prefetched, PublishedCell, PublishedCells, Quarantined, Refreshed, Reply, Resolver, Rotated, Source,
 };
+#[cfg(feature = "resolver")]
+pub use trust::TrustedMachine;
 
 /// The `resolved` member of an envelope for `resolved` (5.5, 16.7), written as core writes it.
 pub(crate) fn resolved_member(resolved: &datumesh_core::Resolved) -> Option<datumesh_core::json::Value> {
@@ -125,7 +129,7 @@ pub(crate) fn resolved_member(resolved: &datumesh_core::Resolved) -> Option<datu
         .and_then(|a| a.to_value().get("resolved").cloned())
 }
 
-/// The unrooted host of this machine's cells.
+/// The default unrooted host of this machine's cells (config member `host`, CONTRACT-1.8b L4).
 pub const LOCAL_HOST: &str = "local.invalid";
 
 /// The label of receipts this machine signed, in CLI and HTTP output.
@@ -184,6 +188,18 @@ pub enum Error {
         /// The unrooted input it reads.
         input: String,
     },
+    /// A trusted machine's key document is refused (CONTRACT-1.8b L4): this machine's own host,
+    /// a host not under `.invalid`, a replacement that drops a trusted key, a key document that is
+    /// not one, a machine not trusted.
+    Trust(String),
+    /// A formula reads an unrooted host that is neither this machine's nor trusted and unrevoked
+    /// (CONTRACT-1.8b L4): refused at define time.
+    UntrustedInput {
+        /// The function defined.
+        function: String,
+        /// The unrooted input it reads.
+        input: String,
+    },
     /// A binding's start is earlier than the mesh clock (rule A): refused, nothing written. The
     /// Display is the library's (`binding start … is earlier than the mesh clock … (rule A)`).
     StartBeforeNow {
@@ -230,6 +246,11 @@ impl std::fmt::Display for Error {
             Error::Define(d) => write!(f, "define: {d}"),
             Error::Bundle(d) => write!(f, "bundle: {d}"),
             Error::Address(d) => write!(f, "address: {d}"),
+            Error::Trust(d) => write!(f, "trust: {d}"),
+            Error::UntrustedInput { function, input } => write!(
+                f,
+                "{function} reads {input}, under an unrooted host that is neither this machine's nor trusted here (CONTRACT-1.8b L4)"
+            ),
         }
     }
 }

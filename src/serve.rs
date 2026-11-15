@@ -27,7 +27,7 @@ use axum::Router;
 use datumesh_core::json::{self, Value};
 use datumesh_http::Mesh;
 
-use crate::{Error, Resolver, LOCAL_HOST};
+use crate::{Error, Resolver};
 
 /// Percent-encodes what a URI path cannot carry as itself (spaces, quotes, non-ASCII).
 pub fn encode_path(rest: &str) -> String {
@@ -106,7 +106,8 @@ async fn loopback(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> R
     let mut changed = false;
     for (k, v) in members.iter_mut() {
         if let ("poll" | "next", Value::String(url)) = (k.as_str(), v) {
-            let local = url.strip_prefix("https://").and_then(|r| r.split('/').next()) == Some(LOCAL_HOST);
+            let local =
+                url.strip_prefix("https://").and_then(|r| r.split('/').next()) == Some(r.config().host.as_str());
             if local {
                 *url = loopback_link(&origin, url);
                 changed = true;

@@ -28,7 +28,7 @@ use crate::alias::{request_asof, request_head, AliasMap};
 use crate::fetch::{host_of, name_of, network_failure, Shared, END};
 use crate::gate::is_unrooted;
 use crate::resolver::{client_error, Callees, Reply, Resolver, Source};
-use crate::{Error, FOREIGN_UNAVAILABLE_STATUS, LOCAL_HOST};
+use crate::{Error, FOREIGN_UNAVAILABLE_STATUS};
 
 /// The largest document a class or describe fetch reads.
 const MAX: u64 = 16 << 20;
@@ -426,13 +426,13 @@ impl Resolver {
     pub fn define_class(&self, name: &str, descriptor: &[u8]) -> Result<crate::Defined, Error> {
         let s = &self.shared;
         let full = self.aliases_at(None).expand(name);
-        if host_of(&full) != LOCAL_HOST || !datumesh_formula::names::is_function_name(&full) {
+        let host = s.config.host.as_str();
+        if host_of(&full) != host || !datumesh_formula::names::is_function_name(&full) {
             return Err(Error::Request(format!("{name}: a class is defined under local/ only")));
         }
         let now = s.now();
-        let def =
-            datumesh_formula::definition::define_class(&full, descriptor, LOCAL_HOST, &Callees { shared: s }, &now)
-                .map_err(|e| Error::Define(e.to_string()))?;
+        let def = datumesh_formula::definition::define_class(&full, descriptor, host, &Callees::new(s), &now)
+            .map_err(|e| Error::Define(e.to_string()))?;
         let h = s.store.put_class(&def.bytes).map_err(|e| Error::Store(e.to_string()))?;
         let bound = match s.store.resolve_class(&full, END).map_err(|e| Error::Store(e.to_string()))? {
             Some(x) if x == h => false,
@@ -441,7 +441,7 @@ impl Resolver {
                 true
             }
         };
-        s.index.hold_name(&full, LOCAL_HOST, &now)?;
+        s.index.hold_name(&full, host, &now)?;
         self.mesh().clear_memo();
         Ok(crate::Defined { name: full, fn_hash: h, bound })
     }
@@ -483,7 +483,7 @@ impl Resolver {
                 None => return Ok(self.mesh_reply(local, Source::Local)),
             }
         };
-        if target == LOCAL_HOST {
+        if target == s.config.host {
             return Ok(self.mesh_reply(local, Source::Local));
         }
         if let Err(why) = s.may_fetch(&target) {

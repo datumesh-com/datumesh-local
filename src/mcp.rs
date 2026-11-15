@@ -24,7 +24,7 @@ use datumesh_core::json::{self, Value};
 use datumesh_core::{ClassDescriptor, Receipt};
 
 use crate::resolver::{call_form, cell_uri};
-use crate::{Error, Resolver, LOCAL_HOST, LOCAL_LABEL};
+use crate::{Error, Resolver};
 
 /// The protocol revision this server speaks.
 const PROTOCOL: &str = "2026-07-28";
@@ -300,10 +300,11 @@ impl McpServer {
         }
     }
 
-    /// The label of a receipt in an envelope signed by this machine (the resolver's label rule).
+    /// The label of a receipt in an envelope: this machine's, or a trusted machine's (the
+    /// resolver's label rule, CONTRACT-1.8b L4).
     fn label_of(&self, envelope: &Value) -> Option<String> {
         let r = Receipt::from_value(envelope.get("receipt")?).ok()?;
-        (r.signer_host() == LOCAL_HOST && r.key_id() == self.resolver.key_id()).then(|| LOCAL_LABEL.to_string())
+        self.resolver.signer_label(&r)
     }
 
     fn describe(&self, args: &Value) -> ToolResult {

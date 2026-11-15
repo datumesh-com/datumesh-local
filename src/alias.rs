@@ -111,6 +111,17 @@ impl AliasMap {
         Ok(AliasMap { entries })
     }
 
+    /// The map for this machine's host: an entry naming `local.invalid` (the default map's
+    /// `local/` → `local.invalid/`) names `host` instead (CONTRACT-1.8b L4).
+    pub(crate) fn for_host(mut self, host: &str) -> AliasMap {
+        for e in self.entries.iter_mut() {
+            if let Some(rest) = e.full.strip_prefix(crate::LOCAL_HOST).and_then(|r| r.strip_prefix('/')) {
+                e.full = format!("{host}/{rest}");
+            }
+        }
+        self
+    }
+
     /// The map in the file at `path`.
     pub fn load(path: &std::path::Path) -> Result<AliasMap, Error> {
         let bytes = std::fs::read(path).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;

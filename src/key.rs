@@ -1,7 +1,9 @@
 //! The machine key: an Ed25519 key generated at first run, kept in a file of mode 0600 in
 //! the configuration directory (never logged or printed), whose 16-hex key id is the machine
-//! id. Receipts this machine signs say `computed_by` `local.invalid#<key id>`. A new key (a
-//! reinstall) is a new machine.
+//! id. Receipts this machine signs say `computed_by` `<host>#<key id>` (the host is this
+//! machine's, `local.invalid` by default). A new key (a reinstall) is a new machine; a key
+//! rotated out (`datumesh key rotate`) is kept as a retired key: its file renamed beside the
+//! current one, its public entry in `retired-keys.json` with its `valid_to` (CONTRACT-1.8b L4).
 //!
 //! The file holds the 32-byte seed as 64 hex digits on its first line and, on the second,
 //! `valid_from=<instant>`: when the key was made, the start of its entry in the key document.
@@ -14,7 +16,7 @@ use datumesh_core::lexical;
 use datumesh_core::SigningKey;
 use datumesh_engine::{Clock, SystemClock};
 
-use crate::{Error, LOCAL_HOST};
+use crate::Error;
 
 /// The machine key (see the module documentation). `Debug` shows the key id only.
 #[derive(Clone)]
@@ -113,16 +115,47 @@ impl MachineKey {
             ("valid_from".into(), Value::String(self.valid_from.clone())),
         ])
     }
+}
 
-    /// `computed_by` of the receipts this key signs.
-    pub fn signer(&self) -> String {
-        format!("{LOCAL_HOST}#{}", self.key.key_id())
+/// The file of retired keys' public entries, in the configuration directory.
+pub const RETIRED_KEYS: &str = "retired-keys.json";
+
+/// The retired keys' entries (`retired-keys.json`, a JSON array), none when there is no file.
+pub fn retired_entries(config_dir: &Path) -> Result<Vec<Value>, Error> {
+    let path = config_dir.join(RETIRED_KEYS);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read(&path).map_err(|e| Error::Key(format!("{}: {e}", path.display())))?;
+    match datumesh_core::json::parse(&text) {
+        Ok(Value::Array(a)) => Ok(a),
+        _ => Err(Error::Key(format!("{}: not a JSON array of key entries", path.display()))),
     }
 }
 
-/// The key document of `local.invalid` with these key entries (each `{alg, id, public,
-/// valid_from}`), in key id order, without duplicates; checked as SPEC 9.2 says.
-pub fn local_key_document(entries: &[Value]) -> Result<Vec<u8>, Error> {
+/// Writes `bytes` to `path` with mode 0600, replacing it through a temporary file beside it.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let tmp = path.with_file_name(format!("{name}.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+}
+
+/// The key document of `host` with these key entries (each `{alg, id, public, valid_from,
+/// valid_to?}`), in key id order, without duplicates (the first of an id is kept); checked as
+/// SPEC 9.2 says.
+pub fn local_key_document(host: &str, entries: &[Value]) -> Result<Vec<u8>, Error> {
     let mut keys: Vec<Value> = Vec::new();
     for e in entries {
         let id = e.get("id").and_then(Value::as_str).unwrap_or("");
@@ -132,12 +165,12 @@ pub fn local_key_document(entries: &[Value]) -> Result<Vec<u8>, Error> {
     }
     keys.sort_by(|a, b| a.get("id").and_then(Value::as_str).cmp(&b.get("id").and_then(Value::as_str)));
     let doc = Value::Object(vec![
-        ("host".into(), Value::String(LOCAL_HOST.into())),
+        ("host".into(), Value::String(host.into())),
         ("keys".into(), Value::Array(keys)),
         ("proto".into(), Value::String("datumesh/1".into())),
     ])
     .to_jcs();
-    datumesh_core::keys_from_response(LOCAL_HOST, 200, Some(&doc))
+    datumesh_core::keys_from_response(host, 200, Some(&doc))
         .map_err(|e| Error::Key(format!("the local key document: {e}")))?;
     Ok(doc)
 }

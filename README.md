@@ -116,6 +116,30 @@ so they verify here at `signed` and `recomputed`; elsewhere they stop at
 A function under a rooted namespace may not read a local one: `define` refuses it
 (`Error::UnrootedInput`, code `E_UNROOTED_INPUT`; SPEC 2.5).
 
+The host is configurable (`host` in `config.json`, default `local.invalid`; it must be a name
+under `.invalid`). `local/` means `<host>/`, and receipts say `computed_by` `<host>#<key id>`.
+
+## Key rotation and trusted machines
+
+`datumesh key rotate` makes a new machine key from now. The old key file is renamed
+`<key file>.retired-<old id>` (mode 0600, kept, never deleted), and its public entry, with
+`valid_to` now, is appended to `retired-keys.json` in the configuration directory. This
+machine's key document then lists the current key and every retired one, so receipts the old
+key signed before the rotation still verify, and a receipt it signs after it fails with
+`E_KEY_NOT_VALID`. A rotation is refused unless its instant is later than the current key's
+`valid_from`. It prints the old key id, the new one and the instant as JSON.
+
+Another machine is trusted with `datumesh trust add <key document file>`: its key document
+(as its `key` command prints it) is kept in `trust.json` (mode 0600), with the instant it was
+trusted. Its effective document, with every key's `valid_to` cut to the revocation, is kept
+in the store under its host; this machine's own document never includes it. Receipts from a
+trusted host verify and answer, labelled `trusted machine <host>`. A document for an
+already trusted host replaces the old one only if it still lists every key trusted before
+(same `id` and `public`, retired or not). `datumesh trust revoke <host>` ends the trust from
+now: its earlier receipts still verify, later ones fail with `E_KEY_NOT_VALID`. `datumesh
+trust list` shows the trusted machines. A formula may read a trusted machine's cells; reading
+any other unrooted host is refused at define time (`Error::UntrustedInput`).
+
 ## The localhost endpoint
 
 `datumesh serve` binds 127.0.0.1 only (any other address is refused) and serves the mesh's
@@ -156,6 +180,9 @@ verifies every receipt again. Signed (rooted) receipts answer with identical byt
 signed by another machine's local key is kept aside, labelled `unverifiable: signed by
 another machine's local key`, unless you name that key: `--trust-key <key id>` adds it to
 this machine's `local.invalid` key document, and its receipts verify and answer.
+(Since 0.3.0, `--trust-key` trusts the host of the bundle's key document that carries the
+key, as `trust add` does, and is refused for this machine's own host: see the section above.
+The bundle's key document is never merged into this machine's.)
 
 ## Configuration
 

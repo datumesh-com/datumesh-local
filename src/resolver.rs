@@ -1,6 +1,6 @@
 //! The resolver: answers, definitions, prefetch and refresh, verification.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,8 +18,9 @@ use crate::config::Config;
 use crate::fetch::{self, host_of, name_of, network_failure, Gated, Shared, END};
 use crate::gate::{is_unrooted, LicenceGate};
 use crate::index::{Forwarded, Index};
-use crate::key::{key_entries, local_key_document, MachineKey};
-use crate::{foreign_unavailable_envelope, Error, FOREIGN_UNAVAILABLE_STATUS, LOCAL_HOST, LOCAL_LABEL};
+use crate::key::{key_entries, local_key_document, retired_entries, write_private, MachineKey, RETIRED_KEYS};
+use crate::trust;
+use crate::{foreign_unavailable_envelope, Error, FOREIGN_UNAVAILABLE_STATUS, LOCAL_LABEL};
 
 /// Where an answer came from.
 #[non_exhaustive]
@@ -184,6 +185,18 @@ pub struct Quarantined {
     pub bytes: Vec<u8>,
 }
 
+/// A key rotation made: the key it retired, the key it began, and the instant (CONTRACT-1.8b L4).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rotated {
+    /// The key retired (its file is kept as `<key file>.retired-<id>`).
+    pub old_key_id: String,
+    /// The key now signing.
+    pub new_key_id: String,
+    /// When the new key began (its `valid_from`, and the old key's `valid_to`).
+    pub at: String,
+}
+
 /// A cell line published: its call form, its URI and the hash of its receipt.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,16 +268,11 @@ impl Resolver {
         config: Config,
         clock: Arc<dyn datumesh_engine::Clock + Send + Sync>,
     ) -> Result<Resolver, Error> {
-        if config.host != LOCAL_HOST {
-            return Err(Error::Config(format!(
-                "host {}: only {LOCAL_HOST} is supported here (CONTRACT-1.8b L4)",
-                config.host
-            )));
-        }
+        crate::config::check_host(&config.host)?;
         let key = MachineKey::load_or_create_at(&config.key_file, clock.as_ref())?;
         let store = open_store(&config)?;
         let index = Index::open(&config.data_dir.join("index.sqlite"))?;
-        let aliases = AliasMap::load(&config.aliases_file)?;
+        let aliases = AliasMap::load(&config.aliases_file)?.for_host(&config.host);
         let mut cc = ClientConfig::default();
         cc.peers = config.peers.clone();
         cc.allowed = Some(config.allowlist.clone());
@@ -272,7 +280,16 @@ impl Resolver {
         let client = Client::new(cc);
         let gate = LicenceGate::new();
         let offline = AtomicBool::new(config.offline);
-        let shared = Arc::new(Shared { config, clock, key, store, client, index, gate, offline });
+        let shared = Arc::new(Shared {
+            config,
+            clock,
+            machine: RwLock::new(Arc::new(key)),
+            store,
+            client,
+            index,
+            gate,
+            offline,
+        });
         publish_key_document(&shared)?;
         let r = Resolver {
             mesh: RwLock::new(build_mesh(&shared, &aliases.at(&shared.now()), None)?),
@@ -283,20 +300,59 @@ impl Resolver {
         Ok(r)
     }
 
-    /// Puts the key document of `local.invalid` (this machine's key and the trusted ones) in
-    /// the store when it differs.
-    pub(crate) fn publish_key_document(&self) -> Result<(), Error> {
-        publish_key_document(&self.shared)
+    /// The machine id: the key id of this machine's current key.
+    pub fn key_id(&self) -> String {
+        self.shared.key().key_id().to_string()
     }
 
-    /// The machine id: the key id of this machine's key.
-    pub fn key_id(&self) -> &str {
-        self.shared.key.key_id()
-    }
-
-    /// The key document of `local.invalid` as this machine supplies it to verification.
+    /// This machine's key document (its host's: this machine's keys, retired ones included) as
+    /// verification uses it. Trusted machines' documents are not in it.
     pub fn key_document(&self) -> Vec<u8> {
-        self.shared.store.namespace(LOCAL_HOST).ok().flatten().map(|n| n.keydoc).unwrap_or_default()
+        self.shared.store.namespace(&self.shared.config.host).ok().flatten().map(|n| n.keydoc).unwrap_or_default()
+    }
+
+    /// Rotates this machine's key (`datumesh key rotate`, CONTRACT-1.8b L4): a new key from now;
+    /// the old key file is renamed `<key file>.retired-<old id>` (mode kept, never deleted) and
+    /// its public entry, with `valid_to` now, is appended to `retired-keys.json`. Refused unless
+    /// now is later than the current key's `valid_from`. Receipts from now on are signed by the
+    /// new key; the old one verifies up to its `valid_to`.
+    pub fn rotate_key(&self) -> Result<Rotated, Error> {
+        let s = &self.shared;
+        let now = s.now();
+        let old = s.key();
+        if now.as_str() <= old.valid_from() {
+            return Err(Error::Key(format!(
+                "rotation at {now} refused: the current key began at {} (a rotation must be later)",
+                old.valid_from()
+            )));
+        }
+        let dir = s.config.config_dir.clone();
+        // The old public entry, retired at now: recorded before anything moves.
+        let mut retired = retired_entries(&dir)?;
+        let Value::Object(mut entry) = old.entry() else { unreachable!("a key entry is an object") };
+        entry.push(("valid_to".into(), Value::String(now.clone())));
+        retired.push(Value::Object(entry));
+        write_private(&dir.join(RETIRED_KEYS), &Value::Array(retired).to_jcs())
+            .map_err(|e| Error::Key(format!("{RETIRED_KEYS}: {e}")))?;
+        // The old key file kept beside the new one.
+        let mut kept = s.config.key_file.clone().into_os_string();
+        kept.push(format!(".retired-{}", old.key_id()));
+        std::fs::rename(&s.config.key_file, &kept)
+            .map_err(|e| Error::Key(format!("{}: {e}", kept.to_string_lossy())))?;
+        let new = MachineKey::load_or_create_at(&s.config.key_file, s.clock.as_ref())?;
+        let new_id = new.key_id().to_string();
+        *s.machine.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(new);
+        publish_key_document(s)?;
+        self.rebuild_mesh()?;
+        Ok(Rotated { old_key_id: old.key_id().to_string(), new_key_id: new_id, at: now })
+    }
+
+    /// Builds the mesh again (its signing key, its aliases, its links): after a key change.
+    fn rebuild_mesh(&self) -> Result<(), Error> {
+        let base = self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mesh = build_mesh(&self.shared, &self.aliases_at(None), base)?;
+        *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        Ok(())
     }
 
     /// The configuration.
@@ -327,7 +383,7 @@ impl Resolver {
 
     /// Reads the alias map's file again (a refreshed snapshot).
     pub fn reload_aliases(&self) -> Result<(), Error> {
-        let m = AliasMap::load(&self.shared.config.aliases_file)?;
+        let m = AliasMap::load(&self.shared.config.aliases_file)?.for_host(&self.shared.config.host);
         let base = self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone();
         let mesh = build_mesh(&self.shared, &m.at(&self.shared.now()), base)?;
         *self.aliases.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(m);
@@ -361,17 +417,21 @@ impl Resolver {
 
     fn label_of(&self, reply: &mut Reply) {
         let Some(r) = reply.receipt() else { return };
-        if r.signer_host() != LOCAL_HOST {
-            return;
+        reply.label = self.signer_label(&r);
+    }
+
+    /// The label of a receipt's signer here: this machine's host is [`LOCAL_LABEL`], a trusted
+    /// machine's host is `trusted machine <host>` (CONTRACT-1.8b L4); none otherwise.
+    pub(crate) fn signer_label(&self, r: &Receipt) -> Option<String> {
+        let s = &self.shared;
+        if r.signer_host() == s.config.host {
+            return Some(LOCAL_LABEL.to_string());
         }
-        reply.label = Some(if r.key_id() == self.key_id() {
-            LOCAL_LABEL.to_string()
-        } else {
-            format!(
-                "local, machine {} (trusted here with --trust-key), verifies only where that key is trusted",
-                r.key_id()
-            )
-        });
+        // An unreadable trust file labels nothing: the receipt verifies or not on its own.
+        match trust::trusted(&s.config.config_dir, r.signer_host()) {
+            Ok(true) => Some(format!("trusted machine {}", r.signer_host())),
+            _ => None,
+        }
     }
 
     pub(crate) fn mesh_reply(&self, r: datumesh_http::envelope::Reply, source: Source) -> Reply {
@@ -520,7 +580,7 @@ impl Resolver {
         let source = if fetched.get() || !ctx.added.is_empty() { Source::Fetched } else { Source::Local };
         let reply = self.mesh_reply(reply, source);
         if let Some(r) = reply.receipt() {
-            if r.signer_host() == LOCAL_HOST && !r.inputs().is_empty() {
+            if r.signer_host() == s.config.host && !r.inputs().is_empty() {
                 s.index.answered(r.hash(), &r.cell().id(), &s.now())?;
             }
         }
@@ -604,10 +664,24 @@ impl Resolver {
         let source = aliases.expand_source(source);
         let now = s.now();
         let start = start.unwrap_or(&now).to_string();
-        let callees = Callees { shared: s };
-        let def =
-            datumesh_formula::definition::define_function(&name, &source, signature, &aliases.bare(), &callees, &now)
-                .map_err(|e| Error::Define(e.to_string()))?;
+        let callees = Callees::new(s);
+        let def = match datumesh_formula::definition::define_function(
+            &name,
+            &source,
+            signature,
+            &aliases.bare(),
+            &callees,
+            &now,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                // A callee under an unrooted host that is neither this machine's nor trusted here.
+                if let Some(input) = callees.untrusted.take() {
+                    return Err(Error::UntrustedInput { function: name, input });
+                }
+                return Err(Error::Define(e.to_string()));
+            }
+        };
         if def.descriptor.inputs.is_empty() {
             return Err(Error::NoInputs { function: name });
         }
@@ -668,6 +742,7 @@ impl Resolver {
     /// receipt hash, in file order ([`PublishedCells`]).
     pub fn publish_cells(&self, path: &Path) -> Result<PublishedCells, Error> {
         let s = &self.shared;
+        let host = s.config.host.clone();
         let text = std::fs::read_to_string(path).map_err(|e| Error::Request(format!("{}: {e}", path.display())))?;
         let aliases = self.aliases_at(None);
         let mut kept = String::new();
@@ -690,7 +765,7 @@ impl Resolver {
                     _ => None,
                 };
                 if let Some(full) = full {
-                    if host_of(&full) != LOCAL_HOST {
+                    if host_of(&full) != host {
                         return Err(Error::Request(format!("line {}: {full}: publish is under local/ only", i + 1)));
                     }
                     if k == "formula" {
@@ -705,7 +780,7 @@ impl Resolver {
                         for (ck, cx) in cm.iter_mut() {
                             if ck == "fn" {
                                 let full = aliases.expand(cx.as_str().unwrap_or(""));
-                                if host_of(&full) != LOCAL_HOST {
+                                if host_of(&full) != host {
                                     return Err(Error::Request(format!(
                                         "line {}: {full}: publish is under local/ only",
                                         i + 1
@@ -750,7 +825,7 @@ impl Resolver {
         };
         let mut published = out?;
         for n in &names {
-            s.index.hold_name(n, LOCAL_HOST, &s.now())?;
+            s.index.hold_name(n, &host, &s.now())?;
         }
         // Formulas after the stored functions they may read.
         for (name, v, start) in &formulas {
@@ -780,7 +855,7 @@ impl Resolver {
                     };
                     let held = crate::index::HeldCell {
                         cell_id: id.clone(),
-                        host: LOCAL_HOST.into(),
+                        host: host.clone(),
                         rest: fetch::cell_rest(&cell),
                         slice: None,
                     };
@@ -1125,21 +1200,20 @@ impl Resolver {
     }
 }
 
-/// The key document of `local.invalid` in the store: this machine's key, the trusted ones,
-/// and the store's earlier ones.
+/// This machine's key document in the store: the current key, the retired keys (each with its
+/// `valid_to`), and the store's earlier ones (a reinstall's: their receipts verify). Trusted
+/// machines' keys are not in it (CONTRACT-1.8b L4).
 fn publish_key_document(s: &Shared) -> Result<(), Error> {
-    let mut entries = vec![s.key.entry()];
-    for (_, e) in s.index.trusted()? {
-        entries.push(json::parse(e.as_bytes()).map_err(|e| Error::Store(e.to_string()))?);
-    }
-    let stored = s.store.namespace(LOCAL_HOST).map_err(|e| Error::Store(e.to_string()))?;
-    // Keys of this store's earlier machines (a reinstall) stay: their receipts verify.
+    let host = s.config.host.as_str();
+    let mut entries = vec![s.key().entry()];
+    entries.extend(retired_entries(&s.config.config_dir)?);
+    let stored = s.store.namespace(host).map_err(|e| Error::Store(e.to_string()))?;
     if let Some(n) = &stored {
         entries.extend(key_entries(&n.keydoc));
     }
-    let doc = local_key_document(&entries)?;
+    let doc = local_key_document(host, &entries)?;
     if stored.map(|n| n.keydoc) != Some(doc.clone()) {
-        s.store.put_namespace(LOCAL_HOST, &doc, &s.now()).map_err(|e| Error::Store(e.to_string()))?;
+        s.store.put_namespace(host, &doc, &s.now()).map_err(|e| Error::Store(e.to_string()))?;
     }
     Ok(())
 }
@@ -1177,20 +1251,15 @@ fn args_of(line: &Value) -> datumesh_core::Args {
 /// library's errors: a start earlier than now is [`Error::StartBeforeNow`]).
 fn publish_local(s: &Shared, path: &Path) -> Result<datumesh_http::publish::Published, Error> {
     let opts = datumesh_http::publish::PublishOptions { clock: s.clock.clone(), backfill: None };
-    datumesh_http::publish::publish_stored_with(
-        &*s.store,
-        s.key.signing_key(),
-        LOCAL_HOST,
-        &[LOCAL_HOST.to_string()],
-        path,
-        &opts,
-    )
-    .map_err(|e| match e.kind {
-        datumesh_http::publish::PublishErrorKind::StartBeforeNow { name, start, now } => {
-            Error::StartBeforeNow { name, start, now }
-        }
-        _ => Error::Request(e.to_string()),
-    })
+    let key = s.key();
+    let host = s.config.host.as_str();
+    datumesh_http::publish::publish_stored_with(&*s.store, key.signing_key(), host, &[host.to_string()], path, &opts)
+        .map_err(|e| match e.kind {
+            datumesh_http::publish::PublishErrorKind::StartBeforeNow { name, start, now } => {
+                Error::StartBeforeNow { name, start, now }
+            }
+            _ => Error::Request(e.to_string()),
+        })
 }
 
 /// The call form of a cell: `<ns>/<fn>(k: v, ...)`, every argument labelled, the parts sorted as
@@ -1249,6 +1318,14 @@ fn check_rooting(name: &str, d: &FunctionDescriptor) -> Result<(), Error> {
 /// Callees for a definition: the store's bindings, a foreign name fetched when not held.
 pub(crate) struct Callees<'a> {
     pub(crate) shared: &'a Shared,
+    /// The first callee under an unrooted host that is neither this machine's nor trusted here.
+    pub(crate) untrusted: RefCell<Option<String>>,
+}
+
+impl<'a> Callees<'a> {
+    pub(crate) fn new(shared: &'a Shared) -> Callees<'a> {
+        Callees { shared, untrusted: RefCell::new(None) }
+    }
 }
 
 impl datumesh_formula::definition::Callees for Callees<'_> {
@@ -1269,6 +1346,15 @@ impl datumesh_formula::definition::Callees for Callees<'_> {
     fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
         let s = self.shared;
         let host = host_of(name);
+        // SPEC 2.5 and CONTRACT-1.8b L4: an unrooted host's names are read only when it is this
+        // machine's or trusted here and not revoked.
+        if is_unrooted(host)
+            && host != s.config.host
+            && !trust::trusted_live(&s.config.config_dir, host).map_err(|e| e.to_string())?
+        {
+            *self.untrusted.borrow_mut() = Some(name.to_string());
+            return Err(format!("{name}: an unrooted host that is neither this machine's nor trusted here"));
+        }
         if !is_unrooted(host) && s.store.resolve_binding(name, END).map_err(|e| e.to_string())?.is_none() {
             s.may_fetch(host)?;
             s.import_name(name).map_err(|e| e.to_string())?;
@@ -1283,7 +1369,7 @@ impl datumesh_formula::definition::Callees for Callees<'_> {
 /// The mesh over the local store: `local.invalid`, no cross-mesh resolution (fetches are the
 /// resolver's), no rate limits, the formula runtime behind the gate.
 pub(crate) fn build_mesh(shared: &Arc<Shared>, aliases: &AliasMap, base_url: Option<String>) -> Result<Mesh, Error> {
-    let mut c = MeshConfig::new(LOCAL_HOST);
+    let mut c = MeshConfig::new(&shared.config.host);
     c.cross_mesh = false;
     c.rate.enabled = false;
     c.pool_size = 8;
@@ -1294,8 +1380,9 @@ pub(crate) fn build_mesh(shared: &Arc<Shared>, aliases: &AliasMap, base_url: Opt
     let rt = Arc::new(Gated::new(formula, shared.clone()));
     Mesh::builder(c, shared.store.clone())
         .without_formula()
+        .clock(shared.clock.clone())
         .runtime(rt)
-        .signing_key(shared.key.signing_key().clone())
+        .signing_key(shared.key().signing_key().clone())
         .licence(shared.config.licence.clone())
         .build()
         .map_err(|e| Error::Config(format!("mesh: {e:?}")))
