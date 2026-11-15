@@ -17,7 +17,7 @@ use datumesh_local::{Config, Error, Resolver, RootPlan};
 const T: &str = "2026-11-15T12:00:00.000000Z";
 const T_IMPORT: &str = "2026-11-15T12:00:01.000000Z";
 const CELLS_TX: &str = "2026-11-15T11:00:00.000000Z";
-const NS: &str = "mesh-test.datumesh.com/scratch-1-8b";
+const NS: &str = "mesh-test.datumesh.com/scratch_1_8b";
 const LEVEL_SIG: &str = r#"{"args": {"day": {"type": "date", "valid": true}}, "order": ["day"], "returns": {"type": "number", "unit": "1"}}"#;
 const RATE_SIG: &str = r#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": {"of": "USD", "per": "EUR"}}}"#;
 
