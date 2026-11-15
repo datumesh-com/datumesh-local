@@ -382,7 +382,8 @@ pub fn held_classes(
     (held, functions)
 }
 
-pub const ALIASES_TX: &str = "2026-11-10T00:00:00.000000Z";
+/// Before the classes' binding and `ASOF`: an alias entry does not exist before its tx (L6).
+pub const ALIASES_TX: &str = "2026-01-15T00:00:00.000000Z";
 
 /// A resolver as `resolver`, with the alias map's file replaced by one that also has the bare
 /// name `xcross` (the pair's `cross` method function) and a `tx` of `ALIASES_TX`.

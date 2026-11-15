@@ -166,7 +166,8 @@ fn a_short_name_resolves_to_its_full_name_in_the_receipt_and_the_map_reloads() {
     let cell = rc.get("cell").unwrap();
     assert_eq!(s(cell, "ns"), "mesh-test.datumesh.com/ecb");
     assert_eq!(s(cell, "fn"), "fx_rate");
-    assert_eq!(r.get(USD_FULL).unwrap().body, short.body);
+    // The same receipt; the prefix request also carries `resolved` (1.8b L6).
+    assert_eq!(receipt(&r.get(USD_FULL).unwrap().body).to_jcs(), rc.to_jcs());
     // A new map file is picked up by a reload, not before.
     let fx = r#"fx/fx_rate(base: "EUR", quote: "USD", date: 2026-10-30)"#;
     assert_ne!(r.get(fx).unwrap().status, 200);

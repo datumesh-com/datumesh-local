@@ -22,9 +22,11 @@ fn assert_unavailable(reply: &datumesh_local::Reply, kind: &str, why: &str) {
     assert_eq!(s(&env, "error"), FOREIGN_UNAVAILABLE);
     assert_eq!(FOREIGN_UNAVAILABLE, "E_FOREIGN_UNAVAILABLE");
     assert_eq!(s(&env, "detail"), kind, "the failure: {:?}", reply.detail);
-    assert_eq!(reply.body, foreign_unavailable_envelope(datumesh_core::ForeignDetail::from_name(kind).unwrap()));
+    // A prefix request carries `resolved` (1.8b L6); the rest is core's envelope, byte for byte.
+    let bare = without_resolved(&reply.body).to_jcs();
+    assert_eq!(bare, foreign_unavailable_envelope(datumesh_core::ForeignDetail::from_name(kind).unwrap()));
     assert_eq!(
-        String::from_utf8(reply.body.clone()).unwrap(),
+        String::from_utf8(bare).unwrap(),
         format!(r#"{{"detail":"{kind}","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}}"#)
     );
     assert_eq!(reply.source, Source::Unavailable);
@@ -123,7 +125,7 @@ fn the_cli_writes_the_envelope_and_exits_3() {
     let code = datumesh_local::cli::run(&args, &mut out, &mut err);
     assert_eq!(code, 3);
     assert_eq!(
-        String::from_utf8(out).unwrap().trim_end(),
+        String::from_utf8(without_resolved(String::from_utf8(out).unwrap().trim_end().as_bytes()).to_jcs()).unwrap(),
         r#"{"detail":"offline","error":"E_FOREIGN_UNAVAILABLE","outcome":"error"}"#
     );
     assert!(String::from_utf8(err).unwrap().contains("offline"));
@@ -154,7 +156,10 @@ fn the_envelope_passes_the_core_check() {
     let a = datumesh_core::check_answer(reply.status, &reply.body, &datumesh_core::Keys::new(), &request).unwrap();
     assert_eq!(a.detail, Some(datumesh_core::ForeignDetail::Refused));
     // The same bytes as core's builder writes.
-    assert_eq!(reply.body, datumesh_core::Answer::foreign_unavailable(datumesh_core::ForeignDetail::Refused).to_json());
+    assert_eq!(
+        without_resolved(&reply.body).to_jcs(),
+        datumesh_core::Answer::foreign_unavailable(datumesh_core::ForeignDetail::Refused).to_json()
+    );
     // A status other than 502 fails the check.
     assert!(datumesh_core::check_answer(503, &reply.body, &datumesh_core::Keys::new(), &request).is_err());
     let _ = Value::Null;

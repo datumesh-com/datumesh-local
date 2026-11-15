@@ -295,7 +295,8 @@ fn resources() {
     let srv = server(&up, &dir);
     assert!(!is_error(&define_closed(&srv)));
     let first = get_usd(&srv);
-    let envelope_of_get = jcs(structured(&first).get("envelope").unwrap());
+    // Without `resolved`: the get was a prefix request (1.8b L6), the read below a cell URI.
+    let envelope_of_get = without_resolved(jcs(structured(&first).get("envelope").unwrap()).as_bytes()).to_jcs();
 
     let v = rpc(&srv, "resources/list", "");
     let listed = array(result(&v), "resources");
@@ -321,7 +322,7 @@ fn resources() {
     let v = rpc(&srv, "resources/read", &format!(r#""uri":{}"#, q(&uri)));
     let text = array(result(&v), "contents")[0].get("text").and_then(Value::as_str).unwrap();
     let env = json::parse(text.as_bytes()).unwrap();
-    assert_eq!(jcs(&env), envelope_of_get);
+    assert_eq!(env.to_jcs(), envelope_of_get);
 
     let v = rpc(&srv, "resources/read", r#""uri":"datumesh://name/nothing.invalid/here""#);
     assert_eq!(error_code(&v), "-32602");

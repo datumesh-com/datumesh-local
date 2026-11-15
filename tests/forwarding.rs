@@ -8,7 +8,6 @@ use common::*;
 use datumesh_core::json;
 use datumesh_core::Level;
 use datumesh_local::Source;
-use datumesh_store::Store;
 
 const NOK_FULL: &str = r#"mesh-test.datumesh.com/ecb/fx_cross(base: "USD", quote: "NOK", date: 2026-10-30)"#;
 

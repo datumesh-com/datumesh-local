@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use datumesh_core::json::{self, Value};
-use datumesh_local::{AliasMap, Error, Resolver};
+use datumesh_local::{AliasMap, Resolver};
 
 const TX_A: &str = "2026-11-10T00:00:00.000000Z";
 const TX_B: &str = "2026-11-12T00:00:00.000000Z";
@@ -73,24 +73,30 @@ fn the_entry_with_the_greatest_tx_at_the_asof_wins() {
     assert_ne!(after.status, 200);
 }
 
+/// Bare reference-class names resolve only to `datumesh.com/std/` (the user's rule, item 8): a bare
+/// name whose target is a class elsewhere is refused when a request resolves it. A bare name for a
+/// function (`xcross`, tests/classes.rs) is not a class name and keeps working.
 #[test]
-fn a_bare_name_must_be_a_standard_one() {
-    let bad = map(&[entry("fx", "example.org/fx_rate", TX_A)]);
-    match AliasMap::from_json(bad.as_bytes()) {
-        Err(Error::Config(m)) => assert!(m.contains("fx"), "{m}"),
-        other => panic!("{other:?}"),
-    }
-    let up = upstream();
-    let dir = TempDir::new("aliases-bare");
-    let c = config(&dir, &up);
-    std::fs::write(&c.aliases_file, &bad).unwrap();
-    match Resolver::open(c) {
-        Err(Error::Config(m)) => assert!(m.contains("fx"), "{m}"),
-        Err(other) => panic!("{other:?}"),
-        Ok(_) => panic!("the map loaded"),
-    }
+fn a_bare_class_name_must_be_a_standard_one() {
     let good = map(&[entry("currency", "datumesh.com/std/currency", TX_A)]);
     AliasMap::from_json(good.as_bytes()).unwrap();
+    let up = upstream_classes();
+    let dir = TempDir::new("aliases-bare");
+    let text = map(&[entry("pair", PAIR_CLASS, "2026-01-15T00:00:00.000000Z")]);
+    let r = open_with(&dir, &up, &text);
+    let full = r.get(&format!("{PAIR_CLASS}(EUR, USD).rate({DAY})?asof={ASOF}")).unwrap();
+    assert_eq!(full.status, 200, "{}", String::from_utf8_lossy(&full.body));
+    match r.get(&format!("pair(EUR, USD).rate({DAY})?asof={ASOF}")) {
+        Ok(a) => {
+            not_ok(&a);
+            assert!(
+                String::from_utf8_lossy(&a.body).contains("datumesh.com/std/"),
+                "{}",
+                String::from_utf8_lossy(&a.body)
+            );
+        }
+        Err(e) => assert!(e.to_string().contains("datumesh.com/std/"), "{e}"),
+    }
 }
 
 #[test]
@@ -114,7 +120,11 @@ fn the_old_shape_is_still_read_with_its_tx_on_every_entry() {
 fn a_prefix_alias_in_a_formula_source_is_expanded_before_hashing() {
     let up = upstream();
     let dir = TempDir::new("aliases-source");
-    let r = open_with(&dir, &up, &map(&[entry("ecb/", "mesh-test.datumesh.com/ecb/", TX_A)]));
+    let r = open_with(
+        &dir,
+        &up,
+        &map(&[entry("ecb/", "mesh-test.datumesh.com/ecb/", TX_A), entry("local/", "local.invalid/", TX_A)]),
+    );
     let sig = json::parse(SIG.as_bytes()).unwrap();
     let a = r.define_formula("local/a", r#"@ecb/fx_rate(base: "EUR", quote: "USD", date: date) * 2"#, &sig).unwrap();
     let b = r
