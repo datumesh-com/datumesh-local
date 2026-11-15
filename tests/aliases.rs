@@ -45,9 +45,8 @@ fn an_entry_that_does_not_exist_yet_at_the_asof_is_not_used() {
         map(&[entry("ecb/", "mesh-test.datumesh.com/ecb/", TX_A), entry("fx/", "mesh-test.datumesh.com/ecb/", TX_B)]);
     let r = open_with(&dir, &up, &text);
     // No `fx/` entry yet at 2026-11-11: the request is not expanded.
-    match r.get(&format!("fx/{CALL}?asof=2026-11-11T00:00:00.000000Z")) {
-        Ok(a) => not_ok(&a),
-        Err(_) => {}
+    if let Ok(a) = r.get(&format!("fx/{CALL}?asof=2026-11-11T00:00:00.000000Z")) {
+        not_ok(&a);
     }
     let a = r.get(&format!("fx/{CALL}?asof=2026-11-13T00:00:00.000000Z")).unwrap();
     assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));
@@ -107,9 +106,8 @@ fn the_old_shape_is_still_read_with_its_tx_on_every_entry() {
     let up = upstream();
     let dir = TempDir::new("aliases-old");
     let r = open_with(&dir, &up, &format!(r#"{{"ecb/": "mesh-test.datumesh.com/ecb/", "tx": "{TX_A}"}}"#));
-    match r.get(&format!("ecb/{CALL}?asof=2026-11-09T00:00:00.000000Z")) {
-        Ok(a) => not_ok(&a),
-        Err(_) => {}
+    if let Ok(a) = r.get(&format!("ecb/{CALL}?asof=2026-11-09T00:00:00.000000Z")) {
+        not_ok(&a);
     }
     let a = r.get(&format!("ecb/{CALL}?asof=2026-11-11T00:00:00.000000Z")).unwrap();
     assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));

@@ -19,7 +19,7 @@ fn a_foreign_stored_cell_is_fetched_verified_and_then_held() {
     let before = up.requests();
     let a = r.get(USD).unwrap();
     assert_eq!(a.status, 200, "{}", String::from_utf8_lossy(&a.body));
-    assert!(up.requests() >= before + 1);
+    assert!(up.requests() > before);
     // The receipt verifies against the upstream's key document, at level `signed`.
     let rc = receipt(&a.body);
     let v = datumesh_core::verify(&rc.to_jcs(), &upstream_keys(&up), None, None);

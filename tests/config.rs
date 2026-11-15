@@ -179,9 +179,10 @@ fn a_short_name_resolves_to_its_full_name_in_the_receipt_and_the_map_reloads() {
     assert_ne!(r.get(fx).unwrap().status, 200);
     r.reload_aliases().unwrap();
     assert_eq!(r.aliases().tx(), "2026-11-05T00:00:00.000000Z");
-    assert_eq!(r.get(fx).unwrap().body, short.body);
+    // The same receipt (resolved names the newer snapshot's tx, 1.8b L6).
+    assert_eq!(receipt(&r.get(fx).unwrap().body).to_jcs(), receipt(&short.body).to_jcs());
     drop(r);
     // And the next start reads the new file.
     let r = Resolver::open(config(&dir, &up)).unwrap();
-    assert_eq!(r.get(fx).unwrap().body, short.body);
+    assert_eq!(receipt(&r.get(fx).unwrap().body).to_jcs(), receipt(&short.body).to_jcs());
 }
