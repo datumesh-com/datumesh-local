@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use datumesh_core::json::Value;
 use datumesh_core::{Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, Receipt, Reference, Scalar, Type};
-use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern, SystemClock};
+use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern};
 use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
 
@@ -27,6 +27,8 @@ pub(crate) const START: &str = "0001-01-01T00:00:00.000000Z";
 /// What the resolver's parts share.
 pub(crate) struct Shared {
     pub(crate) config: Config,
+    /// Where every "now" of the resolver comes from (the system clock unless opened otherwise).
+    pub(crate) clock: Arc<dyn Clock + Send + Sync>,
     pub(crate) key: MachineKey,
     pub(crate) store: Arc<dyn Store + Send + Sync>,
     pub(crate) client: Client,
@@ -175,7 +177,7 @@ pub(crate) fn cell_rest(cell: &Cell) -> String {
 
 impl Shared {
     pub(crate) fn now(&self) -> String {
-        SystemClock.now()
+        self.clock.now()
     }
 
     /// Whether fetching from `host` is allowed now: `Err` names why not.

@@ -114,7 +114,7 @@ so they verify here at `signed` and `recomputed`; elsewhere they stop at
 `E_KEY_UNAVAILABLE`. Output labels them `local, verifies only on this machine`.
 
 A function under a rooted namespace may not read a local one: `define` refuses it
-(`Error::UnrootedInput`). No spec code names this refusal (SPEC 2.5 calls it define's).
+(`Error::UnrootedInput`, code `E_UNROOTED_INPUT`; SPEC 2.5).
 
 ## The localhost endpoint
 

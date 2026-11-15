@@ -256,6 +256,7 @@ impl Shared {
             self.import_descriptor(host, h)?;
         }
         self.store.bind_class(name, class_hash, &since).map_err(crate::fetch::store_err)?;
+        self.index.hold_name(name, host, &self.now()).map_err(crate::fetch::store_err)?;
         Ok(Some(descriptor))
     }
 
@@ -343,6 +344,7 @@ impl Resolver {
                 true
             }
         };
+        s.index.hold_name(&full, LOCAL_HOST, &now)?;
         self.mesh().clear_memo();
         Ok(crate::Defined { name: full, fn_hash: h, bound })
     }

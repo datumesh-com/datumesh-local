@@ -94,6 +94,8 @@ pub mod index;
 #[cfg(feature = "resolver")]
 pub mod key;
 #[cfg(feature = "resolver")]
+pub mod mcp;
+#[cfg(feature = "resolver")]
 mod resolver;
 #[cfg(feature = "resolver")]
 pub mod serve;
@@ -111,7 +113,9 @@ pub use gate::LicenceGate;
 #[cfg(feature = "resolver")]
 pub use key::MachineKey;
 #[cfg(feature = "resolver")]
-pub use resolver::{Defined, Found, Prefetched, Quarantined, Refreshed, Reply, Resolver, Source};
+pub use resolver::{
+    Defined, Found, Prefetched, PublishedCell, PublishedCells, Quarantined, Refreshed, Reply, Resolver, Source,
+};
 
 /// The `resolved` member of an envelope for `resolved` (5.5, 16.7), written as core writes it.
 pub(crate) fn resolved_member(resolved: &datumesh_core::Resolved) -> Option<datumesh_core::json::Value> {
@@ -173,12 +177,28 @@ pub enum Error {
     /// The request is malformed or not supported.
     Request(String),
     /// A function under a rooted namespace reads one under an unrooted namespace (SPEC 2.5):
-    /// refused at define time. No code of SPEC 10.2 or 15.11 names this refusal.
+    /// refused at define time. Its code is `E_UNROOTED_INPUT` ([`Error::code`]).
     UnrootedInput {
         /// The function defined.
         function: String,
         /// The unrooted input it reads.
         input: String,
+    },
+    /// A binding's start is earlier than the mesh clock (rule A): refused, nothing written. The
+    /// Display is the library's (`binding start … is earlier than the mesh clock … (rule A)`).
+    StartBeforeNow {
+        /// The name that would bind.
+        name: String,
+        /// Its start.
+        start: String,
+        /// The clock's now.
+        now: String,
+    },
+    /// A formula with no inputs is refused at define time (it reads nothing, so it has no
+    /// lineage to sign). A stored function with no inputs is definable.
+    NoInputs {
+        /// The formula refused.
+        function: String,
     },
     /// The definition failed (the formula's checks).
     Define(String),
@@ -200,8 +220,13 @@ impl std::fmt::Display for Error {
             Error::Request(d) => write!(f, "request: {d}"),
             Error::UnrootedInput { function, input } => write!(
                 f,
-                "{function} is under a rooted namespace and reads {input}, under an unrooted one (SPEC 2.5): refused"
+                "E_UNROOTED_INPUT: {function} is under a rooted namespace and reads {input}, under an unrooted one (SPEC 2.5)"
             ),
+            Error::StartBeforeNow { name, start, now } => write!(
+                f,
+                "binding start {start} of {name} is earlier than the mesh clock {now} (rule A)"
+            ),
+            Error::NoInputs { function } => write!(f, "{function} is a formula with no inputs: refused"),
             Error::Define(d) => write!(f, "define: {d}"),
             Error::Bundle(d) => write!(f, "bundle: {d}"),
             Error::Address(d) => write!(f, "address: {d}"),
@@ -211,3 +236,17 @@ impl std::fmt::Display for Error {
 
 #[cfg(feature = "resolver")]
 impl std::error::Error for Error {}
+
+#[cfg(feature = "resolver")]
+impl Error {
+    /// The spec code of this error, when it has one (SPEC 10.2 and the error codes of this
+    /// crate): `E_UNROOTED_INPUT` for [`Error::UnrootedInput`], [`FOREIGN_UNAVAILABLE`] for
+    /// [`Error::ForeignUnavailable`]. A [`Error::Client`] carries its code as a string.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Error::UnrootedInput { .. } => Some("E_UNROOTED_INPUT"),
+            Error::ForeignUnavailable(_) => Some(FOREIGN_UNAVAILABLE),
+            _ => None,
+        }
+    }
+}

@@ -45,6 +45,11 @@ impl MachineKey {
     /// The key in `path`, or a new one written there (mode 0600, the directory created). A
     /// file that others may read (any group or other permission bit) is refused.
     pub fn load_or_create(path: &Path) -> Result<MachineKey, Error> {
+        Self::load_or_create_at(path, &SystemClock)
+    }
+
+    /// As [`MachineKey::load_or_create`], with `clock` for the `valid_from` of a new key.
+    pub fn load_or_create_at(path: &Path, clock: &dyn Clock) -> Result<MachineKey, Error> {
         let err = |e: String| Error::Key(format!("{}: {e}", path.display()));
         if path.exists() {
             #[cfg(unix)]
@@ -69,7 +74,7 @@ impl MachineKey {
         }
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).map_err(|e| err(e.to_string()))?;
-        let valid_from = SystemClock.now();
+        let valid_from = clock.now();
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]

@@ -90,7 +90,9 @@ fn a_rooted_function_reading_a_local_one_is_refused_at_define() {
 fn publish_is_define_plus_put_version_under_local_only() {
     let up = upstream();
     let dir = TempDir::new("publish");
-    let r = resolver(&dir, &up);
+    // Rule A: the file's earliest bound is the clock's now while it is published.
+    let clock = ManualClock::new("2026-11-01T00:00:00.000000Z");
+    let r = resolver_at(&dir, &up, &clock);
     let file = dir.path().join("notes.jsonl");
     std::fs::write(
         &file,
@@ -105,6 +107,7 @@ fn publish_is_define_plus_put_version_under_local_only() {
     )
     .unwrap();
     let p = r.publish(&file).unwrap();
+    clock.set("2026-11-15T12:00:00.000000Z");
     assert_eq!((p.functions, p.cells, p.versions), (2, 1, 1));
     let a = r.get(r#"local/note(key: "a")"#).unwrap();
     assert_eq!(a.status, 200);

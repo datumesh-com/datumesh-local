@@ -17,6 +17,8 @@
 //!   import <file> [--trust-key <key id>]...
 //!   verify <file or ->                 SPEC 10.1 with this machine's keys
 //!   serve [--listen 127.0.0.1:<port>]  the localhost endpoint (127.0.0.1 only; default port 7733)
+//!   mcp                                MCP over stdio (stdout carries only MCP messages)
+//!   mcp --http [--port <n>] [--listen <addr>]  MCP over Streamable HTTP on loopback (default port 7734)
 //!   key                                the machine id and this machine's key document (public)
 //! ```
 //!
@@ -50,6 +52,7 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publ
   import <file> [--trust-key <key id>]...
   verify <file or ->
   serve [--listen 127.0.0.1:<port>]
+  mcp [--http] [--port <n>] [--listen <addr>]
   key";
 
 /// Runs the command line (without the program name) with these streams; the exit status.
@@ -429,6 +432,45 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                     .map_err(io)
             })?;
             Ok(0)
+        }
+        "mcp" => {
+            let a = Args::parse(rest, &["--port", "--listen"], &["--http"])?;
+            if !a.has("--http") {
+                if a.has("--port") || a.has("--listen") {
+                    return Err(Failure::Usage("--port and --listen go with --http".into()));
+                }
+                // Stdout carries the MCP messages and nothing else.
+                let stdin = std::io::stdin();
+                crate::mcp::serve_stdio(Arc::new(r), stdin.lock(), &mut *out)?;
+                return Ok(0);
+            }
+            let mut port: u16 = match a.value("--port") {
+                Some(p) => p.parse().map_err(|_| Failure::Usage("--port: a port number".into()))?,
+                None => 7734,
+            };
+            if let Some(l) = a.value("--listen") {
+                let (ip, at) = match l.parse::<std::net::SocketAddr>() {
+                    Ok(sa) => (sa.ip(), Some(sa.port())),
+                    Err(_) => (
+                        l.parse::<std::net::IpAddr>().map_err(|_| Failure::Usage("--listen: an address".into()))?,
+                        None,
+                    ),
+                };
+                if !ip.is_loopback() {
+                    return Err(Error::Address(format!("{l}: the MCP endpoint listens on loopback only")).into());
+                }
+                port = at.unwrap_or(port);
+            }
+            let server = crate::mcp::serve_http(Arc::new(r), port)?;
+            for addr in server.local_addrs() {
+                writeln!(err, "datumesh mcp: http://{addr}/mcp").map_err(io)?;
+            }
+            writeln!(err, "datumesh mcp: token file {}", server.token_path().display()).map_err(io)?;
+            err.flush().map_err(io)?;
+            // Serves until the process is stopped.
+            loop {
+                std::thread::park();
+            }
         }
         "key" => {
             jline(

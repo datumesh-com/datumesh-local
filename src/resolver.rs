@@ -173,6 +173,29 @@ pub struct Quarantined {
     pub bytes: Vec<u8>,
 }
 
+/// A cell line published: its call form, its URI and the hash of its receipt.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedCell {
+    /// The call form (`<ns>/<fn>(k: v, ...)`, every argument labelled).
+    pub call: String,
+    /// The cell's URI (`cell://...`, no asof).
+    pub uri: String,
+    /// The hash of the receipt published for it.
+    pub receipt_hash: String,
+}
+
+/// What a publish did: its counts (as [`datumesh_http::publish::Published`]) and each cell
+/// line in file order.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedCells {
+    /// The counts of the publish.
+    pub counts: datumesh_http::publish::Published,
+    /// The cell lines, in file order.
+    pub cells: Vec<PublishedCell>,
+}
+
 /// The local resolver (see the crate documentation). Blocking; cheap to share behind an
 /// `Arc`.
 pub struct Resolver {
@@ -211,7 +234,23 @@ impl Resolver {
     /// index, the alias map, and this machine's key document in the store for `local.invalid`
     /// (this key and the trusted ones).
     pub fn open(config: Config) -> Result<Resolver, Error> {
-        let key = MachineKey::load_or_create(&config.key_file)?;
+        Self::open_with_clock(config, Arc::new(datumesh_engine::SystemClock))
+    }
+
+    /// As [`Resolver::open`], with `clock` for every "now" the resolver uses: signing, binding
+    /// starts (a definition's, a publish line's left out), key rotation, trust and the MCP
+    /// endpoint.
+    pub fn open_with_clock(
+        config: Config,
+        clock: Arc<dyn datumesh_engine::Clock + Send + Sync>,
+    ) -> Result<Resolver, Error> {
+        if config.host != LOCAL_HOST {
+            return Err(Error::Config(format!(
+                "host {}: only {LOCAL_HOST} is supported here (CONTRACT-1.8b L4)",
+                config.host
+            )));
+        }
+        let key = MachineKey::load_or_create_at(&config.key_file, clock.as_ref())?;
         let store = open_store(&config)?;
         let index = Index::open(&config.data_dir.join("index.sqlite"))?;
         let aliases = AliasMap::load(&config.aliases_file)?;
@@ -222,7 +261,7 @@ impl Resolver {
         let client = Client::new(cc);
         let gate = LicenceGate::new();
         let offline = AtomicBool::new(config.offline);
-        let shared = Arc::new(Shared { config, key, store, client, index, gate, offline });
+        let shared = Arc::new(Shared { config, clock, key, store, client, index, gate, offline });
         publish_key_document(&shared)?;
         let r = Resolver {
             mesh: RwLock::new(build_mesh(&shared, &aliases, None)?),
@@ -510,10 +549,24 @@ impl Resolver {
     /// `signature` (a JSON signature with `order`), bound from now. Its callees are as bound
     /// now (foreign ones fetched when not held). A function under a rooted namespace whose
     /// inputs name an unrooted one is refused ([`Error::UnrootedInput`]).
+    ///
+    /// A formula with no inputs is refused ([`Error::NoInputs`]).
     pub fn define_formula(&self, name: &str, source: &str, signature: &Value) -> Result<Defined, Error> {
+        self.define_formula_at(name, source, signature, None)
+    }
+
+    /// [`Resolver::define_formula`], bound from `start` (a publish line's `bound`) rather than now.
+    fn define_formula_at(
+        &self,
+        name: &str,
+        source: &str,
+        signature: &Value,
+        start: Option<&str>,
+    ) -> Result<Defined, Error> {
         let s = &self.shared;
         let name = self.aliases().expand(name);
         let now = s.now();
+        let start = start.unwrap_or(&now).to_string();
         let callees = Callees { shared: s };
         let def = datumesh_formula::definition::define_function(
             &name,
@@ -524,8 +577,11 @@ impl Resolver {
             &now,
         )
         .map_err(|e| Error::Define(e.to_string()))?;
+        if def.descriptor.inputs.is_empty() {
+            return Err(Error::NoInputs { function: name });
+        }
         check_rooting(&name, &def.descriptor)?;
-        self.bind(&name, &def.bytes, &def.fn_hash, &now)
+        self.bind(&name, &def.bytes, &def.fn_hash, &start)
     }
 
     /// Defines a stored function `name` with `signature`, bound from now.
@@ -542,6 +598,9 @@ impl Resolver {
     pub fn define(&self, name: &str, descriptor: &[u8]) -> Result<Defined, Error> {
         let name = self.aliases().expand(name);
         let d = FunctionDescriptor::from_json(descriptor).map_err(|e| Error::Define(e.to_string()))?;
+        if d.lang != "stored" && d.inputs.is_empty() {
+            return Err(Error::NoInputs { function: name });
+        }
         check_rooting(&name, &d)?;
         let now = self.shared.now();
         self.bind(&name, &d.canonical(), &d.hash(), &now)
@@ -571,6 +630,12 @@ impl Resolver {
     /// (function, formula and cell lines; names may be short). Cells are signed with this
     /// machine's key.
     pub fn publish(&self, path: &Path) -> Result<datumesh_http::publish::Published, Error> {
+        self.publish_cells(path).map(|p| p.counts)
+    }
+
+    /// As [`Resolver::publish`], and each cell line published with its call form, URI and
+    /// receipt hash, in file order ([`PublishedCells`]).
+    pub fn publish_cells(&self, path: &Path) -> Result<PublishedCells, Error> {
         let s = &self.shared;
         let text = std::fs::read_to_string(path).map_err(|e| Error::Request(format!("{}: {e}", path.display())))?;
         let aliases = self.aliases();
@@ -578,6 +643,7 @@ impl Resolver {
         let mut formulas = Vec::new();
         let mut names = Vec::new();
         let mut cells = Vec::new();
+        let now = s.now();
         for (i, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
@@ -622,7 +688,13 @@ impl Resolver {
             }
             let v = Value::Object(m);
             if let Some(name) = formula {
-                formulas.push((name, v));
+                // Rule A (CONTRACT-1.8b H1, L): a start left out is now, and an earlier one is refused
+                // before anything is written.
+                let start = v.get("bound").and_then(Value::as_str).map_or_else(|| now.clone(), str::to_string);
+                if start < now {
+                    return Err(Error::StartBeforeNow { name, start, now: now.clone() });
+                }
+                formulas.push((name, v, start));
                 continue;
             }
             if v.get("cell").is_some() {
@@ -637,28 +709,32 @@ impl Resolver {
         let out = if path.parent().is_some_and(|p| p != s.config.data_dir) {
             let near = path.with_file_name(format!(".datumesh-publish-{}.jsonl", std::process::id()));
             std::fs::rename(&tmp, &near).map_err(|e| Error::Request(e.to_string()))?;
-            let r = datumesh_http::publish::publish_stored(&*s.store, s.key.signing_key(), LOCAL_HOST, &near);
+            let r = publish_local(s, &near);
             let _ = std::fs::remove_file(&near);
             r
         } else {
-            let r = datumesh_http::publish::publish_stored(&*s.store, s.key.signing_key(), LOCAL_HOST, &tmp);
+            let r = publish_local(s, &tmp);
             let _ = std::fs::remove_file(&tmp);
             r
         };
-        let mut published = out.map_err(|e| Error::Request(e.to_string()))?;
+        let mut published = out?;
         for n in &names {
             s.index.hold_name(n, LOCAL_HOST, &s.now())?;
         }
         // Formulas after the stored functions they may read.
-        for (name, v) in &formulas {
+        for (name, v, start) in &formulas {
             let src = v.get("source").and_then(Value::as_str).unwrap_or("");
             let sig = v.get("signature").cloned().unwrap_or(Value::Null);
-            if self.define_formula(name, src, &sig)?.bound {
+            if self.define_formula_at(name, src, &sig, Some(start))?.bound {
                 published.functions += 1;
             }
         }
         let mesh = self.mesh();
+        let mut published_cells = Vec::new();
         for c in cells {
+            if let Some(pc) = self.published_cell(&c) {
+                published_cells.push(pc);
+            }
             if let Some(id) = self.cell_id_of_line(&c) {
                 let rest =
                     c.get("cell").and_then(|x| x.get("fn")).and_then(Value::as_str).and_then(|n| {
@@ -683,7 +759,19 @@ impl Resolver {
             }
         }
         mesh.clear_memo();
-        Ok(published)
+        Ok(PublishedCells { counts: published, cells: published_cells })
+    }
+
+    /// The call form, URI and receipt hash of a published cell line (its version is stored).
+    fn published_cell(&self, line: &Value) -> Option<PublishedCell> {
+        let name = line.get("cell")?.get("fn")?.as_str()?;
+        let tx = line.get("tx")?.as_str()?;
+        let fn_hash = self.shared.store.resolve_name(name, tx).ok().flatten()?;
+        let (ns, fn_name) = name.rsplit_once('/')?;
+        let cell =
+            datumesh_core::Cell { ns: ns.to_string(), fn_name: fn_name.to_string(), fn_hash, args: args_of(line) };
+        let receipt_hash = self.shared.store.version_asof(&cell.id(), tx).ok().flatten()?.receipt_hash;
+        Some(PublishedCell { call: call_form(&cell), uri: cell_uri(&cell), receipt_hash })
     }
 
     fn cell_id_of_line(&self, line: &Value) -> Option<String> {
@@ -726,6 +814,10 @@ impl Resolver {
             if name.to_lowercase().contains(&q) {
                 if let Some(b) = s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))? {
                     out.push(Found { name, fn_hash: b.fn_hash, held: true });
+                } else if let Some(c) =
+                    s.store.resolve_class_binding(&name, END).map_err(|e| Error::Store(e.to_string()))?
+                {
+                    out.push(Found { name, fn_hash: c.class_hash, held: true });
                 }
             }
         }
@@ -1044,6 +1136,58 @@ fn args_of(line: &Value) -> datumesh_core::Args {
         }
     }
     args
+}
+
+/// Publishes the lines of `path` under `local/` as this machine (its clock, rule A; the
+/// library's errors: a start earlier than now is [`Error::StartBeforeNow`]).
+fn publish_local(s: &Shared, path: &Path) -> Result<datumesh_http::publish::Published, Error> {
+    let opts = datumesh_http::publish::PublishOptions { clock: s.clock.clone(), backfill: None };
+    datumesh_http::publish::publish_stored_with(
+        &*s.store,
+        s.key.signing_key(),
+        LOCAL_HOST,
+        &[LOCAL_HOST.to_string()],
+        path,
+        &opts,
+    )
+    .map_err(|e| match e.kind {
+        datumesh_http::publish::PublishErrorKind::StartBeforeNow { name, start, now } => {
+            Error::StartBeforeNow { name, start, now }
+        }
+        _ => Error::Request(e.to_string()),
+    })
+}
+
+/// The call form of a cell: `<ns>/<fn>(k: v, ...)`, every argument labelled, the parts sorted as
+/// strings; strings and blobs in double quotes (a `"` written `""`), other literals in their
+/// lexical form, an open argument as `*`.
+pub(crate) fn call_form(cell: &datumesh_core::Cell) -> String {
+    let mut parts: Vec<String> = cell
+        .args
+        .iter()
+        .map(|(k, a)| {
+            let lit = match a {
+                datumesh_core::Arg::Value(v @ (Scalar::String(_) | Scalar::Blob(_))) => {
+                    format!("\"{}\"", v.lexical().replace('"', "\"\""))
+                }
+                datumesh_core::Arg::Value(v) => v.lexical().to_string(),
+                datumesh_core::Arg::Slice => "*".to_string(),
+            };
+            format!("{k}: {lit}")
+        })
+        .collect();
+    parts.sort();
+    format!("{}/{}({})", cell.ns, cell.fn_name, parts.join(", "))
+}
+
+/// The URI of a cell (`cell://<ns>/<fn>?k=v&...`, no asof): core's `format_uri`.
+pub(crate) fn cell_uri(cell: &datumesh_core::Cell) -> String {
+    datumesh_core::format_uri(&datumesh_core::CellRef {
+        ns: cell.ns.clone(),
+        fn_name: cell.fn_name.clone(),
+        args: cell.args.clone(),
+        asof: None,
+    })
 }
 
 /// The pin of a request: `name@<hash>(...)` or `fn_hash=` in a URI.

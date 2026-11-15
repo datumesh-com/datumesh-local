@@ -127,7 +127,9 @@ fn an_open_only_function_inherits_its_inputs_licence() {
 fn a_local_function_over_local_inputs() {
     let up = upstream();
     let dir = TempDir::new("inherit-local");
-    let r = resolver(&dir, &up);
+    // Rule A: the file's earliest bound is the clock's now while it is published.
+    let clock = ManualClock::new("2026-11-01T00:00:00.000000Z");
+    let r = resolver_at(&dir, &up, &clock);
     let file = dir.path().join("local.jsonl");
     std::fs::write(
         &file,
@@ -142,6 +144,7 @@ fn a_local_function_over_local_inputs() {
     )
     .unwrap();
     r.publish(&file).unwrap();
+    clock.set("2026-11-15T12:00:00.000000Z");
     // A formula with no inputs is refused (1.8b item 10), in publish as in define.
     let answer = dir.path().join("answer.jsonl");
     std::fs::write(

@@ -30,6 +30,9 @@ pub const DEFAULT_ALIASES: &str = include_str!("../defaults/aliases.json");
 pub struct Config {
     /// Where `config.json`, the machine key and the alias map are.
     pub config_dir: PathBuf,
+    /// This machine's host (config member `host`). Only `local.invalid` is supported until the
+    /// machine-host work (CONTRACT-1.8b L4); [`crate::Resolver::open_with_clock`] refuses any other.
+    pub host: String,
     /// Where the store and the resolver's index are.
     pub data_dir: PathBuf,
     /// The store: a SQLite path or a `postgres://` URL (default `<data dir>/store.sqlite`).
@@ -162,6 +165,7 @@ impl Config {
             .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
         let mut c = Config {
             config_dir: config_dir.to_path_buf(),
+            host: crate::LOCAL_HOST.into(),
             data_dir: data_dir.to_path_buf(),
             store: None,
             key_file: config_dir.join("machine.key"),
@@ -187,6 +191,12 @@ impl Config {
         };
         for (k, x) in m {
             match k.as_str() {
+                "host" => {
+                    c.host = match x {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(Error::Config("host: not a string".into())),
+                    }
+                }
                 "allowlist" => c.allowlist = strings(x, k)?,
                 "open_licences" => c.open_licences = strings(x, k)?,
                 "forward_mesh" => {
