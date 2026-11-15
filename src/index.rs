@@ -11,7 +11,6 @@
 //! | `forwarded` | answers of the forward mesh, by the request's cell URI rest: the envelope as received |
 //! | `answered` | receipts this machine signed and answered with (for export) |
 //! | `quarantine` | imported receipts signed by another machine's local key, not trusted |
-//! | `trusted` | other machines' local keys trusted with `import --trust-key`: their key entries |
 //! | `objects` | objects this machine described by key encoding (16.8), by object id: a short id answers from them |
 
 use std::path::Path;
@@ -29,7 +28,6 @@ CREATE TABLE IF NOT EXISTS slices (rest TEXT PRIMARY KEY, host TEXT NOT NULL, me
 CREATE TABLE IF NOT EXISTS forwarded (rest TEXT PRIMARY KEY, mesh TEXT NOT NULL, status INTEGER NOT NULL, body BLOB NOT NULL, cell_id TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS answered (receipt TEXT PRIMARY KEY, cell_id TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quarantine (receipt TEXT PRIMARY KEY, key_id TEXT NOT NULL, bytes BLOB NOT NULL, at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS trusted (key_id TEXT PRIMARY KEY, entry TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS objects (object_id TEXT PRIMARY KEY, encoding TEXT NOT NULL, at TEXT NOT NULL);
 ";
 
@@ -272,25 +270,5 @@ impl Index {
     /// Removes a receipt from the quarantine (it was trusted and stored).
     pub fn release(&self, receipt: &str) -> Result<(), Error> {
         self.with(|c| c.execute("DELETE FROM quarantine WHERE receipt = ?1", params![receipt]).map(|_| ()))
-    }
-
-    /// Records a trusted machine key (its key document entry, JCS).
-    pub fn trust(&self, key_id: &str, entry: &str, at: &str) -> Result<(), Error> {
-        self.with(|c| {
-            c.execute(
-                "INSERT OR IGNORE INTO trusted (key_id, entry, at) VALUES (?1, ?2, ?3)",
-                params![key_id, entry, at],
-            )
-            .map(|_| ())
-        })
-    }
-
-    /// The trusted machine keys: key id and entry.
-    pub fn trusted(&self) -> Result<Vec<(String, String)>, Error> {
-        self.with(|c| {
-            let mut s = c.prepare("SELECT key_id, entry FROM trusted ORDER BY key_id")?;
-            let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            rows.collect()
-        })
     }
 }

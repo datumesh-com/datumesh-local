@@ -16,6 +16,20 @@ CONTRACT-1.8b items 3, 7 and 8 and difference 1.
   (`http://127.0.0.1:<port>/...`); `Link: rel="canonical"` stays `https://<host>/...`, and the
   endpoint now sends it on answers about now.
 - Defaults: the default alias map's `tx` is 2026-01-01.
+- Key rotation (L4): `datumesh key rotate` and `Resolver::rotate_key()` make a new key from now;
+  the old one is kept as `<key file>.retired-<id>` and listed, with `valid_to`, in
+  `retired-keys.json`. The key document lists the current and the retired keys.
+- Host (L4): config member `host` (default `local.invalid`, a name under `.invalid`); `local/`
+  means `<host>/`, receipts say `computed_by` `<host>#<key id>`.
+- Trusted machines (L4): `datumesh trust add|revoke|list` and `Resolver::trust_machine`,
+  `revoke_machine`, `trusted_machines`, kept in `trust.json`. A trusted host's receipts verify
+  with its effective document (labelled `trusted machine <host>`); a revocation ends them from
+  its instant. A replacement document must keep every trusted key. Defining a formula over an
+  unrooted host that is neither this machine's nor trusted is refused (`Error::UntrustedInput`).
+- `import --trust-key <key id>` trusts the host of the bundle's key document that carries the key
+  (refused for this machine's own host); it no longer merges that key into this machine's
+  document.
+- Clock (L4): the mesh signs with the resolver's clock, so `issued` follows `open_with_clock`.
 
 ## 0.2.2 (2026-11-14)
 

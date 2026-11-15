@@ -4,11 +4,13 @@
 //! its signer's signature and is verified again on import; nothing else is trusted
 //! (descriptors and blobs are content-addressed, key documents are checked as SPEC 9.2 says).
 //!
-//! The exporting machine's key document for `local.invalid` travels in the bundle. On import,
-//! a receipt signed by another machine's local key is kept aside and labelled
-//! [`crate::UNVERIFIABLE_LABEL`], unless that key id is named with `--trust-key`: the key is
-//! then added to this machine's `local.invalid` key document (and remembered as trusted), and
-//! its receipts verify and answer. Receipts signed under rooted namespaces verify normally.
+//! The exporting machine's key document (its host's) travels in the bundle. On import, a receipt
+//! signed by another machine's local key is kept aside and labelled
+//! [`crate::UNVERIFIABLE_LABEL`], unless its host is trusted here (CONTRACT-1.8b L4). `--trust-key
+//! <key id>` trusts the host of the bundle's key document that carries that key, as
+//! `trust_machine` does: its receipts then verify and answer, labelled `trusted machine <host>`.
+//! It is refused for this machine's own host, whose documents are never merged. Receipts signed
+//! under rooted namespaces verify normally.
 //!
 //! The format is one JSON object (canonical JSON), `"bundle": "datumesh-local/1"`; byte
 //! strings (receipts, descriptors, key documents, manifests, envelopes) are kept as JSON
@@ -23,7 +25,8 @@ use crate::fetch::{cell_rest, host_of, END, START};
 use crate::gate::is_unrooted;
 use crate::index::{Forwarded, HeldCell};
 use crate::key::key_entries;
-use crate::{Error, Resolver, LOCAL_HOST};
+use crate::trust;
+use crate::{Error, Resolver};
 
 /// The bundle format.
 pub const FORMAT: &str = "datumesh-local/1";
@@ -196,7 +199,7 @@ impl Resolver {
                 }
             }
         }
-        let mut hosts = BTreeSet::from([LOCAL_HOST.to_string()]);
+        let mut hosts = BTreeSet::from([s.config.host.clone()]);
         let mut receipt_values = Vec::new();
         let mut blobs = Vec::new();
         for h in &receipts {
@@ -256,8 +259,8 @@ impl Resolver {
         .to_jcs())
     }
 
-    /// Imports a bundle (see the module documentation). `trust` names other machines' key
-    /// ids (from the bundle's `local.invalid` key document) to accept.
+    /// Imports a bundle (see the module documentation). `trust` names key ids of other machines
+    /// (in the bundle's key documents) whose hosts are trusted here.
     pub fn import(&self, bundle: &[u8], trust: &[String]) -> Result<Imported, Error> {
         let s = &self.shared;
         let store = &s.store;
@@ -272,45 +275,41 @@ impl Resolver {
         };
         let strs = |k: &str| -> Vec<String> { arr(k).iter().filter_map(|x| x.as_str().map(str::to_string)).collect() };
         let mut out = Imported::default();
-        // Key documents: other hosts' when absent here; the exporting machine's keys trusted
-        // only when named.
-        if let Some(docs) = v.get("key_documents").and_then(Value::as_object) {
-            for (host, doc) in docs {
-                let Some(doc) = doc.as_str() else { continue };
-                if host == LOCAL_HOST {
-                    let mine: BTreeSet<String> = key_entries(&self.key_document())
-                        .iter()
-                        .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_string))
-                        .collect();
-                    for e in key_entries(doc.as_bytes()) {
-                        let id = e.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                        if !mine.contains(&id) && trust.contains(&id) {
-                            s.index.trust(&id, &String::from_utf8_lossy(&e.to_jcs()), &now)?;
-                            out.trusted.push(id);
-                        }
-                    }
-                    continue;
-                }
-                if is_unrooted(host) {
-                    continue;
-                }
-                if store.namespace(host).map_err(st)?.is_none() {
-                    if let Err(e) = store.put_namespace(host, doc.as_bytes(), &now) {
-                        out.failed.push(format!("key document {host}: {e}"));
-                    }
+        let own = s.config.host.clone();
+        let docs: Vec<(String, String)> = v
+            .get("key_documents")
+            .and_then(Value::as_object)
+            .map(|d| d.iter().filter_map(|(h, doc)| doc.as_str().map(|t| (h.clone(), t.to_string()))).collect())
+            .unwrap_or_default();
+        // Rooted hosts' key documents are stored when absent here. An unrooted host's are taken
+        // only by `--trust-key` (below): never merged into this machine's own document.
+        for (host, doc) in &docs {
+            if is_unrooted(host) {
+                continue;
+            }
+            if store.namespace(host).map_err(st)?.is_none() {
+                if let Err(e) = store.put_namespace(host, doc.as_bytes(), &now) {
+                    out.failed.push(format!("key document {host}: {e}"));
                 }
             }
         }
         for t in trust {
-            if !out.trusted.contains(t) && !s.index.trusted()?.iter().any(|(k, _)| k == t) {
+            let carries =
+                |d: &str| key_entries(d.as_bytes()).iter().any(|e| e.get("id").and_then(Value::as_str) == Some(t));
+            let Some((host, doc)) = docs.iter().find(|(h, d)| is_unrooted(h) && carries(d)) else {
+                return Err(Error::Bundle(format!("--trust-key {t}: no such key in the bundle's key documents")));
+            };
+            if *host == own {
                 return Err(Error::Bundle(format!(
-                    "--trust-key {t}: no such key in the bundle's local.invalid key document"
+                    "--trust-key {t}: the key is of this machine's own host {own}, which is never trusted"
                 )));
             }
+            self.trust_machine(doc.as_bytes())?;
+            if !out.trusted.contains(host) {
+                out.trusted.push(host.clone());
+            }
         }
-        if !out.trusted.is_empty() {
-            self.publish_key_document()?;
-        }
+        let trusted: BTreeSet<String> = trust::load(&s.config.config_dir)?.into_iter().map(|m| m.host).collect();
         let local_ids: BTreeSet<String> = key_entries(&self.key_document())
             .iter()
             .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_string))
@@ -341,7 +340,8 @@ impl Resolver {
             }
             s.index.hold_name(&name, host_of(&name), &now)?;
         }
-        // Receipts: those signed by an untrusted local key are kept aside.
+        // Receipts: those signed by an untrusted local key, or by an unrooted host not trusted here,
+        // are kept aside.
         let mut stored = BTreeSet::new();
         for text in strs("receipts") {
             let r = match Receipt::from_json(text.as_bytes()) {
@@ -351,7 +351,10 @@ impl Resolver {
                     continue;
                 }
             };
-            if is_unrooted(r.signer_host()) && !local_ids.contains(r.key_id()) {
+            let sh = r.signer_host();
+            let aside =
+                if sh == own { !local_ids.contains(r.key_id()) } else { is_unrooted(sh) && !trusted.contains(sh) };
+            if aside {
                 s.index.quarantine(r.hash(), r.key_id(), text.as_bytes(), &now)?;
                 out.quarantined.push(r.hash().to_string());
                 continue;

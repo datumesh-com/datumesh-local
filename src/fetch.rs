@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use datumesh_core::json::Value;
@@ -29,7 +29,8 @@ pub(crate) struct Shared {
     pub(crate) config: Config,
     /// Where every "now" of the resolver comes from (the system clock unless opened otherwise).
     pub(crate) clock: Arc<dyn Clock + Send + Sync>,
-    pub(crate) key: MachineKey,
+    /// This machine's key (replaced by a rotation).
+    pub(crate) machine: RwLock<Arc<MachineKey>>,
     pub(crate) store: Arc<dyn Store + Send + Sync>,
     pub(crate) client: Client,
     pub(crate) index: Index,
@@ -178,6 +179,11 @@ pub(crate) fn cell_rest(cell: &Cell) -> String {
 impl Shared {
     pub(crate) fn now(&self) -> String {
         self.clock.now()
+    }
+
+    /// This machine's current key.
+    pub(crate) fn key(&self) -> Arc<MachineKey> {
+        self.machine.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Whether fetching from `host` is allowed now: `Err` names why not.
