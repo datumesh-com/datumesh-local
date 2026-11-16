@@ -809,20 +809,17 @@ impl Resolver {
             kept.push_str(&String::from_utf8_lossy(&v.to_jcs()));
             kept.push('\n');
         }
-        let tmp = s.config.data_dir.join(format!("publish-{}.jsonl", std::process::id()));
-        std::fs::write(&tmp, kept).map_err(|e| Error::Request(e.to_string()))?;
-        // Blob files are relative to the published file: copy nothing, point there.
-        let out = if path.parent().is_some_and(|p| p != s.config.data_dir) {
-            let near = path.with_file_name(format!(".datumesh-publish-{}.jsonl", std::process::id()));
-            std::fs::rename(&tmp, &near).map_err(|e| Error::Request(e.to_string()))?;
-            let r = publish_local(s, &near);
-            let _ = std::fs::remove_file(&near);
-            r
+        // Blob files are relative to the published file: the kept lines are written beside it (copy
+        // nothing, point there), directly, since a rename from the data directory fails when the two
+        // are on different file systems (EXDEV).
+        let tmp = if path.parent().is_some_and(|p| p != s.config.data_dir) {
+            path.with_file_name(format!(".datumesh-publish-{}.jsonl", std::process::id()))
         } else {
-            let r = publish_local(s, &tmp);
-            let _ = std::fs::remove_file(&tmp);
-            r
+            s.config.data_dir.join(format!("publish-{}.jsonl", std::process::id()))
         };
+        std::fs::write(&tmp, kept).map_err(|e| Error::Request(e.to_string()))?;
+        let out = publish_local(s, &tmp);
+        let _ = std::fs::remove_file(&tmp);
         let mut published = out?;
         for n in &names {
             s.index.hold_name(n, &host, &s.now())?;
