@@ -39,14 +39,22 @@ mkdir -p "$work/app/src"
 cat > "$work/app/src/main.rs" <<'RS'
 use datumesh_local::{Config, Resolver};
 
+/// The cells' instant: the resolver binds at its now (rule A), so it runs on this clock.
+struct At;
+impl datumesh_engine::Clock for At {
+    fn now(&self) -> String {
+        "2026-11-02T00:00:00.000000Z".to_string()
+    }
+}
+
 fn main() {
     let dir = std::env::current_dir().unwrap().join("home");
     let mut c = Config::in_dir(&dir).unwrap();
     c.offline = true;
-    let r = Resolver::open(c).unwrap();
+    let r = Resolver::open_with_clock(c, std::sync::Arc::new(At)).unwrap();
     let f = dir.join("notes.jsonl");
     std::fs::write(&f, concat!(
-        r#"{"function": "local/note", "bound": "2026-11-01T00:00:00.000000Z", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}}"#, "\n",
+        r#"{"function": "local/note", "signature": {"args": {"k": {"type": "string", "valid": false}}, "order": ["k"], "returns": "string"}}"#, "\n",
         r#"{"cell": {"fn": "local/note", "args": {"k": {"type": "string", "value": "a"}}}, "value": {"type": "string", "value": "hello"}, "tx": "2026-11-02T00:00:00.000000Z", "asof": "2026-11-02T00:00:00.000000Z", "licence": "CC0-1.0", "summary": "A note."}"#, "\n",
     )).unwrap();
     r.publish(&f).unwrap();
@@ -58,6 +66,6 @@ fn main() {
     println!("{} {}", r.key_id(), String::from_utf8_lossy(&a.body));
 }
 RS
-printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-local = { path = "../datumesh-local-%s" }\ndatumesh-core = "0.3.7"\n' "$version" > "$work/app/Cargo.toml"
+printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-local = { path = "../datumesh-local-%s" }\ndatumesh-core = "0.3.7"\ndatumesh-engine = { version = "0.4.2", default-features = false }\n' "$version" > "$work/app/Cargo.toml"
 in_fresh "cd app && cargo run -q && cargo run -q"
 echo "package test passed ($version)"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (2026-11-16)
+
+- `publish` of a file on another file system than the data directory works: the kept lines are
+  written beside the input file directly, with no rename across file systems (EXDEV). The bug
+  dates from 0.1.0; the 1.8b live rooting check found it.
+
 ## 0.3.0 (2026-11-16)
 
 CONTRACT-1.8b items 3, 7 and 8 and difference 1.

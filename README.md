@@ -257,7 +257,7 @@ call parser for `wasm32-unknown-unknown` (`verify`, `parse_call`; JSON in and ou
 
 ## Versions
 
-datumesh-local 0.3.0 adds the MCP server (stdio and Streamable HTTP, MCP 2026-07-28), key
+datumesh-local 0.3.1 fixes `publish` across file systems; 0.3.0 added the MCP server (stdio and Streamable HTTP, MCP 2026-07-28), key
 rotation, a host per machine and trusted machines, rooting into bundle 1, alias entries with
 `tx`, and rule A, on datumesh-core 0.3.8, datumesh-engine 0.4.2, datumesh-formula 0.3.0,
 datumesh-http 0.3.0 and datumesh-store 0.4.2 (spec-0.5.0). 0.2.2 (0.2.1 was tagged, not
