@@ -247,13 +247,10 @@ pub(crate) fn note_prefix(parse: Parse, request: &str, text: &str, aliases: &Ali
             };
             Parse::Call { rest, canonical, resolved: resolved.and_then(with_tx), fetched }
         }
-        Parse::Answered(reply) => {
-            let call = text.trim().strip_prefix("cell://").unwrap_or(text.trim());
-            match Resolved::new(call, vec![alias]).ok().and_then(with_tx) {
-                Some(r) => Parse::Answered(with_resolved(reply, &r)),
-                None => Parse::Answered(reply),
-            }
-        }
+        // Answered before the call could be parsed (the function's signature is not known, for
+        // example offline before it was ever fetched): no canonical call can be printed, so no
+        // `resolved` (SPEC 16.7 names the full canonical call).
+        Parse::Answered(reply) => Parse::Answered(reply),
         other => other,
     }
 }
