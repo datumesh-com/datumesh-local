@@ -64,12 +64,15 @@ fn the_entry_with_the_greatest_tx_at_the_asof_wins() {
     assert_eq!(between.status, 200, "{}", String::from_utf8_lossy(&between.body));
     assert!(s(&resolved(&between.body), "call").contains("mesh-test.datumesh.com/ecb/fx_rate"));
     let after = r.get(&format!("ecb/{CALL}?asof=2026-11-13T00:00:00.000000Z")).unwrap();
+    assert_ne!(after.status, 200);
+    // Answered before a signature is known (the host is not reachable), so no `resolved`; the
+    // failure names the newer entry's host.
     assert!(
-        s(&resolved(&after.body), "call").contains("unreachable.example.org/ecb/fx_rate"),
-        "{}",
+        after.detail.as_deref().unwrap_or("").contains("unreachable.example.org"),
+        "{:?} {}",
+        after.detail,
         String::from_utf8_lossy(&after.body)
     );
-    assert_ne!(after.status, 200);
 }
 
 /// Bare reference-class names resolve only to `datumesh.com/std/` (the user's rule, item 8): a bare
