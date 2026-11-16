@@ -189,7 +189,10 @@ const STUB_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456
 
 fn stub_answer(query: &str) -> String {
     if !query.to_lowercase().contains("quran") {
-        return format!(r#"{{"query":{},"results":[]}}"#, String::from_utf8(Value::String(query.into()).to_jcs()).unwrap());
+        return format!(
+            r#"{{"query":{},"results":[]}}"#,
+            String::from_utf8(Value::String(query.into()).to_jcs()).unwrap()
+        );
     }
     format!(
         r#"{{"query":"quran","results":[{{"kind":"class","name":"{VERSE_CLASS}","description":"A verse of the Quran, the Tanakh or the New Testament, by corpus, book, chapter and verse","class_hash":"{STUB_HASH}","descriptor":{{"keys":{{"book":{{"key_normalisation":"none","type":"string"}},"chapter":{{"type":"number","unit":"1"}},"corpus":{{"key_normalisation":"none","type":"string"}},"verse":{{"type":"number","unit":"1"}}}},"methods":{{"text":"{STUB_HASH}"}},"order":["corpus","book","chapter","verse"],"steward":{{"namespace":"{HOST}","process":"https://{HOST}/classes/change"}}}},"methods":{{"text":{{"fn":"{VERSE_CLASS}/text","fn_hash":"{STUB_HASH}","args":{{"edition":{{"type":"string","valid":false}}}},"returns":"blob","description":"The text of the verse in an edition"}}}},"since":"2026-02-02T00:00:00.000000Z"}}]}}"#
