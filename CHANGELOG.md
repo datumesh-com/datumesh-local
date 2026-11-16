@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-11-16)
 
 CONTRACT-1.8b items 3, 7 and 8 and difference 1.
 
