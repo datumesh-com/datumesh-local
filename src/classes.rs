@@ -27,7 +27,7 @@ use datumesh_http::client::{pct, ClientError};
 use crate::alias::{request_asof, request_head, AliasMap};
 use crate::fetch::{host_of, name_of, network_failure, Shared, END};
 use crate::gate::is_unrooted;
-use crate::resolver::{client_error, Callees, Reply, Resolver, Source};
+use crate::resolver::{call_form_of, client_error, Callees, Reply, Resolver, Source};
 use crate::{Error, FOREIGN_UNAVAILABLE_STATUS};
 
 /// The largest document a class or describe fetch reads.
@@ -35,8 +35,9 @@ const MAX: u64 = 16 << 20;
 
 /// What a request in the call form came to.
 pub(crate) enum Parse {
-    /// A call: the cell URI's rest, what it resolved (`resolved`), and whether it fetched.
-    Call { rest: String, resolved: Option<Resolved>, fetched: bool },
+    /// A call: the cell URI's rest, its canonical call (16.7, the call form with the asof, the pin
+    /// as written), what it resolved (`resolved`), and whether it fetched.
+    Call { rest: String, canonical: String, resolved: Option<Resolved>, fetched: bool },
     /// Answered without a parse: the class or a function was not held and could not be fetched.
     Answered(Reply),
     /// A call that does not parse or bind: the mesh's own answer to it (no network).
@@ -236,15 +237,15 @@ pub(crate) fn note_prefix(parse: Parse, request: &str, text: &str, aliases: &Ali
         tx => r.with_aliases_tx(tx).ok(),
     };
     match parse {
-        Parse::Call { rest, resolved, fetched } => {
+        Parse::Call { rest, canonical, resolved, fetched } => {
             let resolved = match resolved {
                 Some(mut r) => {
                     r.resolutions.insert(0, alias);
                     Some(r)
                 }
-                None => Resolved::new(&rest, vec![alias]).ok(),
+                None => Resolved::new(&canonical, vec![alias]).ok(),
             };
-            Parse::Call { rest, resolved: resolved.and_then(with_tx), fetched }
+            Parse::Call { rest, canonical, resolved: resolved.and_then(with_tx), fetched }
         }
         Parse::Answered(reply) => {
             let call = text.trim().strip_prefix("cell://").unwrap_or(text.trim());
@@ -345,6 +346,13 @@ impl Resolver {
                 }
                 Parse::Call {
                     rest: call.uri()["cell://".len()..].to_string(),
+                    canonical: call_form_of(
+                        &call.cell.ns,
+                        &call.cell.fn_name,
+                        &call.cell.args,
+                        call.fn_hash.as_deref(),
+                        call.cell.asof.as_deref(),
+                    ),
                     resolved: call.resolved,
                     fetched: env.fetched.get(),
                 }

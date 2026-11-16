@@ -449,7 +449,7 @@ impl Resolver {
         let text = aliases.expand_prefix(request);
         let parsed = crate::classes::note_prefix(self.parse_request(&text, &aliases), request, &text, &aliases);
         match parsed {
-            Parse::Call { rest, resolved, fetched } => {
+            Parse::Call { rest, resolved, fetched, .. } => {
                 let reply = self.answer(&rest, &Cell::new(fetched))?;
                 Ok(match resolved {
                     Some(r) => with_resolved(reply, &r),
@@ -1266,8 +1266,19 @@ fn publish_local(s: &Shared, path: &Path) -> Result<datumesh_http::publish::Publ
 /// strings; strings and blobs in double quotes (a `"` written `""`), other literals in their
 /// lexical form, an open argument as `*`.
 pub(crate) fn call_form(cell: &datumesh_core::Cell) -> String {
-    let mut parts: Vec<String> = cell
-        .args
+    call_form_of(&cell.ns, &cell.fn_name, &cell.args, None, None)
+}
+
+/// The canonical call of a cell (16.7) as [`call_form`] prints it, with the pin (`name@<hash>(...)`
+/// as the request wrote it) and `?asof=<instant>` when the request had an asof.
+pub(crate) fn call_form_of(
+    ns: &str,
+    fn_name: &str,
+    args: &datumesh_core::Args,
+    pin: Option<&str>,
+    asof: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = args
         .iter()
         .map(|(k, a)| {
             let lit = match a {
@@ -1281,7 +1292,9 @@ pub(crate) fn call_form(cell: &datumesh_core::Cell) -> String {
         })
         .collect();
     parts.sort();
-    format!("{}/{}({})", cell.ns, cell.fn_name, parts.join(", "))
+    let pin = pin.map(|h| format!("@{h}")).unwrap_or_default();
+    let asof = asof.map(|a| format!("?asof={a}")).unwrap_or_default();
+    format!("{ns}/{fn_name}{pin}({}){asof}", parts.join(", "))
 }
 
 /// The URI of a cell (`cell://<ns>/<fn>?k=v&...`, no asof): core's `format_uri`.
