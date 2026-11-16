@@ -50,6 +50,9 @@ pub struct Config {
     pub open_licences: Vec<String>,
     /// The mesh requests the gate refuses are forwarded to.
     pub forward_mesh: Option<String>,
+    /// The hosts `find` asks when its local names give no answer (and always with `remote`); a
+    /// host must also be on the allowlist to be asked (CONTRACT-1.7a L1). Default `datumesh.com`.
+    pub find_meshes: Vec<String>,
     /// No fetch at all.
     pub offline: bool,
     /// The licence of the receipts this machine signs for cells without inputs (SPEC 8.5:
@@ -194,6 +197,7 @@ impl Config {
             allowlist: Vec::new(),
             open_licences: Vec::new(),
             forward_mesh: None,
+            find_meshes: vec!["datumesh.com".into()],
             offline: false,
             licence: "CC-BY-4.0".into(),
             peers: BTreeMap::new(),
@@ -221,6 +225,7 @@ impl Config {
                 }
                 "allowlist" => c.allowlist = strings(x, k)?,
                 "open_licences" => c.open_licences = strings(x, k)?,
+                "find_meshes" => c.find_meshes = strings(x, k)?,
                 "forward_mesh" => {
                     c.forward_mesh = match x {
                         Value::Null => None,

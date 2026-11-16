@@ -159,16 +159,45 @@ pub struct Refreshed {
     pub failed: Vec<(String, String)>,
 }
 
-/// A name `find` found.
+/// A name `find` found (CONTRACT-1.7a L2).
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
     /// The full name.
     pub name: String,
-    /// The function hash it is bound to now (here, or on the mesh asked).
+    /// The function hash it is bound to now (here, or on the mesh asked); a class's class hash.
     pub fn_hash: String,
-    /// Held here (false: found on the mesh only).
+    /// Held here (false: found on a mesh only).
     pub held: bool,
+    /// `function`, `class` or `method`.
+    pub kind: String,
+    /// The description the mesh or the stored descriptor gives; empty when none.
+    pub description: String,
+    /// For a function or method found on a mesh: its arguments, (name, type), in order.
+    pub args: Vec<(String, String)>,
+    /// For a class found on a mesh: its methods (kind `method`), in the mesh's order.
+    pub methods: Vec<Found>,
+}
+
+/// A place `find` looked (CONTRACT-1.7a L2).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Searched {
+    /// `local`, or a mesh's find endpoint (its URL without the query).
+    pub place: String,
+    /// For a mesh: `ok`, `cached`, `not allowed`, `offline` or `<error code>: <detail>`; `None`
+    /// for the local names.
+    pub status: Option<String>,
+}
+
+/// What `find` gave: the names found and the places searched, in the order searched.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FindAnswer {
+    /// The names found: held here first, then the meshes' in the order asked.
+    pub results: Vec<Found>,
+    /// `local` first, then each mesh asked or not asked.
+    pub searched: Vec<Searched>,
 }
 
 /// An imported receipt kept aside: signed by another machine's local key, not trusted.
@@ -909,46 +938,123 @@ impl Resolver {
         Ok(reply)
     }
 
-    /// Names held here whose name contains `query` (case-insensitive); with `remote`, also
-    /// those the forward mesh's `/find` gives (an explicit fetch).
+    /// Names held here whose name contains `query` (case-insensitive), as [`Resolver::find_in`]
+    /// gives them.
     pub fn find(&self, query: &str, remote: bool) -> Result<Vec<Found>, Error> {
+        Ok(self.find_in(query, remote)?.results)
+    }
+
+    /// Finds `query`: the names held here whose name contains it (case-insensitive); then, when
+    /// none are held or `remote` is true, the find endpoint of each configured mesh (`find_meshes`,
+    /// and the forward mesh with `remote`), one request each. An answer is kept 24 hours in the
+    /// index; a mesh that is not allowed, is offline or fails is listed in `searched` and asks
+    /// nothing more (CONTRACT-1.7a L2).
+    pub fn find_in(&self, query: &str, remote: bool) -> Result<FindAnswer, Error> {
         let s = &self.shared;
         let q = query.to_lowercase();
-        let mut out = Vec::new();
+        let mut results = Vec::new();
         for (name, _) in s.index.names()? {
             if name.to_lowercase().contains(&q) {
                 if let Some(b) = s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))? {
-                    out.push(Found { name, fn_hash: b.fn_hash, held: true });
+                    let description = self.description_of(&b.fn_hash)?;
+                    results.push(Found {
+                        name,
+                        fn_hash: b.fn_hash,
+                        held: true,
+                        kind: "function".into(),
+                        description,
+                        args: Vec::new(),
+                        methods: Vec::new(),
+                    });
                 } else if let Some(c) =
                     s.store.resolve_class_binding(&name, END).map_err(|e| Error::Store(e.to_string()))?
                 {
-                    out.push(Found { name, fn_hash: c.class_hash, held: true });
+                    let description = self.description_of(&c.class_hash)?;
+                    results.push(Found {
+                        name,
+                        fn_hash: c.class_hash,
+                        held: true,
+                        kind: "class".into(),
+                        description,
+                        args: Vec::new(),
+                        methods: Vec::new(),
+                    });
                 }
             }
         }
-        if remote {
-            let mesh = s.config.forward_mesh.clone().ok_or_else(|| Error::Request("no forward mesh".into()))?;
-            s.may_fetch(&mesh).map_err(Error::ForeignUnavailable)?;
-            let doc = s.client.resolve(&mesh).map_err(|e| client_error(&e))?;
-            let url = doc.url("find", &[]).unwrap_or_else(|| format!("https://{mesh}/find")).to_string();
-            let url = format!("{url}?q={}", datumesh_http::client::pct(query));
-            let (status, body) = s.client.get(&url, 16 << 20).map_err(|e| Error::ForeignUnavailable(e.to_string()))?;
-            if status != 200 {
-                return Err(Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail: format!("{url}: {status}") });
+        let mut searched = vec![Searched { place: "local".into(), status: None }];
+        if results.is_empty() || remote {
+            let mut meshes = s.config.find_meshes.clone();
+            if let Some(f) = s.config.forward_mesh.as_ref().filter(|_| remote) {
+                if !meshes.contains(f) {
+                    meshes.push(f.clone());
+                }
             }
-            let v = json::parse(&body)
-                .map_err(|e| Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail: e.to_string() })?;
-            if let Some(Value::Array(rs)) = v.get("results") {
-                for r in rs {
-                    let name = r.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-                    let h = r.get("fn_hash").and_then(Value::as_str).unwrap_or("").to_string();
-                    if !out.iter().any(|f| f.name == name) {
-                        out.push(Found { name, fn_hash: h, held: false });
+            for mesh in &meshes {
+                let (place, status, found) = self.ask_find(mesh, query, &q)?;
+                searched.push(Searched { place, status: Some(status) });
+                for f in found {
+                    if !results.iter().any(|r: &Found| r.name == f.name) {
+                        results.push(f);
                     }
                 }
             }
         }
-        Ok(out)
+        Ok(FindAnswer { results, searched })
+    }
+
+    /// The description the stored descriptor (a function's or a class's) gives, or empty.
+    fn description_of(&self, hash: &str) -> Result<String, Error> {
+        let s = &self.shared;
+        let bytes = match s.store.descriptor(hash) {
+            Some(b) => Some(b.into_owned()),
+            None => s.store.class(hash).map_err(|e| Error::Store(e.to_string()))?,
+        };
+        Ok(bytes
+            .and_then(|b| json::parse(&b).ok())
+            .and_then(|v| v.get("description").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default())
+    }
+
+    /// Asks `mesh`'s find endpoint for `query` (`key`: the lowercased query, the cache's key):
+    /// the place searched, its status, and the names it gave.
+    fn ask_find(&self, mesh: &str, query: &str, key: &str) -> Result<(String, String, Vec<Found>), Error> {
+        let s = &self.shared;
+        let fallback = format!("https://{mesh}/find");
+        if !s.client.allowed(mesh) {
+            return Ok((fallback, "not allowed".into(), Vec::new()));
+        }
+        if s.offline.load(Ordering::Acquire) {
+            return Ok((fallback, "offline".into(), Vec::new()));
+        }
+        let now = s.now();
+        if let Some(hit) = s.index.find_cached(mesh, key)? {
+            if within_a_day(&hit.at, &now) {
+                if let Ok(found) = parse_find(&hit.body) {
+                    return Ok((hit.url, "cached".into(), found));
+                }
+            }
+        }
+        let doc = match s.client.resolve(mesh) {
+            Ok(doc) => doc,
+            Err(e) => return Ok((fallback, rejection_detail(&e), Vec::new())),
+        };
+        let place = doc.url("find", &[]).unwrap_or_else(|| fallback.clone()).to_string();
+        let url = format!("{place}?q={}", datumesh_http::client::pct(query));
+        let body = match s.client.get(&url, 16 << 20) {
+            Err(e) => return Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: {e}"), Vec::new())),
+            Ok((200, body)) => body,
+            Ok((status, _)) => {
+                return Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: status {status}"), Vec::new()));
+            }
+        };
+        match parse_find(&body) {
+            Ok(found) => {
+                s.index.put_find(mesh, key, &place, &body, &now)?;
+                Ok((place, "ok".into(), found))
+            }
+            Err(why) => Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: {why}"), Vec::new())),
+        }
     }
 
     /// Verifies a receipt (SPEC 10.1) with this machine's keys: the store's key documents
@@ -1200,6 +1306,107 @@ impl Resolver {
 /// This machine's key document in the store: the current key, the retired keys (each with its
 /// `valid_to`), and the store's earlier ones (a reinstall's: their receipts verify). Trusted
 /// machines' keys are not in it (CONTRACT-1.8b L4).
+/// The answer of a find endpoint (datumesh-http's `GET /find`, CONTRACT-1.7a H3) as names: a
+/// class with its methods, a function or a method. An entry that names nothing is skipped.
+fn parse_find(body: &[u8]) -> Result<Vec<Found>, String> {
+    let v = json::parse(body).map_err(|e| e.to_string())?;
+    let Some(Value::Array(rs)) = v.get("results") else {
+        return Err("no results".into());
+    };
+    Ok(rs.iter().filter_map(found_of).collect())
+}
+
+fn found_of(r: &Value) -> Option<Found> {
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let name = text(r, "name");
+    if name.is_empty() {
+        return None;
+    }
+    let description = text(r, "description");
+    let kind = match text(r, "kind").as_str() {
+        "class" | "method" => text(r, "kind"),
+        _ => "function".to_string(),
+    };
+    let mut found = Found {
+        name: name.clone(),
+        fn_hash: text(r, "fn_hash"),
+        held: false,
+        kind: kind.clone(),
+        description,
+        args: signature_args(r.get("descriptor").unwrap_or(&Value::Null)),
+        methods: Vec::new(),
+    };
+    if kind == "class" {
+        found.fn_hash = text(r, "class_hash");
+        if let Some(Value::Object(ms)) = r.get("methods") {
+            found.methods = ms
+                .iter()
+                .map(|(m, info)| Found {
+                    name: format!("{name}/{m}"),
+                    fn_hash: text(info, "fn_hash"),
+                    held: false,
+                    kind: "method".into(),
+                    description: text(info, "description"),
+                    args: arg_list(info.get("args"), info.get("order")),
+                    methods: Vec::new(),
+                })
+                .collect();
+        }
+    }
+    Some(found)
+}
+
+/// The arguments of a function descriptor's signature, (name, type), in its order.
+pub(crate) fn signature_args(descriptor: &Value) -> Vec<(String, String)> {
+    let sig = descriptor.get("signature").unwrap_or(descriptor);
+    arg_list(sig.get("args"), sig.get("order"))
+}
+
+/// The arguments of an argument object, (name, type), in `order` (else the object's order).
+fn arg_list(args: Option<&Value>, order: Option<&Value>) -> Vec<(String, String)> {
+    let Some(Value::Object(m)) = args else {
+        return Vec::new();
+    };
+    let names: Vec<String> = match order {
+        Some(Value::Array(o)) => o.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        _ => m.iter().map(|(k, _)| k.clone()).collect(),
+    };
+    names
+        .into_iter()
+        .map(|k| {
+            let ty = m
+                .iter()
+                .find(|(n, _)| *n == k)
+                .and_then(|(_, a)| a.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("value")
+                .to_string();
+            (k, ty)
+        })
+        .collect()
+}
+
+/// Whether `now` is less than a day after `at` (both `YYYY-MM-DDTHH:MM:SS...Z`): false when
+/// either does not parse, or `now` is before `at`.
+fn within_a_day(at: &str, now: &str) -> bool {
+    matches!((epoch_secs(at), epoch_secs(now)), (Some(a), Some(n)) if (0..86_400).contains(&(n - a)))
+}
+
+/// The whole seconds since the epoch of an instant's date and time (its fraction ignored).
+fn epoch_secs(ts: &str) -> Option<i64> {
+    let b = ts.get(..19)?;
+    let n = |r: std::ops::Range<usize>| b.get(r)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, se) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + se)
+}
+
 fn publish_key_document(s: &Shared) -> Result<(), Error> {
     let host = s.config.host.as_str();
     let mut entries = vec![s.key().entry()];

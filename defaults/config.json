@@ -22,6 +22,10 @@
   // The mesh that answers what the gate forwards (declared restricted inputs).
   "forward_mesh": "mesh-test.datumesh.com",
 
+  // The meshes `find` asks when the local names give no answer, and always with --remote (one
+  // request each, its answer kept 24 hours). A host must also be in the allowlist to be asked.
+  "find_meshes": ["datumesh.com"],
+
   // true: no fetch at all; a cell not held answers error E_FOREIGN_UNAVAILABLE.
   "offline": false,
 

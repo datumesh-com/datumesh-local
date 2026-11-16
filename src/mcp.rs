@@ -40,7 +40,7 @@ const END: &str = "9999-12-31T23:59:59.999999Z";
 const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find to discover names, describe for classes and objects, get for a cell (call syntax or a cell:// URI), explain for its lineage, verify for a receipt. define and publish write under this machine's unrooted namespace.";
 /// The tools, in the order `tools/list` gives them, with their input schemas.
 const TOOLS: &str = r#"[
-{"name":"find","description":"Names held here whose name contains the query (case-insensitive); with remote, also the forward mesh's. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
+{"name":"find","description":"Names held here whose name contains the query (case-insensitive). When none are held, or with remote, also the configured find_meshes (and the forward mesh with remote); searched lists each place looked and its status. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
 {"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
@@ -231,23 +231,41 @@ impl McpServer {
 
     fn find(&self, args: &Value) -> ToolResult {
         let query = str_arg(args, "query")?;
-        // Without a forward mesh configured, `remote` asks for nothing more than the local names.
-        let remote = args.get("remote") == Some(&Value::Bool(true)) && self.resolver.config().forward_mesh.is_some();
+        let remote = args.get("remote") == Some(&Value::Bool(true));
+        let answer = self.resolver.find_in(query, remote)?;
         let mut results = Vec::new();
-        for f in self.resolver.find(query, remote)? {
-            if let Some((hash, class)) = self.class_of(&f.name)? {
-                results.push(entry_with_call(&f.name, "class", &hash, &f.name));
-                for (m, h) in &class.methods {
-                    let full = format!("{}/{m}", f.name);
-                    let call = template(&full, &self.descriptor(h));
-                    results.push(entry_with_call(&full, "method", h, &call));
+        for f in &answer.results {
+            if f.kind == "class" && f.held {
+                if let Some((hash, class)) = self.class_of(&f.name)? {
+                    results.push(described(entry_with_call(&f.name, "class", &hash, &f.name), &f.description));
+                    results.extend(self.method_entries(&f.name, &class));
+                    continue;
                 }
-            } else {
-                let call = template(&f.name, &self.descriptor(&f.fn_hash));
-                results.push(entry_with_call(&f.name, "function", &f.fn_hash, &call));
             }
+            if f.kind == "class" {
+                results.push(described(entry_with_call(&f.name, "class", &f.fn_hash, &f.name), &f.description));
+                for m in &f.methods {
+                    let call = call_template(&m.name, &m.args);
+                    results.push(described(entry_with_call(&m.name, "method", &m.fn_hash, &call), &m.description));
+                }
+                continue;
+            }
+            let call =
+                if f.held { template(&f.name, &self.descriptor(&f.fn_hash)) } else { call_template(&f.name, &f.args) };
+            results.push(described(entry_with_call(&f.name, &f.kind, &f.fn_hash, &call), &f.description));
         }
-        Ok(obj(vec![("results", Value::Array(results))]))
+        let searched = answer
+            .searched
+            .iter()
+            .map(|x| {
+                let mut m = vec![("where", s(&x.place))];
+                if let Some(status) = &x.status {
+                    m.push(("status", s(status)));
+                }
+                obj(m)
+            })
+            .collect();
+        Ok(obj(vec![("results", Value::Array(results)), ("searched", Value::Array(searched))]))
     }
 
     fn get(&self, args: &Value) -> ToolResult {
@@ -492,8 +510,10 @@ impl McpServer {
             .iter()
             .map(|(m, h)| {
                 let full = format!("{class}/{m}");
-                let call = template(&full, &self.descriptor(h));
-                entry_with_call(&full, "method", h, &call)
+                let d = self.descriptor(h);
+                let call = template(&full, &d);
+                let description = d.get("description").and_then(Value::as_str).unwrap_or_default();
+                described(entry_with_call(&full, "method", h, &call), description)
             })
             .collect()
     }
@@ -614,20 +634,21 @@ fn answer_block(status: Value, body: &[u8], label: Option<&str>) -> Value {
 
 /// A function's call template: `<name>(<arg>: <type>, ...)` in its signature's order.
 fn template(name: &str, descriptor: &Value) -> String {
-    let sig = descriptor.get("signature");
-    let args = sig.and_then(|x| x.get("args"));
-    let order: Vec<String> = match sig.and_then(|x| x.get("order")) {
-        Some(Value::Array(o)) => o.iter().filter_map(Value::as_str).map(str::to_string).collect(),
-        _ => args.and_then(Value::as_object).map(|m| m.iter().map(|(k, _)| k.clone()).collect()).unwrap_or_default(),
-    };
-    let parts: Vec<String> = order
-        .iter()
-        .map(|k| {
-            let ty = args.and_then(|a| a.get(k)).and_then(|a| a.get("type")).and_then(Value::as_str).unwrap_or("value");
-            format!("{k}: {ty}")
-        })
-        .collect();
+    call_template(name, &crate::resolver::signature_args(descriptor))
+}
+
+/// A call template: the name and its arguments, each labelled with its type.
+fn call_template(name: &str, args: &[(String, String)]) -> String {
+    let parts: Vec<String> = args.iter().map(|(k, ty)| format!("{k}: {ty}")).collect();
     format!("{name}({})", parts.join(", "))
+}
+
+/// A result entry with its description.
+fn described(mut entry: Value, description: &str) -> Value {
+    if let Value::Object(m) = &mut entry {
+        m.push(("description".into(), s(description)));
+    }
+    entry
 }
 
 fn entry_with_call(name: &str, kind: &str, hash: &str, call: &str) -> Value {

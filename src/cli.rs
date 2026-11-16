@@ -306,18 +306,50 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             let [q] = a.positional.as_slice() else {
                 return Err(Failure::Usage("find: one query".into()));
             };
-            let found = r.find(q, a.has("--remote"))?;
-            let results = found
-                .into_iter()
+            let answer = r.find_in(q, a.has("--remote"))?;
+            let results = answer
+                .results
+                .iter()
                 .map(|f| {
                     Value::Object(vec![
-                        ("fn_hash".into(), s(f.fn_hash)),
+                        ("description".into(), s(f.description.clone())),
+                        ("fn_hash".into(), s(f.fn_hash.clone())),
                         ("held".into(), Value::Bool(f.held)),
-                        ("name".into(), s(f.name)),
+                        ("kind".into(), s(f.kind.clone())),
+                        ("name".into(), s(f.name.clone())),
                     ])
                 })
                 .collect();
-            jline(out, Value::Object(vec![("query".into(), s(q.clone())), ("results".into(), Value::Array(results))]))?;
+            let searched = answer
+                .searched
+                .iter()
+                .map(|x| {
+                    let mut m = vec![("where".into(), s(x.place.clone()))];
+                    if let Some(status) = &x.status {
+                        m.push(("status".into(), s(status.clone())));
+                    }
+                    Value::Object(m)
+                })
+                .collect();
+            jline(
+                out,
+                Value::Object(vec![
+                    ("query".into(), s(q.clone())),
+                    ("results".into(), Value::Array(results)),
+                    ("searched".into(), Value::Array(searched)),
+                ]),
+            )?;
+            if answer.results.is_empty() {
+                let places: Vec<String> = answer
+                    .searched
+                    .iter()
+                    .map(|x| match &x.status {
+                        Some(status) => format!("{} ({status})", x.place),
+                        None => x.place.clone(),
+                    })
+                    .collect();
+                writeln!(err, "searched: {}", places.join(", ")).map_err(io)?;
+            }
             Ok(0)
         }
         "prefetch" => {

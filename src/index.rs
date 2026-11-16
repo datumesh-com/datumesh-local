@@ -12,6 +12,7 @@
 //! | `answered` | receipts this machine signed and answered with (for export) |
 //! | `quarantine` | imported receipts signed by another machine's local key, not trusted |
 //! | `objects` | objects this machine described by key encoding (16.8), by object id: a short id answers from them |
+//! | `finds` | answers of a mesh's find endpoint (CONTRACT-1.7a L2), by mesh and lowercased query: the endpoint's URL, the body as received and when |
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS forwarded (rest TEXT PRIMARY KEY, mesh TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS answered (receipt TEXT PRIMARY KEY, cell_id TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quarantine (receipt TEXT PRIMARY KEY, key_id TEXT NOT NULL, bytes BLOB NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS objects (object_id TEXT PRIMARY KEY, encoding TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS finds (mesh TEXT NOT NULL, query TEXT NOT NULL, url TEXT NOT NULL, body BLOB NOT NULL, at TEXT NOT NULL, PRIMARY KEY (mesh, query));
 ";
 
 /// A forwarded answer as cached.
@@ -57,6 +59,14 @@ pub struct HeldCell {
     pub rest: String,
     /// The slice (its URI rest) that brought it, if any.
     pub slice: Option<String>,
+}
+
+/// A find answer as cached: the endpoint's URL (without the query), the body and when it came.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FindCached {
+    pub(crate) url: String,
+    pub(crate) body: Vec<u8>,
+    pub(crate) at: String,
 }
 
 /// The index (see the module documentation).
@@ -270,5 +280,26 @@ impl Index {
     /// Removes a receipt from the quarantine (it was trusted and stored).
     pub fn release(&self, receipt: &str) -> Result<(), Error> {
         self.with(|c| c.execute("DELETE FROM quarantine WHERE receipt = ?1", params![receipt]).map(|_| ()))
+    }
+
+    /// The cached find answer of `mesh` for `query` (the key is the lowercased query).
+    pub(crate) fn find_cached(&self, mesh: &str, query: &str) -> Result<Option<FindCached>, Error> {
+        self.with(|c| {
+            c.query_row("SELECT url, body, at FROM finds WHERE mesh = ?1 AND query = ?2", params![mesh, query], |r| {
+                Ok(FindCached { url: r.get(0)?, body: r.get(1)?, at: r.get(2)? })
+            })
+            .optional()
+        })
+    }
+
+    /// Caches the find answer of `mesh` for `query` (the key is the lowercased query).
+    pub(crate) fn put_find(&self, mesh: &str, query: &str, url: &str, body: &[u8], at: &str) -> Result<(), Error> {
+        self.with(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO finds (mesh, query, url, body, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![mesh, query, url, body, at],
+            )
+            .map(|_| ())
+        })
     }
 }

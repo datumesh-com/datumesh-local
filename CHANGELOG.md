@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.2 (2026-11-16)
+
+CONTRACT-1.7a L1-L5: `find` falls through to the configured meshes.
+
+- Configuration: `find_meshes` (default `["datumesh.com"]`, in `defaults/config.json`): the hosts
+  `find` asks when its local names give no answer, and always with `remote`. A host must also be
+  on the allowlist to be asked.
+- `Resolver::find_in(query, remote) -> FindAnswer { results, searched }`: `results` are `Found`
+  (now with `kind`, `description`, and for a class found on a mesh its `methods`); `searched`
+  lists `local` and each mesh asked, with its status (`ok`, `cached`, `not allowed`, `offline`, or
+  an error code and detail). A failing mesh is recorded there, not raised. `Resolver::find` keeps
+  its signature and returns `find_in`'s results.
+- An answer of a mesh is kept 24 hours in the index, keyed by the mesh and the lowercased query;
+  a failure is not kept. Offline, nothing is asked.
+- MCP `find` gives `searched`, and each result `kind` and `description`; a remote class is
+  followed by its methods, with call templates from the mesh's arguments.
+- CLI `find` prints `searched:` on standard error when there are no results.
+
 ## 0.3.1 (2026-11-16)
 
 - `publish` of a file on another file system than the data directory works: the kept lines are

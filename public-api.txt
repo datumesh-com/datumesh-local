@@ -67,6 +67,7 @@ pub datumesh_local::config::Config::aliases_file: std::path::PathBuf
 pub datumesh_local::config::Config::allowlist: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::config::Config::config_dir: std::path::PathBuf
 pub datumesh_local::config::Config::data_dir: std::path::PathBuf
+pub datumesh_local::config::Config::find_meshes: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::config::Config::forward_mesh: core::option::Option<alloc::string::String>
 pub datumesh_local::config::Config::host: alloc::string::String
 pub datumesh_local::config::Config::key_file: std::path::PathBuf
@@ -320,6 +321,7 @@ pub datumesh_local::Config::aliases_file: std::path::PathBuf
 pub datumesh_local::Config::allowlist: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::Config::config_dir: std::path::PathBuf
 pub datumesh_local::Config::data_dir: std::path::PathBuf
+pub datumesh_local::Config::find_meshes: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::Config::forward_mesh: core::option::Option<alloc::string::String>
 pub datumesh_local::Config::host: alloc::string::String
 pub datumesh_local::Config::key_file: std::path::PathBuf
@@ -349,9 +351,26 @@ pub fn datumesh_local::Defined::eq(&self, &Self) -> bool
 impl core::fmt::Debug for datumesh_local::Defined
 pub fn datumesh_local::Defined::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::Defined
+#[non_exhaustive] pub struct datumesh_local::FindAnswer
+pub datumesh_local::FindAnswer::results: alloc::vec::Vec<datumesh_local::Found>
+pub datumesh_local::FindAnswer::searched: alloc::vec::Vec<datumesh_local::Searched>
+impl core::clone::Clone for datumesh_local::FindAnswer
+pub fn datumesh_local::FindAnswer::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::FindAnswer
+impl core::cmp::PartialEq for datumesh_local::FindAnswer
+pub fn datumesh_local::FindAnswer::eq(&self, &Self) -> bool
+impl core::default::Default for datumesh_local::FindAnswer
+pub fn datumesh_local::FindAnswer::default() -> Self
+impl core::fmt::Debug for datumesh_local::FindAnswer
+pub fn datumesh_local::FindAnswer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::FindAnswer
 #[non_exhaustive] pub struct datumesh_local::Found
+pub datumesh_local::Found::args: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub datumesh_local::Found::description: alloc::string::String
 pub datumesh_local::Found::fn_hash: alloc::string::String
 pub datumesh_local::Found::held: bool
+pub datumesh_local::Found::kind: alloc::string::String
+pub datumesh_local::Found::methods: alloc::vec::Vec<datumesh_local::Found>
 pub datumesh_local::Found::name: alloc::string::String
 impl core::clone::Clone for datumesh_local::Found
 pub fn datumesh_local::Found::clone(&self) -> Self
@@ -507,6 +526,7 @@ pub fn datumesh_local::Resolver::define_formula(&self, &str, &str, &datumesh_cor
 pub fn datumesh_local::Resolver::define_stored(&self, &str, &datumesh_core::json::Value) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
 pub fn datumesh_local::Resolver::explain(&self, &str, core::option::Option<usize>) -> core::result::Result<datumesh_local::Reply, datumesh_local::Error>
 pub fn datumesh_local::Resolver::find(&self, &str, bool) -> core::result::Result<alloc::vec::Vec<datumesh_local::Found>, datumesh_local::Error>
+pub fn datumesh_local::Resolver::find_in(&self, &str, bool) -> core::result::Result<datumesh_local::FindAnswer, datumesh_local::Error>
 pub fn datumesh_local::Resolver::get(&self, &str) -> core::result::Result<datumesh_local::Reply, datumesh_local::Error>
 pub fn datumesh_local::Resolver::key_document(&self) -> alloc::vec::Vec<u8>
 pub fn datumesh_local::Resolver::key_id(&self) -> alloc::string::String
@@ -606,6 +626,17 @@ pub fn datumesh_local::Rotated::eq(&self, &Self) -> bool
 impl core::fmt::Debug for datumesh_local::Rotated
 pub fn datumesh_local::Rotated::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::Rotated
+#[non_exhaustive] pub struct datumesh_local::Searched
+pub datumesh_local::Searched::place: alloc::string::String
+pub datumesh_local::Searched::status: core::option::Option<alloc::string::String>
+impl core::clone::Clone for datumesh_local::Searched
+pub fn datumesh_local::Searched::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::Searched
+impl core::cmp::PartialEq for datumesh_local::Searched
+pub fn datumesh_local::Searched::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::Searched
+pub fn datumesh_local::Searched::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::Searched
 #[non_exhaustive] pub struct datumesh_local::TrustedMachine
 pub datumesh_local::TrustedMachine::host: alloc::string::String
 pub datumesh_local::TrustedMachine::revoked_at: core::option::Option<alloc::string::String>
