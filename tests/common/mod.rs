@@ -166,6 +166,47 @@ async fn tamper_cell(req: axum::extract::Request, next: axum::middleware::Next) 
 }
 
 fn build_upstream(slice_page: usize, tamper: bool) -> Upstream {
+    build_upstream_with(slice_page, tamper, None)
+}
+
+/// A stub `/find` for local 0.3.2 (CONTRACT-1.7a L4): datumesh-http 0.3.1's answer shape (H3)
+/// for the query "quran" (the class `VERSE_CLASS` with a `text(edition)` method), an empty
+/// `results` for any other query, or a 500 when `fail` is set. It counts its requests and
+/// keeps their raw query strings. Every other path is the real test mesh's.
+pub struct FindStub {
+    pub finds: AtomicU64,
+    pub queries: Mutex<Vec<String>>,
+    pub fail: std::sync::atomic::AtomicBool,
+}
+
+impl FindStub {
+    pub fn finds(&self) -> u64 {
+        self.finds.load(Ordering::SeqCst)
+    }
+}
+
+const STUB_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn stub_answer(query: &str) -> String {
+    if !query.to_lowercase().contains("quran") {
+        return format!(r#"{{"query":{},"results":[]}}"#, String::from_utf8(Value::String(query.into()).to_jcs()).unwrap());
+    }
+    format!(
+        r#"{{"query":"quran","results":[{{"kind":"class","name":"{VERSE_CLASS}","description":"A verse of the Quran, the Tanakh or the New Testament, by corpus, book, chapter and verse","class_hash":"{STUB_HASH}","descriptor":{{"keys":{{"book":{{"key_normalisation":"none","type":"string"}},"chapter":{{"type":"number","unit":"1"}},"corpus":{{"key_normalisation":"none","type":"string"}},"verse":{{"type":"number","unit":"1"}}}},"methods":{{"text":"{STUB_HASH}"}},"order":["corpus","book","chapter","verse"],"steward":{{"namespace":"{HOST}","process":"https://{HOST}/classes/change"}}}},"methods":{{"text":{{"fn":"{VERSE_CLASS}/text","fn_hash":"{STUB_HASH}","args":{{"edition":{{"type":"string","valid":false}}}},"returns":"blob","description":"The text of the verse in an edition"}}}},"since":"2026-02-02T00:00:00.000000Z"}}]}}"#
+    )
+}
+
+/// The upstream with the stub `/find`.
+pub fn upstream_finding() -> (Upstream, Arc<FindStub>) {
+    let stub = Arc::new(FindStub {
+        finds: AtomicU64::new(0),
+        queries: Mutex::new(Vec::new()),
+        fail: std::sync::atomic::AtomicBool::new(false),
+    });
+    (build_upstream_with(1000, false, Some(stub.clone())), stub)
+}
+
+fn build_upstream_with(slice_page: usize, tamper: bool, find: Option<Arc<FindStub>>) -> Upstream {
     let dir = TempDir::new("upstream");
     // UPSTREAM_DATABASE_URL: the upstream on PostgreSQL, as the test mesh runs (an empty
     // database of its own, made by the caller, for one test: tools/refresh_pg.sh); else on
@@ -217,6 +258,28 @@ fn build_upstream(slice_page: usize, tamper: bool) -> Upstream {
     let requests = Arc::new(AtomicU64::new(0));
     let counted = requests.clone();
     let mut router = mesh.router();
+    if let Some(stub) = find {
+        let handler = move |req: axum::extract::Request| {
+            let stub = stub.clone();
+            async move {
+                stub.finds.fetch_add(1, Ordering::SeqCst);
+                let raw = req.uri().query().unwrap_or("").to_string();
+                stub.queries.lock().unwrap().push(raw.clone());
+                let q = raw.split('&').find_map(|p| p.strip_prefix("q=")).unwrap_or("").replace('+', " ");
+                let (status, body) = if stub.fail.load(Ordering::SeqCst) {
+                    (500, r#"{"error":"stub failure"}"#.to_string())
+                } else {
+                    (200, stub_answer(&q))
+                };
+                axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap()
+            }
+        };
+        router = axum::Router::new().route("/find", axum::routing::get(handler)).fallback_service(router);
+    }
     if tamper {
         router = router.layer(axum::middleware::from_fn(tamper_cell));
     }
