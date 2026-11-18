@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.3 (2026-11-18)
+
+CONTRACT-1.7a-text L1-L4: MCP `get` returns a text blob's content, checked; the `blob` resource.
+
+- MCP `get`, for a receipt whose value is a blob (`<sha256>:<length>:<media_type>`): a text
+  media type of at most 65,536 bytes gives three text items, the text itself (exactly the blob's
+  bytes), `{"blob_checked":true,"length","media_type","sha256"}` and the answer block;
+  `structuredContent` is the answer block with `text` and `blob_checked`. Other blobs (not text,
+  or over the limit) give two items, the `blob` address (`uri`, `url` when there is a host)
+  with `blob_checked: false`, and the answer block. A text blob that cannot be had here (offline,
+  not held, the mesh unreachable) is as the latter with `blob_unavailable`; the receipt stands.
+- The content comes from the local store, else from the answering mesh's `/blob/<sha256>` (the
+  forward mesh when forwarded, else the cell's host), and is kept. It is checked: its SHA-256,
+  its length, and UTF-8. A mismatch, or the resolver's own fetch failing with `E_BLOB_MISMATCH`,
+  is `isError` with `E_BLOB_MISMATCH: <detail>` and no receipt or text.
+- `Resolver::blob_of(&reply) -> Option<BlobAnswer>` and `BlobContent`: the blob a reply names,
+  with its content (`Text`, `NotText`, `Unavailable`, `Mismatch`).
+- `blob://<sha256>` resource (`resources/templates/list` gives `blob`): a held blob, checked
+  against its SHA-256; text (UTF-8, up to 64 KiB) with `text/plain; charset=utf-8`, else base64
+  with `application/octet-stream`. Not held: -32602; a malformed sha: -32602; stored bytes that do
+  not hash to it: -32603 with `E_BLOB_MISMATCH`.
+- The `get` description and the instructions say what `get` returns for a text value.
+
 ## 0.3.2 (2026-11-16)
 
 CONTRACT-1.7a L1-L5: `find` falls through to the configured meshes.

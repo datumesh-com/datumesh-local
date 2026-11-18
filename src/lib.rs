@@ -118,8 +118,8 @@ pub use gate::LicenceGate;
 pub use key::MachineKey;
 #[cfg(feature = "resolver")]
 pub use resolver::{
-    Defined, FindAnswer, Found, Prefetched, PublishedCell, PublishedCells, Quarantined, Refreshed, Reply, Resolver,
-    Rotated, Searched, Source,
+    BlobAnswer, BlobContent, Defined, FindAnswer, Found, Prefetched, PublishedCell, PublishedCells, Quarantined,
+    Refreshed, Reply, Resolver, Rotated, Searched, Source,
 };
 #[cfg(feature = "resolver")]
 pub use rooting::{RootKind, RootPlan, Rooted, RootedCell, RootedFunction};

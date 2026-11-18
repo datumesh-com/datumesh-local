@@ -2,7 +2,8 @@
 //! legacy handshake of 2025-11-25 and 2025-06-18 too). JSON-RPC is handled here by hand with
 //! [`datumesh_core::json`]. The tools are `find`, `get`, `explain`, `describe`, `verify`,
 //! `define`, `publish` and `subscribe` (a stub); the resources are the held names and classes
-//! (`datumesh://name/...`, `datumesh://class/...`) and the cells (`cell://...`).
+//! (`datumesh://name/...`, `datumesh://class/...`), the cells (`cell://...`) and the held blobs
+//! (`blob://<sha256>`, checked against their SHA-256).
 //!
 //! `datumesh mcp` runs [`serve_stdio`] (nothing but MCP messages on stdout; logs on stderr) or,
 //! with `--http`, [`serve_http`]: the loopback addresses only, the endpoint `/mcp`, and the token
@@ -23,8 +24,9 @@ use axum::Router;
 use datumesh_core::json::{self, Value};
 use datumesh_core::{ClassDescriptor, Receipt};
 
-use crate::resolver::{call_form, cell_uri};
-use crate::{Error, Resolver};
+use crate::bundle::base64;
+use crate::resolver::{call_form, cell_uri, BlobContent, TEXT_LIMIT};
+use crate::{Error, Reply, Resolver};
 
 /// The protocol revision this server speaks.
 const PROTOCOL: &str = "2026-07-28";
@@ -37,11 +39,11 @@ const TOKEN_FILE: &str = "mcp-token";
 /// The latest instant (the store's "as of now" for a name's binding).
 const END: &str = "9999-12-31T23:59:59.999999Z";
 /// The text of `server/discover` and of the handshake's `instructions`.
-const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find to discover names, describe for classes and objects, get for a cell (call syntax or a cell:// URI), explain for its lineage, verify for a receipt. define and publish write under this machine's unrooted namespace.";
+const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find to discover names, describe for classes and objects, get for a cell (call syntax or a cell:// URI; for a text value, its text, checked), explain for its lineage, verify for a receipt. define and publish write under this machine's unrooted namespace.";
 /// The tools, in the order `tools/list` gives them, with their input schemas.
 const TOOLS: &str = r#"[
 {"name":"find","description":"Names held here whose name contains the query (case-insensitive). When none are held, or with remote, also the configured find_meshes (and the forward mesh with remote); searched lists each place looked and its status. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
-{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
+{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"}},"required":["receipt"],"additionalProperties":false}},
@@ -53,7 +55,8 @@ const TOOLS: &str = r#"[
 const TEMPLATES: &str = r#"[
 {"uriTemplate":"cell://{+cell}","name":"cell","description":"A cell: its envelope (SPEC 5.5).","mimeType":"application/json"},
 {"uriTemplate":"datumesh://name/{+name}","name":"name","description":"A function name: its binding and descriptor.","mimeType":"application/json"},
-{"uriTemplate":"datumesh://class/{+class}","name":"class","description":"A class: its descriptor.","mimeType":"application/json"}
+{"uriTemplate":"datumesh://class/{+class}","name":"class","description":"A class: its descriptor.","mimeType":"application/json"},
+{"uriTemplate":"blob://{sha256}","name":"blob","description":"Blob content by SHA-256, checked against it: text for valid UTF-8 up to 64 KiB, otherwise base64.","mimeType":"application/octet-stream"}
 ]"#;
 
 /// The transport a message came in on.
@@ -203,9 +206,14 @@ impl McpServer {
             return Err(Rpc { code: -31001, message: "unauthorized".into(), data: None });
         }
         let args = params.get("arguments").cloned().unwrap_or_else(|| Value::Object(Vec::new()));
+        if name == "get" {
+            return Ok(match self.get(&args) {
+                Ok(members) => members,
+                Err(e) => tool_failure(e),
+            });
+        }
         let outcome = match name {
             "find" => self.find(&args),
-            "get" => self.get(&args),
             "explain" => self.explain(&args),
             "describe" => self.describe(&args),
             "verify" => self.verify(&args),
@@ -218,14 +226,7 @@ impl McpServer {
         };
         Ok(match outcome {
             Ok(v) => tool_members(&json_text(&v), v, false),
-            Err(e) => {
-                let text = match &e.code {
-                    Some(c) if !e.detail.starts_with(c.as_str()) => format!("{c}: {}", e.detail),
-                    _ => e.detail.clone(),
-                };
-                let structured = obj(vec![("error", s(e.code.as_deref().unwrap_or("error"))), ("detail", s(e.detail))]);
-                tool_members(&text, structured, true)
-            }
+            Err(e) => tool_failure(e),
         })
     }
 
@@ -268,10 +269,49 @@ impl McpServer {
         Ok(obj(vec![("results", Value::Array(results)), ("searched", Value::Array(searched))]))
     }
 
-    fn get(&self, args: &Value) -> ToolResult {
+    /// `get`: the answer block as before; for a blob value, its checked text first when it is text
+    /// within the limit, else its `blob` address (CONTRACT-1.7a-text L1). A mismatch is an error.
+    fn get(&self, args: &Value) -> Result<Vec<(String, Value)>, ToolError> {
         let request = str_arg(args, "request")?;
         let reply = self.resolver.get(request)?;
-        Ok(answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref()))
+        if let Some(detail) = blob_mismatch(&reply) {
+            return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail });
+        }
+        let block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
+        let Some(blob) = self.resolver.blob_of(&reply)? else {
+            return Ok(tool_members(&json_text(&block), block, false));
+        };
+        let mut info = vec![
+            ("length", num(blob.length)),
+            ("media_type", s(&blob.media_type)),
+            ("sha256", s(&blob.sha256)),
+            ("uri", s(format!("blob://{}", blob.sha256))),
+        ];
+        if let Some(host) = &blob.host {
+            info.push(("url", s(format!("https://{host}/blob/{}", blob.sha256))));
+        }
+        match blob.content {
+            BlobContent::Text(text) => {
+                let checked = obj(vec![
+                    ("blob_checked", Value::Bool(true)),
+                    ("length", num(blob.length)),
+                    ("media_type", s(&blob.media_type)),
+                    ("sha256", s(&blob.sha256)),
+                ]);
+                let structured =
+                    with_members(block.clone(), vec![("text", s(&text)), ("blob_checked", Value::Bool(true))]);
+                Ok(content_members(vec![text, json_text(&checked), json_text(&block)], structured, false))
+            }
+            BlobContent::Mismatch(detail) => Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail }),
+            BlobContent::NotText | BlobContent::Unavailable(_) => {
+                let mut members = vec![("blob", obj(info)), ("blob_checked", Value::Bool(false))];
+                if let BlobContent::Unavailable(why) = &blob.content {
+                    members.push(("blob_unavailable", s(why)));
+                }
+                let structured = with_members(block.clone(), members.clone());
+                Ok(content_members(vec![json_text(&obj(members)), json_text(&block)], structured, false))
+            }
+        }
     }
 
     fn explain(&self, args: &Value) -> ToolResult {
@@ -451,6 +491,9 @@ impl McpServer {
     fn resources_read(&self, params: &Value) -> RpcResult {
         let uri =
             params.get("uri").and_then(Value::as_str).ok_or_else(|| Rpc::new(-32602, "resources/read needs a uri"))?;
+        if let Some(sha) = uri.strip_prefix("blob://") {
+            return self.blob_read(uri, sha);
+        }
         let store = self.resolver.store();
         let text = if let Some(name) = uri.strip_prefix("datumesh://name/") {
             let b = store
@@ -489,6 +532,29 @@ impl McpServer {
             "contents".into(),
             Value::Array(vec![obj(vec![("uri", s(uri)), ("mimeType", s("application/json")), ("text", s(text))])]),
         )])
+    }
+
+    /// `blob://<sha256>`: the held blob, checked against its SHA-256; text (UTF-8, up to 64 KiB) or
+    /// base64 (CONTRACT-1.7a-text L2).
+    fn blob_read(&self, uri: &str, sha: &str) -> RpcResult {
+        let well_formed = sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !well_formed {
+            return Err(Rpc::new(-32602, format!("Malformed blob resource: {uri}")));
+        }
+        let held = self.resolver.store().blob(sha).map_err(|e| Error::Store(e.to_string()))?;
+        let bytes = held
+            .map(|b| b.into_owned())
+            .ok_or_else(|| Rpc::new(-32602, format!("Unknown resource: {uri} (not held here; get the cell first)")))?;
+        if datumesh_core::sha256_hex(&bytes) != sha {
+            return Err(Rpc::new(-32603, format!("E_BLOB_MISMATCH: the stored bytes of {uri} do not hash to it")));
+        }
+        let content = match std::str::from_utf8(&bytes) {
+            Ok(text) if bytes.len() as u64 <= TEXT_LIMIT => {
+                obj(vec![("uri", s(uri)), ("mimeType", s("text/plain; charset=utf-8")), ("text", s(text))])
+            }
+            _ => obj(vec![("uri", s(uri)), ("mimeType", s("application/octet-stream")), ("blob", s(base64(&bytes)))]),
+        };
+        Ok(vec![("contents".into(), Value::Array(vec![content]))])
     }
 
     /// A class held under `name`: its hash and descriptor, or `None` when `name` is not a class.
@@ -589,14 +655,48 @@ fn rpc_error(id: &Value, e: &Rpc) -> String {
 
 /// The members of a tool result: a text item and the structured content (and `isError`).
 fn tool_members(text: &str, structured: Value, is_error: bool) -> Vec<(String, Value)> {
-    let mut members = vec![
-        ("content".into(), Value::Array(vec![obj(vec![("type", s("text")), ("text", s(text))])])),
-        ("structuredContent".into(), structured),
-    ];
+    content_members(vec![text.to_string()], structured, is_error)
+}
+
+/// The members of a tool result with one text item per entry of `texts`, in order.
+fn content_members(texts: Vec<String>, structured: Value, is_error: bool) -> Vec<(String, Value)> {
+    let items = texts.iter().map(|t| obj(vec![("type", s("text")), ("text", s(t))])).collect();
+    let mut members = vec![("content".into(), Value::Array(items)), ("structuredContent".into(), structured)];
     if is_error {
         members.push(("isError".into(), Value::Bool(true)));
     }
     members
+}
+
+/// A failed tool call's result: its text (`<code>: <detail>`) and `{error, detail}`, with `isError`.
+fn tool_failure(e: ToolError) -> Vec<(String, Value)> {
+    let text = match &e.code {
+        Some(c) if !e.detail.starts_with(c.as_str()) => format!("{c}: {}", e.detail),
+        _ => e.detail.clone(),
+    };
+    let structured = obj(vec![("error", s(e.code.as_deref().unwrap_or("error"))), ("detail", s(e.detail))]);
+    tool_members(&text, structured, true)
+}
+
+/// The detail of an error envelope that is `E_BLOB_MISMATCH` (the resolver's own fetch of a blob
+/// failed its check), or `None` for any other reply.
+fn blob_mismatch(reply: &Reply) -> Option<String> {
+    let envelope = reply.envelope()?;
+    if envelope.get("error").and_then(Value::as_str) != Some("E_BLOB_MISMATCH") {
+        return None;
+    }
+    let detail = reply.detail.as_deref().unwrap_or("the blob's content is not the one its value names");
+    Some(detail.strip_prefix("E_BLOB_MISMATCH: ").unwrap_or(detail).to_string())
+}
+
+/// `members` of an object with `extra` added (a member of the same name replaced).
+fn with_members(block: Value, extra: Vec<(&str, Value)>) -> Value {
+    let Value::Object(mut m) = block else { return block };
+    for (k, v) in extra {
+        m.retain(|(name, _)| name != k);
+        m.push((k.to_string(), v));
+    }
+    Value::Object(m)
 }
 
 /// The answer block of an envelope (the shape of the `get` tool): the call and URI of a receipt's

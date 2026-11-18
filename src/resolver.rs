@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Arg, ErrorCode, FunctionDescriptor, Receipt, Request, Scalar};
+use datumesh_core::{Arg, ErrorCode, FunctionDescriptor, Receipt, Request, Scalar, Type};
 use datumesh_http::client::{Client, ClientConfig, ClientError};
 use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_store::{SqliteStore, Store};
@@ -109,6 +109,37 @@ impl Reply {
         let v = self.envelope()?;
         Receipt::from_value(v.get("receipt")?).ok()
     }
+}
+
+/// A text blob's content, as `get` gives it (CONTRACT-1.7a-text L1).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlobContent {
+    /// The content, checked: its SHA-256 and length are the value's, and it is UTF-8.
+    Text(String),
+    /// Not text, or over the text limit: no content is read.
+    NotText,
+    /// Text, but its content can't be had here (offline, not held, the mesh unreachable): why.
+    Unavailable(String),
+    /// Content that disagrees with the value, or is not UTF-8: why.
+    Mismatch(String),
+}
+
+/// The blob a reply's receipt names: its value's parts, where its content comes from, and the
+/// content (see [`BlobContent`]).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobAnswer {
+    /// The SHA-256 of the content, lowercase hex.
+    pub sha256: String,
+    /// The content's length in bytes, as the value states it.
+    pub length: u64,
+    /// The media type, as the value states it.
+    pub media_type: String,
+    /// The host whose `/blob/<sha256>` serves the content (`None` for an unrooted name).
+    pub host: Option<String>,
+    /// The content, or why there is none.
+    pub content: BlobContent,
 }
 
 /// A definition made: the name (full) and the function hash it is bound to.
@@ -276,6 +307,24 @@ fn open_store(config: &Config) -> Result<Arc<dyn Store + Send + Sync>, Error> {
     let s = SqliteStore::open(path).map_err(|e| Error::Store(format!("{path}: {e}")))?;
     datumesh_store::migrate::sqlite::apply(&s).map_err(|e| Error::Store(e.to_string()))?;
     Ok(Arc::new(s))
+}
+
+/// The most bytes a text blob may have to be returned as text (CONTRACT-1.7a-text L1).
+pub(crate) const TEXT_LIMIT: u64 = 65_536;
+
+/// Whether `bytes` are the blob `sha256` of `length` bytes, and valid UTF-8: the text.
+fn check_text(bytes: &[u8], sha256: &str, length: u64) -> BlobContent {
+    let hash = datumesh_core::sha256_hex(bytes);
+    if hash != sha256 {
+        return BlobContent::Mismatch(format!("the content hashes to {hash}, not to the value's {sha256}"));
+    }
+    if bytes.len() as u64 != length {
+        return BlobContent::Mismatch(format!("the content is {} bytes, the value states {length}", bytes.len()));
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => BlobContent::Text(text.to_string()),
+        Err(_) => BlobContent::Mismatch("the content is not valid UTF-8, under a text media type".into()),
+    }
 }
 
 pub(crate) fn rejection_detail(e: &ClientError) -> String {
@@ -491,6 +540,76 @@ impl Resolver {
             Parse::Malformed => Ok(self.mesh_reply(self.mesh().cell(&text, None), Source::Local)),
             Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false)),
         }
+    }
+
+    /// The blob a reply's receipt names (its value is `<sha256>:<length>:<media_type>`), with its
+    /// content when it is text within the limit (CONTRACT-1.7a-text L1). `None` for a reply
+    /// without a receipt or whose value is not a blob. A text blob is held or fetched from the
+    /// answering mesh (the forward mesh when forwarded, else the cell's host), and checked.
+    pub fn blob_of(&self, reply: &Reply) -> Result<Option<BlobAnswer>, Error> {
+        let Some(r) = reply.receipt() else { return Ok(None) };
+        let value = r.value();
+        if value.ty() != Type::Blob {
+            return Ok(None);
+        }
+        let mut parts = value.lexical().splitn(3, ':');
+        let (Some(sha256), Some(len), Some(media)) = (parts.next(), parts.next(), parts.next()) else {
+            return Ok(None);
+        };
+        let Ok(length) = len.parse::<u64>() else { return Ok(None) };
+        let (sha256, media_type) = (sha256.to_string(), media.to_string());
+        let host = self.blob_source(reply, &r);
+        let content = if media_type.starts_with("text/") && length <= TEXT_LIMIT {
+            self.blob_text(host.as_deref(), &sha256, length)?
+        } else {
+            BlobContent::NotText
+        };
+        Ok(Some(BlobAnswer { sha256, length, media_type, host, content }))
+    }
+
+    /// The mesh a reply's blob comes from: the forward mesh when forwarded, else the host of the
+    /// cell's name (`None` for an unrooted name: nothing to fetch from).
+    fn blob_source(&self, reply: &Reply, r: &Receipt) -> Option<String> {
+        match &reply.source {
+            Source::Forwarded { mesh } => Some(mesh.clone()),
+            _ => {
+                let h = host_of(&r.cell().ns);
+                (!is_unrooted(h)).then(|| h.to_string())
+            }
+        }
+    }
+
+    /// The content of a text blob: held, else fetched from `source` (when allowed) and stored;
+    /// then checked against its value.
+    fn blob_text(&self, source: Option<&str>, sha256: &str, length: u64) -> Result<BlobContent, Error> {
+        let s = &self.shared;
+        let held = s.store.blob(sha256).map_err(|e| Error::Store(e.to_string()))?;
+        let bytes = match held {
+            Some(b) => b.into_owned(),
+            None => {
+                let Some(host) = source else {
+                    return Ok(BlobContent::Unavailable("not held here, and no mesh to fetch it from".into()));
+                };
+                if let Err(why) = s.may_fetch(host) {
+                    return Ok(BlobContent::Unavailable(why));
+                }
+                match s.patient(|| s.client.blob(host, sha256)) {
+                    Ok(b) => {
+                        s.store.put_blob(&b).map_err(|e| Error::Store(e.to_string()))?;
+                        b
+                    }
+                    Err(e) if e.code == ErrorCode::BlobMismatch => {
+                        return Ok(BlobContent::Mismatch(e.detail.clone()));
+                    }
+                    Err(e) => {
+                        return Ok(BlobContent::Unavailable(
+                            network_failure(&e).unwrap_or_else(|| rejection_detail(&e)),
+                        ))
+                    }
+                }
+            }
+        };
+        Ok(check_text(&bytes, sha256, length))
     }
 
     /// The answer to a cell URI's rest (or a URI, `cell://`), fetching what it needs from its host

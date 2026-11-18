@@ -34,7 +34,7 @@ pub const VERSE: &str = r#"scripture/verse_text(corpus: "quran", book: "1", chap
 /// The call of the cell `Upstream::publish_blob_cell(tag, ..)` publishes.
 pub fn text_cell_call(tag: &str) -> String {
     format!(
-        r#"mesh-test.datumesh.com/scripture/verse_text(corpus: "textcases", book: "{tag}", chapter: 1, verse: 1, edition: "plain")"#
+        r#"mesh-test.datumesh.com/scripture/verse_text(book: "{tag}", chapter: 1, corpus: "textcases", edition: "plain", verse: 1)"#
     )
 }
 

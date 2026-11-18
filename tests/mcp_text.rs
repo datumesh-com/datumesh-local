@@ -355,7 +355,7 @@ fn the_descriptions_mention_the_checked_text() {
 }
 
 fn blob_template() -> String {
-    r#"{"uriTemplate":"blob://{sha256}","name":"blob","description":"Blob content by SHA-256, checked against it: text for valid UTF-8 up to 64 KiB, otherwise base64.","mimeType":"application/octet-stream"}"#
+    r#"{"description":"Blob content by SHA-256, checked against it: text for valid UTF-8 up to 64 KiB, otherwise base64.","mimeType":"application/octet-stream","name":"blob","uriTemplate":"blob://{sha256}"}"#
         .to_string()
 }
 
