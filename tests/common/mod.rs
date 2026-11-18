@@ -31,6 +31,16 @@ pub const USD_FULL: &str = r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", qu
 pub const GBP: &str = r#"ecb/fx_rate(base: "EUR", quote: "GBP", date: 2026-10-29)"#;
 pub const CHRISTMAS: &str = r#"ecb/holiday(calendar: "TARGET", date: 2026-12-25)"#;
 pub const VERSE: &str = r#"scripture/verse_text(corpus: "quran", book: "1", chapter: 1, verse: 2, edition: "uthmani")"#;
+/// The call of the cell `Upstream::publish_blob_cell(tag, ..)` publishes.
+pub fn text_cell_call(tag: &str) -> String {
+    format!(
+        r#"mesh-test.datumesh.com/scripture/verse_text(corpus: "textcases", book: "{tag}", chapter: 1, verse: 1, edition: "plain")"#
+    )
+}
+
+/// The slice of every cell `publish_blob_cell` makes.
+pub const TEXT_SLICE: &str = r#"mesh-test.datumesh.com/scripture/verse_text(corpus: "textcases", book: *, chapter: *, verse: *, edition: "plain")"#;
+
 pub const FX_SLICE: &str = "mesh-test.datumesh.com/ecb/fx_rate(base: *, quote: *, date: *)";
 
 /// A clock that says what it was last told (CONTRACT-1.8b L4: clock-controlled resolvers).
@@ -102,6 +112,10 @@ pub struct Upstream {
     pub mesh: Mesh,
     pub store: Arc<dyn Store + Send + Sync>,
     pub requests: Arc<AtomicU64>,
+    /// Requests answered for `/blob/<sha>` (local 0.3.3 tests).
+    pub blob_requests: Arc<AtomicU64>,
+    /// When set, `/blob/<sha>` serves other bytes than the blob's.
+    pub wrong_blobs: Arc<std::sync::atomic::AtomicBool>,
     _rt: tokio::runtime::Runtime,
     _dir: TempDir,
 }
@@ -110,6 +124,73 @@ impl Upstream {
     /// Requests answered so far.
     pub fn requests(&self) -> u64 {
         self.requests.load(Ordering::SeqCst)
+    }
+
+    /// Requests answered so far for `/blob/<sha>`.
+    pub fn blob_requests(&self) -> u64 {
+        self.blob_requests.load(Ordering::SeqCst)
+    }
+
+    /// Serves wrong bytes for every `/blob/<sha>` (or the right ones again).
+    pub fn serve_wrong_blobs(&self, wrong: bool) {
+        self.wrong_blobs.store(wrong, Ordering::SeqCst);
+    }
+
+    /// Publishes a stored `scripture/verse_text` cell (signed by the test mesh) whose value is
+    /// the blob `bytes` of `media_type`, held by the upstream and served at `/blob/<sha>`.
+    /// `claimed_length` replaces the length the (signed) value states, when given. The cell's
+    /// call is `text_cell_call(tag)`; returns the blob's sha256.
+    pub fn publish_blob_cell(
+        &self,
+        tag: &str,
+        bytes: &[u8],
+        media_type: &str,
+        claimed_length: Option<usize>,
+    ) -> String {
+        use datumesh_core::{Arg, Args, Cell, ReceiptBuilder, Scalar, Type};
+        let sha = datumesh_core::sha256_hex(bytes);
+        let length = claimed_length.unwrap_or(bytes.len());
+        let fn_hash = self
+            .store
+            .resolve_binding("mesh-test.datumesh.com/scripture/verse_text", END)
+            .unwrap()
+            .expect("verse_text is bound")
+            .fn_hash;
+        let mut args = Args::new();
+        for (k, v) in [("book", tag), ("corpus", "textcases"), ("edition", "plain")] {
+            args.insert(k.to_string(), Arg::Value(Scalar::from_lexical(Type::String, v).unwrap()));
+        }
+        for (k, v) in [("chapter", "1"), ("verse", "1")] {
+            args.insert(k.to_string(), Arg::Value(Scalar::from_lexical(Type::Number, v).unwrap()));
+        }
+        let cell = Cell {
+            ns: "mesh-test.datumesh.com/scripture".to_string(),
+            fn_name: "verse_text".to_string(),
+            fn_hash,
+            args,
+        };
+        let value = Scalar::from_lexical(Type::Blob, &format!("{sha}:{length}:{media_type}")).unwrap();
+        let tx = "2026-11-02T00:00:00.000000Z";
+        let r = ReceiptBuilder::new()
+            .cell(cell.clone())
+            .value(value)
+            .valid(Args::new())
+            .asof(tx)
+            .tx(tx)
+            .issued(tx)
+            .publisher("mesh-test.datumesh.com/scripture")
+            .signer_host(HOST)
+            .licence("CC0-1.0")
+            .summary("Synthetic text-blob test cell for datumesh-local's tests. Licence CC0-1.0.")
+            .sign(&upstream_key())
+            .unwrap();
+        let bytes_json = receipt_bytes(&r);
+        let hash = datumesh_core::Receipt::from_json(&bytes_json).unwrap().hash().to_string();
+        self.store.put_blob(bytes).unwrap();
+        self.store.put_receipt(&bytes_json).unwrap();
+        self.store.put_version(&cell.id(), tx, &hash).unwrap();
+        self.mesh.clear_memo();
+        sha
     }
 
     /// Publishes JSON lines (the `publish-stored` format) as the upstream, and tells the mesh.
@@ -260,6 +341,10 @@ fn build_upstream_with(slice_page: usize, tamper: bool, find: Option<Arc<FindStu
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicU64::new(0));
     let counted = requests.clone();
+    let blob_requests = Arc::new(AtomicU64::new(0));
+    let blob_counted = blob_requests.clone();
+    let wrong_blobs = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wrong = wrong_blobs.clone();
     let mut router = mesh.router();
     if let Some(stub) = find {
         let handler = move |req: axum::extract::Request| {
@@ -286,6 +371,26 @@ fn build_upstream_with(slice_page: usize, tamper: bool, find: Option<Arc<FindStu
     if tamper {
         router = router.layer(axum::middleware::from_fn(tamper_cell));
     }
+    // `/blob/<sha>`: counted, and other bytes when the switch is set.
+    let router =
+        router.layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let is_blob = req.uri().path().starts_with("/blob/");
+            if is_blob {
+                blob_counted.fetch_add(1, Ordering::SeqCst);
+            }
+            let swap = is_blob && wrong.load(Ordering::SeqCst);
+            async move {
+                let res = next.run(req).await;
+                if swap && res.status() == axum::http::StatusCode::OK {
+                    return axum::http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/octet-stream")
+                        .body(axum::body::Body::from("not the bytes that were asked for"))
+                        .unwrap();
+                }
+                res
+            }
+        }));
     let router =
         router.layer(axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -294,7 +399,7 @@ fn build_upstream_with(slice_page: usize, tamper: bool, find: Option<Arc<FindStu
     rt.spawn(async move {
         axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
     });
-    Upstream { origin: format!("http://{addr}"), mesh, store, requests, _rt: rt, _dir: dir }
+    Upstream { origin: format!("http://{addr}"), mesh, store, requests, blob_requests, wrong_blobs, _rt: rt, _dir: dir }
 }
 
 pub fn upstream() -> Upstream {
