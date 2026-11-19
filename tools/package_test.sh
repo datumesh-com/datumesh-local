@@ -66,6 +66,6 @@ fn main() {
     println!("{} {}", r.key_id(), String::from_utf8_lossy(&a.body));
 }
 RS
-printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-local = { path = "../datumesh-local-%s" }\ndatumesh-core = "0.3.7"\ndatumesh-engine = { version = "0.4.2", default-features = false }\n' "$version" > "$work/app/Cargo.toml"
+printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-local = { path = "../datumesh-local-%s" }\ndatumesh-core = "0.3.9"\ndatumesh-engine = { version = "0.5.0", default-features = false }\n' "$version" > "$work/app/Cargo.toml"
 in_fresh "cd app && cargo run -q && cargo run -q"
 echo "package test passed ($version)"
