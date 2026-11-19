@@ -3,13 +3,13 @@
 //! (`GET /find?summary=1`), and use no real popular cell as an example.
 //!
 //! Shape of the summary (http 0.4.0, specified here; R1's `catalog_summary`):
-//! `{"summary":true,"mesh":<host>,"classes":[{"name","label","description","n_cells",
-//!   "keys":{<key>:{"values":[{"value","label"}]}}}],"functions":[{"name","label","description",
-//!   "n_cells"}],"editions":[{"value","label","n_cells"}]}`.
+//! `{"summary":true,"mesh":<host>,"classes":[{"name","label","description","cells":int,
+//!   "keys":{<key>:{"distinct":int,"values":[{"value","label"}]}}}],"functions":[same members]}`.
+//! There is no separate editions list: editions are the values of a key (here `edition`).
 //!
 //! Specified behaviour: `server/discover` and `initialize` give `instructions`, and `tools/list`
 //! gives each tool's `description`, built from the summary: the instructions name each class and
-//! function label and its cell count, and the editions; the descriptions of `find` and `get`
+//! function label and its cell count, and the labels of every listed key value (the editions among them, when `distinct` <= 50); the descriptions of `find` and `get`
 //! mention the mesh's classes by label. None of them carries a famous reference or any
 //! `<digits>:<digits>` reference shape. Summary fetched and failing (or no mesh to ask): the
 //! 0.3.3 static text, byte for byte the text a resolver with no find mesh gives.
@@ -29,7 +29,7 @@ use read_stub::ReadStub;
 const M: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
 
 /// Invented names only.
-const SUMMARY: &str = r#"{"summary":true,"mesh":"mesh-test.datumesh.com","classes":[{"name":"mesh-test.datumesh.com/sample/passage","label":"Sample passages","description":"A passage of the sample corpus","n_cells":31102,"keys":{"book":{"values":[{"value":"Bk1","label":"Book One"},{"value":"Bk2","label":"Book Two"}]}}}],"functions":[{"name":"mesh-test.datumesh.com/sample/rate","label":"Sample exchange rates","description":"An invented daily rate","n_cells":4321}],"editions":[{"value":"plain","label":"Plain text","n_cells":777}]}"#;
+const SUMMARY: &str = r#"{"summary":true,"mesh":"mesh-test.datumesh.com","classes":[{"name":"mesh-test.datumesh.com/sample/passage","label":"Sample passages","description":"A passage of the sample corpus","cells":31102,"keys":{"book":{"distinct":2,"values":[{"value":"Bk1","label":"Book One"},{"value":"Bk2","label":"Book Two"}]},"edition":{"distinct":1,"values":[{"value":"plain","label":"Plain text"}]}}}],"functions":[{"name":"mesh-test.datumesh.com/sample/rate","label":"Sample exchange rates","description":"An invented daily rate","cells":4321,"keys":{"quote":{"distinct":2,"values":[{"value":"AAA","label":"Alpha Unit"},{"value":"BBB","label":"Beta Unit"}]}}}]}"#;
 
 const FAMOUS: [&str; 14] = [
     "John 3:16",
@@ -101,10 +101,10 @@ fn instructions_and_descriptions_are_built_from_the_summary() {
     assert!(stub.summary_requests() >= 1, "the summary is fetched at start: {:?}", stub.queries.lock().unwrap());
     assert!(stub.queries.lock().unwrap().iter().any(|q| q.split('&').any(|p| p == "summary=1")));
     let ins = instructions(&srv);
-    for needle in ["Sample passages", "Sample exchange rates", "Plain text"] {
+    for needle in ["Sample passages", "Sample exchange rates", "Plain text", "Book One", "Alpha Unit", "Beta Unit"] {
         assert!(ins.contains(needle), "{needle} in {ins}");
     }
-    for count in ["31102", "4321", "777"] {
+    for count in ["31102", "4321"] {
         assert!(
             ins.contains(count)
                 || ins.contains(&format!("{},{}", &count[..count.len() - 3], &count[count.len() - 3..])),
