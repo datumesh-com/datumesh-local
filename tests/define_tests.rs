@@ -110,7 +110,8 @@ fn the_cli_defines_with_tests() {
     Config::in_dir(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin))).unwrap();
+    std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))
+        .unwrap();
     let r = resolver(&TempDir::new("define-tests-cli-r"), &up);
     let tests = rate_x_tests(&usd_value(&r));
     let args: Vec<String> = [

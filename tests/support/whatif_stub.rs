@@ -123,12 +123,8 @@ impl WhatifStub {
                 let s = s.clone();
                 async move {
                     let path = req.uri().path().to_string();
-                    let content_type = req
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default()
-                        .to_string();
+                    let content_type =
+                        req.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
                     let body = axum::body::to_bytes(req.into_body(), 64 << 20).await.unwrap();
                     s.posts.lock().unwrap().push(Post {
                         path,

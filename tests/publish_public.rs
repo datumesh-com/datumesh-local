@@ -87,7 +87,12 @@ fn created(names: &[&str]) -> String {
         .map(|n| format!(r#"{{"name":{},"fn_hash":"{}","page":{}}}"#, q(n), "ab".repeat(32), q(&page(n))))
         .collect();
     let ns: Vec<String> = names.iter().map(|n| q(n)).collect();
-    format!(r#"{{"imported":{{"functions":{},"receipts":0}},"names":[{}],"functions":[{}]}}"#, names.len(), ns.join(","), fs.join(","))
+    format!(
+        r#"{{"imported":{{"functions":{},"receipts":0}},"names":[{}],"functions":[{}]}}"#,
+        names.len(),
+        ns.join(","),
+        fs.join(",")
+    )
 }
 
 fn publish_args(w: &W, names: &[&str]) -> String {
@@ -279,7 +284,12 @@ fn without_a_mesh_document_the_bundles_endpoint_is_slash_bundles() {
     w.stub.answer_bundles(201, &created(&[&n]));
     let v = publish_public(&w, &["local/rate_x"]);
     assert!(!is_error(&v), "{}", jcs(&v));
-    assert_eq!(w.stub.posts_to("/bundles").len(), 1, "{:?}", w.stub.posts().iter().map(|p| &p.path).collect::<Vec<_>>());
+    assert_eq!(
+        w.stub.posts_to("/bundles").len(),
+        1,
+        "{:?}",
+        w.stub.posts().iter().map(|p| &p.path).collect::<Vec<_>>()
+    );
     assert!(w.stub.posts_to("/x/bundles-in").is_empty());
 }
 
@@ -318,7 +328,11 @@ fn the_export_is_kept_when_asked_for() {
     let n = format!("{NS}/rate_x");
     w.stub.answer_bundles(201, &created(&[&n]));
     let export = w.tmp.path().join("kept.json");
-    let args = publish_args(&w, &["local/rate_x"]).replacen('{', &format!(r#"{{"export":{},"#, q(&export.to_string_lossy())), 1);
+    let args = publish_args(&w, &["local/rate_x"]).replacen(
+        '{',
+        &format!(r#"{{"export":{},"#, q(&export.to_string_lossy())),
+        1,
+    );
     let v = tool(&w.srv, "publish_public", &args);
     assert!(!is_error(&v), "{}", jcs(&v));
     let kept = json::parse(&std::fs::read(&export).unwrap()).unwrap();
@@ -335,7 +349,11 @@ fn the_meshs_refusals_are_passed_on_with_their_codes_and_details() {
     define_both(&w);
     for (status, code, detail) in [
         (403, "E_DOMAIN_NOT_ALLOWED", r#""mesh-test.datumesh.com may not publish on this mesh""#),
-        (422, "E_TESTS_FAILING", r#"{"failing":[{"function":"x","case":"0123456789abcdef","detail":"expected 2, got 1"}]}"#),
+        (
+            422,
+            "E_TESTS_FAILING",
+            r#"{"failing":[{"function":"x","case":"0123456789abcdef","detail":"expected 2, got 1"}]}"#,
+        ),
         (400, "E_BUNDLE_SIGNATURE", r#""the manifest signature does not verify""#),
     ] {
         w.stub.answer_bundles(status, &format!(r#"{{"error":"{code}","detail":{detail}}}"#));
@@ -359,7 +377,8 @@ fn home(w: &W) -> TempDir {
     Config::in_dir(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", w.up.origin))).unwrap();
+    std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", w.up.origin)))
+        .unwrap();
     dir
 }
 

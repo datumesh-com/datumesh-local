@@ -356,22 +356,24 @@ impl Resolver {
         let body = request_body(target, asof, ovs, solve);
         let (status, bytes) = crate::net::post(&self.peer_url(&url, &host), &body.to_jcs(), s.config.timeout)
             .map_err(Error::ForeignUnavailable)?;
+        // Every answer, errors included, is checked against the request (spec-0.6.0 5.9, as core
+        // checks it): a solver code is valid only for a request with solve.
+        let vary_id = solve.map(|s| s.vary.cell.id());
+        let request = Request::new(&target.cell.id(), asof)
+            .map_err(|e| Error::Request(e.to_string()))?
+            .with_whatif(&core_overrides(ovs)?, vary_id.as_deref())
+            .map_err(|e| Error::Request(e.to_string()))?;
+        check_answer(status, &bytes, &Keys::new(), &request).map_err(|e| Error::Client {
+            code: "E_ENVELOPE".into(),
+            detail: format!("the mesh's answer is not the answer asked for: {e}"),
+        })?;
         let envelope =
             json::parse(&bytes).map_err(|e| Error::Client { code: "E_ENVELOPE".into(), detail: e.to_string() })?;
         let outcome = envelope.get("outcome").and_then(Value::as_str).unwrap_or("").to_string();
         if outcome == "scenario" {
-            let vary_id = solve.map(|s| s.vary.cell.id());
-            let request = Request::new(&target.cell.id(), asof)
-                .map_err(|e| Error::Request(e.to_string()))?
-                .with_whatif(&core_overrides(ovs)?, vary_id.as_deref())
-                .map_err(|e| Error::Request(e.to_string()))?;
-            check_answer(status, &bytes, &Keys::new(), &request).map_err(|e| Error::Client {
-                code: "E_ENVELOPE".into(),
-                detail: format!("the mesh's answer is not the scenario asked for: {e}"),
-            })?;
             return scenario_result(envelope.get("scenario").unwrap_or(&Value::Null));
         }
-        // An error answer is reported with its code. It carries no value to present as a fact.
+        // A checked error answer is reported with its code. It carries no value to present as a fact.
         let code = envelope.get("error").and_then(Value::as_str).unwrap_or(&outcome).to_string();
         let detail = match outcome.as_str() {
             "not_covered" => envelope.get("fault").and_then(Value::as_str).unwrap_or_default().to_string(),

@@ -292,7 +292,12 @@ fn bundle_with_tests(
         return Err(fail("the bundle is not an object".into()));
     };
     members.retain(|(k, _)| k != "manifest");
-    tests.sort_by_key(|a| a.to_jcs());
+    // Sorted by test name, then by case id: the first 16 hex digits of the SHA-256 of the test's JCS
+    // (E5), as http's build_with_tests sorts them.
+    tests.sort_by_key(|t| {
+        let name = t.get("test").and_then(Value::as_str).unwrap_or_default().to_string();
+        (name, datumesh_core::sha256_hex(&t.to_jcs())[..16].to_string())
+    });
     let member = |k: &str| members.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     let mut signed = vec![
         ("names".to_string(), member("names").unwrap_or(Value::Array(Vec::new()))),

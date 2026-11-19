@@ -142,8 +142,10 @@ fn cell_id(c: &Value) -> String {
 /// `fx_rate(EUR, USD, 2026-10-30)`: the cell overridden.
 const RATE_CALL: &str = r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", quote: "USD", date: 2026-10-30)"#;
 /// The requested cell: a computed function of the test mesh.
-const TARGET_CALL: &str = r#"mesh-test.datumesh.com/ecb/fx_cross_undeclared(base: "EUR", quote: "USD", date: 2026-10-30)"#;
-const ARGS: [(&str, &str, &str); 3] = [("base", "string", "EUR"), ("date", "date", "2026-10-30"), ("quote", "string", "USD")];
+const TARGET_CALL: &str =
+    r#"mesh-test.datumesh.com/ecb/fx_cross_undeclared(base: "EUR", quote: "USD", date: 2026-10-30)"#;
+const ARGS: [(&str, &str, &str); 3] =
+    [("base", "string", "EUR"), ("date", "date", "2026-10-30"), ("quote", "string", "USD")];
 
 fn rate_cell(up: &Upstream) -> Value {
     cell_json(up, "mesh-test.datumesh.com/ecb/fx_rate", &ARGS)
@@ -273,7 +275,10 @@ fn a_value_override_is_posted_and_the_answer_is_a_labelled_scenario_with_no_rece
     let body = one_post(&w);
     let cell = s(&body, "cell");
     assert!(cell.starts_with("mesh-test.datumesh.com/ecb/fx_cross_undeclared("), "{cell}");
-    assert!(cell.contains(r#"base: "EUR""#) && cell.contains(r#"quote: "USD""#) && cell.contains("date: 2026-10-30"), "{cell}");
+    assert!(
+        cell.contains(r#"base: "EUR""#) && cell.contains(r#"quote: "USD""#) && cell.contains("date: 2026-10-30"),
+        "{cell}"
+    );
     assert!(body.get("asof").is_none(), "no asof was given: {}", jcs(&body));
     assert!(body.get("solve").is_none());
     let o = arr(&body, "overrides");
@@ -399,15 +404,40 @@ fn plain_args() -> String {
     format!(r#"{{"request":{},"overrides":[{{"cell":{},"value":"1.2"}}]}}"#, q(TARGET_CALL), q(RATE_CALL))
 }
 
+/// A request with a solve: the solver codes are valid only for one.
+fn solve_args() -> String {
+    format!(
+        r#"{{"request":{},"solve":{{"vary":{},"target":{},"equals":"1.5","lo":1,"hi":"2"}}}}"#,
+        q(TARGET_CALL),
+        q(RATE_CALL),
+        q(TARGET_CALL)
+    )
+}
+
 #[test]
 fn a_mesh_that_does_not_offer_solve_is_an_error_with_its_code() {
     let w = world();
     let bad = Answer::bad_request(ErrorCode::WhatifUnsupported).unwrap();
     w.stub.answer_whatif(bad.status(), &String::from_utf8(bad.to_json()).unwrap());
-    let v = whatif(&w, &plain_args());
+    let v = whatif(&w, &solve_args());
     assert!(is_error(&v), "{}", jcs(&v));
     assert_eq!(s(structured(&v), "error"), "E_WHATIF_UNSUPPORTED");
     assert!(!items(&v)[0].starts_with("Scenario (not a fact):"), "an error is not a scenario");
+}
+
+#[test]
+fn a_solver_code_on_a_request_without_solve_is_an_envelope_error() {
+    let w = world();
+    let bad = Answer::bad_request(ErrorCode::WhatifUnsupported).unwrap();
+    w.stub.answer_whatif(bad.status(), &String::from_utf8(bad.to_json()).unwrap());
+    let v = whatif(&w, &plain_args());
+    assert!(is_error(&v), "{}", jcs(&v));
+    assert_eq!(s(structured(&v), "error"), "E_ENVELOPE");
+    let nf = Answer::not_covered().with_fault(Fault::WhatifNoSolution);
+    w.stub.answer_whatif(nf.status(), &String::from_utf8(nf.to_json()).unwrap());
+    let v = whatif(&w, &plain_args());
+    assert!(is_error(&v), "{}", jcs(&v));
+    assert_eq!(s(structured(&v), "error"), "E_ENVELOPE");
 }
 
 #[test]
@@ -415,7 +445,7 @@ fn no_solution_is_not_covered_with_its_fault() {
     let w = world();
     let nf = Answer::not_covered().with_fault(Fault::WhatifNoSolution);
     w.stub.answer_whatif(nf.status(), &String::from_utf8(nf.to_json()).unwrap());
-    let v = whatif(&w, &plain_args());
+    let v = whatif(&w, &solve_args());
     assert!(is_error(&v), "{}", jcs(&v));
     assert_eq!(s(structured(&v), "error"), "not_covered");
     assert_eq!(s(structured(&v), "fault"), "E_WHATIF_NO_SOLUTION");
@@ -449,7 +479,8 @@ fn a_mesh_without_a_whatif_endpoint_is_an_error_naming_it() {
 #[test]
 fn a_value_that_does_not_fit_the_cells_type_is_refused_before_anything_is_sent() {
     let w = world();
-    let args = format!(r#"{{"request":{},"overrides":[{{"cell":{},"value":"not a number"}}]}}"#, q(TARGET_CALL), q(RATE_CALL));
+    let args =
+        format!(r#"{{"request":{},"overrides":[{{"cell":{},"value":"not a number"}}]}}"#, q(TARGET_CALL), q(RATE_CALL));
     let v = whatif(&w, &args);
     assert!(is_error(&v), "{}", jcs(&v));
     assert_eq!(s(structured(&v), "error"), "E_CANON_TYPE");
