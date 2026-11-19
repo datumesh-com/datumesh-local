@@ -24,8 +24,10 @@ use axum::Router;
 use datumesh_core::json::{self, Value};
 use datumesh_core::{ClassDescriptor, Receipt};
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::bundle::base64;
-use crate::resolver::{call_form, cell_uri, BlobContent, TEXT_LIMIT};
+use crate::resolver::{call_form, cell_uri, BlobContent, Got, Source, TEXT_LIMIT};
 use crate::{Error, Reply, Resolver};
 
 /// The protocol revision this server speaks.
@@ -46,7 +48,7 @@ const TOOLS: &str = r#"[
 {"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
-{"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"}},"required":["receipt"],"additionalProperties":false}},
+{"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"},"call":{"type":"string"},"text":{"type":"string"}},"additionalProperties":false}},
 {"name":"define","description":"Defines a function under local/ (a formula with its signature, or a stored function with its signature) or a class (its descriptor).","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"},"formula":{"type":"string"},"signature":{"type":"object"},"stored":{"type":"boolean"},"class":{"type":"object"}},"required":["name"],"additionalProperties":false}},
 {"name":"publish","description":"Publishes publish-stored lines under local/ (functions, classes and cells), each cell signed by this machine.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"lines":{"type":"array","items":{"type":"object"}}},"required":["lines"],"additionalProperties":false}},
 {"name":"subscribe","description":"Not implemented in this version.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}}
@@ -77,6 +79,11 @@ pub struct McpServer {
     resolver: Arc<Resolver>,
     /// Set by an `initialize` on stdio: the session is legacy from then on.
     legacy: AtomicBool,
+    /// The instructions: the static text, or the one the catalogue summary builds (R4).
+    instructions: String,
+    /// The tools, as `tools/list` gives them: the static descriptions, or those the catalogue
+    /// summary extends.
+    tools: Value,
 }
 
 /// A JSON-RPC error: its code, message and optional data.
@@ -124,9 +131,28 @@ type RpcResult = Result<Vec<(String, Value)>, Rpc>;
 type ToolResult = Result<Value, ToolError>;
 
 impl McpServer {
-    /// A server over `resolver`.
+    /// A server over `resolver`. The find mesh's catalogue summary (`GET /find?summary=1`) is
+    /// fetched now, and the instructions and the descriptions of `find` and `get` are written from
+    /// it (CONTRACT-build2-part2-read R4); when it cannot be had, the static text of 0.3.3 is used.
     pub fn new(resolver: Arc<Resolver>) -> McpServer {
-        McpServer { resolver, legacy: AtomicBool::new(false) }
+        let catalogue = resolver.find_json("summary=1").ok().and_then(|v| Catalogue::of(&v));
+        let mut tools = json_const(TOOLS);
+        let instructions = match catalogue {
+            Some(c) => {
+                let held = format!("This mesh ({}) holds: {}.", c.mesh, c.held);
+                append_description(&mut tools, "find", &held);
+                append_description(
+                    &mut tools,
+                    "get",
+                    &format!(
+                        "{held} A plain reference (a label and a reference, such as \"<label> <reference>\") is read through the mesh's find in the same call: an exact one gives its answer, an ambiguous one its candidates, a range is refused (E_RANGE_REFUSED), and a reference nothing resolves to gives suggestions."
+                    ),
+                );
+                c.instructions
+            }
+            None => INSTRUCTIONS.to_string(),
+        };
+        McpServer { resolver, legacy: AtomicBool::new(false), instructions, tools }
     }
 
     /// Answers one message (a JSON-RPC line) received on `transport`: the response as one line
@@ -155,9 +181,9 @@ impl McpServer {
             }
         }
         let result = match method {
-            "server/discover" => Ok(discover()),
+            "server/discover" => Ok(self.discover()),
             "tools/list" => Ok(vec![
-                ("tools".into(), json_const(TOOLS)),
+                ("tools".into(), self.tools.clone()),
                 ("ttlMs".into(), int(TTL_MS)),
                 ("cacheScope".into(), s("private")),
             ]),
@@ -187,7 +213,7 @@ impl McpServer {
             ("protocolVersion".into(), s(version)),
             ("capabilities".into(), capabilities()),
             ("serverInfo".into(), server_info()),
-            ("instructions".into(), s(INSTRUCTIONS)),
+            ("instructions".into(), s(&self.instructions)),
         ];
         respond(id, "result", result_object(members))
     }
@@ -269,17 +295,35 @@ impl McpServer {
         Ok(obj(vec![("results", Value::Array(results)), ("searched", Value::Array(searched))]))
     }
 
-    /// `get`: the answer block as before; for a blob value, its checked text first when it is text
-    /// within the limit, else its `blob` address (CONTRACT-1.7a-text L1). A mismatch is an error.
+    /// `get` (R4): a call or a cell URI as before; a plain reference is read in this call when the
+    /// find mesh resolves it exactly, else its candidates, its range refusal or its suggestions.
     fn get(&self, args: &Value) -> Result<Vec<(String, Value)>, ToolError> {
         let request = str_arg(args, "request")?;
-        let reply = self.resolver.get(request)?;
-        if let Some(detail) = blob_mismatch(&reply) {
+        match self.resolver.get_request(request)? {
+            Got::Reply(reply) => self.answer(&reply, None),
+            Got::Read { reply, label, call } => self.answer(&reply, Some((label, call))),
+            Got::Ambiguous(candidates) => Ok(ambiguous_members(request, &candidates)),
+            Got::Range => Err(ToolError { code: Some("E_RANGE_REFUSED".into()), detail: RANGE_DETAIL.into() }),
+            Got::NotCovered(results) => Ok(not_covered_members(request, &results)),
+        }
+    }
+
+    /// The answer to `get` for `reply`: its blob's checked text first when it is text within the
+    /// limit (CONTRACT-1.7a-text L1), else its `blob` address; a mismatch is an error. With
+    /// `resolved` (a reference's label and call), the answer starts with them (R4).
+    fn answer(&self, reply: &Reply, resolved: Option<(String, String)>) -> Result<Vec<(String, Value)>, ToolError> {
+        if let Some(detail) = blob_mismatch(reply) {
             return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail });
         }
-        let block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
-        let Some(blob) = self.resolver.blob_of(&reply)? else {
-            return Ok(tool_members(&json_text(&block), block, false));
+        let mut block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
+        let mut head = Vec::new();
+        if let Some((label, call)) = &resolved {
+            block = with_members(block, vec![("resolved", obj(vec![("label", s(label)), ("call", s(call))]))]);
+            head.push(format!("{label}\n{call}"));
+        }
+        let Some(blob) = self.resolver.blob_of(reply)? else {
+            head.push(json_text(&block));
+            return Ok(content_members(head, block, false));
         };
         let mut info = vec![
             ("length", num(blob.length)),
@@ -300,7 +344,8 @@ impl McpServer {
                 ]);
                 let structured =
                     with_members(block.clone(), vec![("text", s(&text)), ("blob_checked", Value::Bool(true))]);
-                Ok(content_members(vec![text, json_text(&checked), json_text(&block)], structured, false))
+                head.extend([text, json_text(&checked), json_text(&block)]);
+                Ok(content_members(head, structured, false))
             }
             BlobContent::Mismatch(detail) => Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail }),
             BlobContent::NotText | BlobContent::Unavailable(_) => {
@@ -309,7 +354,8 @@ impl McpServer {
                     members.push(("blob_unavailable", s(why)));
                 }
                 let structured = with_members(block.clone(), members.clone());
-                Ok(content_members(vec![json_text(&obj(members)), json_text(&block)], structured, false))
+                head.extend([json_text(&obj(members)), json_text(&block)]);
+                Ok(content_members(head, structured, false))
             }
         }
     }
@@ -381,15 +427,38 @@ impl McpServer {
         Ok(obj(members))
     }
 
+    /// `verify` (R4): a receipt, or the receipt of a `call`; with `text`, the quoted text is checked
+    /// against the cell's text blob after NFC on both sides (`text_matches`, and `first_difference`
+    /// in code points when it does not match).
     fn verify(&self, args: &Value) -> ToolResult {
-        let receipt = str_arg(args, "receipt")?;
+        let quoted = match args.get("text") {
+            None => None,
+            Some(Value::String(t)) => Some(t.as_str()),
+            Some(_) => return Err(ToolError::arg("text: a string")),
+        };
+        let (receipt, reply) = match (args.get("receipt"), args.get("call")) {
+            (Some(_), _) => (str_arg(args, "receipt")?.to_string(), None),
+            (None, Some(_)) => {
+                let call = str_arg(args, "call")?;
+                let reply = self.resolver.get(call)?;
+                if let Some(detail) = blob_mismatch(&reply) {
+                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail });
+                }
+                let receipt = reply
+                    .envelope()
+                    .and_then(|e| e.get("receipt").cloned())
+                    .ok_or_else(|| ToolError::arg(format!("{call}: no receipt to verify")))?;
+                (json_text(&receipt), Some(reply))
+            }
+            (None, None) => return Err(ToolError::arg("a receipt, or a call whose receipt is verified")),
+        };
         let v = self.resolver.verify(receipt.as_bytes());
         let pick = |k: &str| v.get(k).cloned().unwrap_or(Value::Null);
         let (signer, licence, call, uri) = match Receipt::from_json(receipt.as_bytes()) {
             Ok(r) => (s(r.computed_by()), s(r.licence()), s(call_form(r.cell())), s(cell_uri(r.cell()))),
             Err(_) => (Value::Null, Value::Null, Value::Null, Value::Null),
         };
-        Ok(obj(vec![
+        let mut members = vec![
             ("ok", pick("ok")),
             ("level", pick("level")),
             ("code", pick("code")),
@@ -398,7 +467,38 @@ impl McpServer {
             ("licence", licence),
             ("call", call),
             ("uri", uri),
-        ]))
+        ];
+        if let Some(quoted) = quoted {
+            let reply = match reply {
+                Some(reply) => reply,
+                None => {
+                    let envelope = obj(vec![("receipt", json::parse(receipt.as_bytes()).unwrap_or(Value::Null))]);
+                    Reply::new(200, envelope.to_jcs(), Source::Local)
+                }
+            };
+            let blob = self
+                .resolver
+                .blob_of(&reply)?
+                .ok_or_else(|| ToolError::arg("text: the receipt's value is not a blob"))?;
+            let content = match blob.content {
+                BlobContent::Text(t) => t,
+                BlobContent::Mismatch(detail) => {
+                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail })
+                }
+                BlobContent::NotText => {
+                    return Err(ToolError::arg("text: the value is not a text blob of 64 KiB or less"))
+                }
+                BlobContent::Unavailable(why) => {
+                    return Err(ToolError::arg(format!("text: the blob's content is not here: {why}")))
+                }
+            };
+            let (matches, first) = compare_text(quoted, &content);
+            members.push(("text_matches", Value::Bool(matches)));
+            if let Some(at) = first {
+                members.push(("first_difference", num(at as u64)));
+            }
+        }
+        Ok(obj(members))
     }
 
     fn define(&self, args: &Value) -> ToolResult {
@@ -614,14 +714,17 @@ fn meta_check(params: &Value) -> Result<(), Rpc> {
     Ok(())
 }
 
-fn discover() -> Vec<(String, Value)> {
-    vec![
-        ("supportedVersions".into(), Value::Array(vec![s(PROTOCOL)])),
-        ("capabilities".into(), capabilities()),
-        ("instructions".into(), s(INSTRUCTIONS)),
-        ("ttlMs".into(), int(TTL_MS)),
-        ("cacheScope".into(), s("private")),
-    ]
+impl McpServer {
+    /// `server/discover`'s members.
+    fn discover(&self) -> Vec<(String, Value)> {
+        vec![
+            ("supportedVersions".into(), Value::Array(vec![s(PROTOCOL)])),
+            ("capabilities".into(), capabilities()),
+            ("instructions".into(), s(&self.instructions)),
+            ("ttlMs".into(), int(TTL_MS)),
+            ("cacheScope".into(), s("private")),
+        ]
+    }
 }
 
 fn capabilities() -> Value {
@@ -763,6 +866,155 @@ fn entry_with_call(name: &str, kind: &str, hash: &str, call: &str) -> Value {
 
 fn resource(uri: &str, name: &str) -> Value {
     obj(vec![("uri", s(uri)), ("name", s(name)), ("mimeType", s("application/json"))])
+}
+
+/// The refusal of a range (R4): the detail `get` gives.
+const RANGE_DETAIL: &str =
+    "a range is refused, not shortened: read a range verse by verse, or as a slice (a call with * for the key)";
+
+/// What the catalogue summary (`GET /find?summary=1`) builds (R4): the mesh, what it holds (its
+/// classes and functions, with labels, cell counts and small dictionaries), and the instructions.
+struct Catalogue {
+    mesh: String,
+    held: String,
+    instructions: String,
+}
+
+impl Catalogue {
+    /// The catalogue of a summary; `None` when it holds no class or function, or is not a summary.
+    fn of(v: &Value) -> Option<Catalogue> {
+        let mut members = Vec::new();
+        for key in ["classes", "functions"] {
+            if let Some(Value::Array(a)) = v.get(key) {
+                members.extend(a.iter().map(member_text));
+            }
+        }
+        if members.is_empty() {
+            return None;
+        }
+        let mesh = v.get("mesh").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("this mesh").to_string();
+        let held = members.join("; ");
+        let instructions = format!(
+            "Datumesh: every answer is a signed receipt. This mesh ({mesh}) holds: {held}. Use find to discover names, by words, a name, a label or a value of the lists above. Use get for a cell: a call (name(arg: value, ...)) or a cell:// URI, or a plain reference (a label and a reference, such as \"<label> <reference>\") that the mesh resolves and reads in the same call. For a text value, get gives its text, checked. Use explain for its lineage and verify for a receipt; verify with text checks a quoted text against the cell's text after NFC. define and publish write under this machine's unrooted namespace."
+        );
+        Some(Catalogue { mesh, held, instructions })
+    }
+}
+
+/// A class or function of the summary, in words: its label, its cell count, and each small
+/// dictionary key with its value labels (more than 50 values: their number only).
+fn member_text(m: &Value) -> String {
+    let text = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or_default().to_string();
+    let count = |v: Option<&Value>| v.and_then(Value::as_number_text).and_then(|t| t.parse::<u64>().ok());
+    let name = text(m.get("name"));
+    let label = Some(text(m.get("label"))).filter(|l| !l.is_empty()).unwrap_or(name);
+    let mut parts = Vec::new();
+    if let Some(n) = count(m.get("cells")) {
+        parts.push(format!("{} cells", thousands(n)));
+    }
+    if let Some(Value::Object(keys)) = m.get("keys") {
+        for (key, k) in keys {
+            let distinct = count(k.get("distinct"));
+            match (k.get("values"), distinct) {
+                (Some(Value::Array(vals)), Some(d)) if d <= 50 && !vals.is_empty() => {
+                    let labels: Vec<String> = vals
+                        .iter()
+                        .take(50)
+                        .map(|x| Some(text(x.get("label"))).filter(|l| !l.is_empty()).unwrap_or(text(x.get("value"))))
+                        .collect();
+                    parts.push(format!("{key}: {}", labels.join(", ")));
+                }
+                (_, Some(d)) => parts.push(format!("{key}: {} values", thousands(d))),
+                _ => {}
+            }
+        }
+    }
+    if parts.is_empty() {
+        label
+    } else {
+        format!("{label} ({})", parts.join("; "))
+    }
+}
+
+/// A count with thousands separators.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Appends `extra` to the description of the tool `name`.
+fn append_description(tools: &mut Value, name: &str, extra: &str) {
+    let Value::Array(list) = tools else { return };
+    for tool in list.iter_mut() {
+        if tool.get("name").and_then(Value::as_str) != Some(name) {
+            continue;
+        }
+        if let Value::Object(members) = tool {
+            for (k, v) in members.iter_mut() {
+                if let (true, Value::String(d)) = (k == "description", v) {
+                    d.push(' ');
+                    d.push_str(extra);
+                }
+            }
+        }
+    }
+}
+
+/// The answer to an ambiguous reference: its candidates, labels and calls, and no value.
+fn ambiguous_members(request: &str, candidates: &[Value]) -> Vec<(String, Value)> {
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let mut lines = vec![format!("{request}: {} candidates; no value is read until one is named.", candidates.len())];
+    for c in candidates {
+        let mut line = format!("- {}", text(c, "label"));
+        let call = text(c, "call");
+        if !call.is_empty() {
+            line.push_str(&format!(": {call}"));
+        }
+        if let Some(Value::Array(missing)) = c.get("missing_keys") {
+            let keys: Vec<&str> = missing.iter().filter_map(Value::as_str).collect();
+            line.push_str(&format!(" (missing: {})", keys.join(", ")));
+        }
+        lines.push(line);
+    }
+    let structured = obj(vec![("resolution", s("ambiguous")), ("candidates", Value::Array(candidates.to_vec()))]);
+    tool_members(&lines.join("\n"), structured, false)
+}
+
+/// The failure of a reference nothing resolves to: the find results as suggestions.
+fn not_covered_members(request: &str, results: &[Value]) -> Vec<(String, Value)> {
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let detail = format!("{request}: nothing the find mesh holds resolves to a value for this reference");
+    let mut lines = vec![detail.clone()];
+    let mut suggestions = Vec::new();
+    if !results.is_empty() {
+        lines.push("Try one of:".into());
+    }
+    for r in results {
+        let (name, label, call, kind) = (text(r, "name"), text(r, "label"), text(r, "call"), text(r, "kind"));
+        lines.push(format!("- {name} ({label}): {call}"));
+        suggestions.push(obj(vec![("name", s(name)), ("kind", s(kind)), ("label", s(label)), ("call", s(call))]));
+    }
+    let structured =
+        obj(vec![("error", s("not_covered")), ("detail", s(detail)), ("suggestions", Value::Array(suggestions))]);
+    tool_members(&lines.join("\n"), structured, true)
+}
+
+/// The comparison of a quoted text with a blob's text, after NFC on both sides: whether they are
+/// equal, and when not, the first code point (after NFC) where they differ (or the shorter's length).
+fn compare_text(quoted: &str, blob: &str) -> (bool, Option<usize>) {
+    let a: Vec<char> = quoted.nfc().collect();
+    let b: Vec<char> = blob.nfc().collect();
+    if a == b {
+        return (true, None);
+    }
+    (false, Some(a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()))))
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {

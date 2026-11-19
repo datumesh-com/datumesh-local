@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-local"
-version = "0.3.3"
+version = "0.4.0"
 description = "The Datumesh local resolver: the mesh's engine over a local SQLite store, the unrooted local.invalid namespace, explicit fetches, prefetch, a licence gate, export and import, and a localhost endpoint."
 edition = "2021"
 rust-version = "1.97"
@@ -32,26 +32,29 @@ resolver = [
     "dep:tokio",
     "dep:getrandom",
     "dep:rusqlite",
+    "dep:unicode-normalization",
 ]
 # wasm32 bindings: the core's verification and call parsing (not the engine). Build with
 # `--no-default-features --features wasm --target wasm32-unknown-unknown`.
 wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
-datumesh-core = "0.3.8"
+datumesh-core = "0.3.9"
 # The call syntax (parse_call) without the engine for wasm; with it for the resolver.
-datumesh-formula = { version = "0.3.0", default-features = false }
+datumesh-formula = { version = "0.4.0", default-features = false }
 # SQLite explicitly (the store's `sqlite` feature), not through the store's defaults; the
 # PostgreSQL backend (a postgres:// store URL) is always in datumesh-store 0.4.0.
-datumesh-store = { version = "0.4.2", default-features = false, features = ["sqlite"], optional = true }
+datumesh-store = { version = "0.5.0", default-features = false, features = ["sqlite"], optional = true }
 datumesh-engine = { version = "0.4.2", default-features = false, optional = true }
-datumesh-http = { version = "0.3.0", optional = true }
+datumesh-http = { version = "0.4.0", optional = true }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
 tower = { version = "0.5.3", features = ["util"], optional = true }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync"], optional = true }
 getrandom = { version = "0.3.4", optional = true }
 # The resolver's own index (what is held, forwarded, quarantined), next to the store.
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+# NFC of a verify's quoted text and of the blob's text (CONTRACT-build2-part2-read R4); already in the lock through idna.
+unicode-normalization = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2.129", optional = true }
 
 [dev-dependencies]

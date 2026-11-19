@@ -75,11 +75,14 @@ fn the_rooting_export_carries_the_catalog_section() {
     let _ = Arc::new(());
     let b = json::parse(&std::fs::read(&export).unwrap()).unwrap();
     let catalog = b.get("catalog").unwrap_or_else(|| panic!("a catalog section in the bundle"));
-    let Value::Object(entries) = catalog else { panic!("catalog is an object") };
-    let mut names: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+    // http 0.4.0's bundle member (signed with the manifest): an array of entries, each with its
+    // rooted `name` (bundle::build_with_catalog sorts them by name).
+    let Value::Array(entries) = catalog else { panic!("catalog is an array") };
+    let mut names: Vec<String> = entries.iter().map(|e| s(e, "name")).collect();
     names.sort();
-    assert_eq!(names, [format!("{NS}/bare"), format!("{NS}/level")], "keyed by rooted name");
-    let level = catalog.get(&format!("{NS}/level")).unwrap();
+    assert_eq!(names, [format!("{NS}/bare"), format!("{NS}/level")], "one entry per rooted name");
+    let entry = |n: &str| entries.iter().find(|e| s(e, "name") == n).unwrap_or_else(|| panic!("an entry of {n}"));
+    let level = entry(&format!("{NS}/level"));
     let description = s(level, "description");
     assert!(!description.is_empty() && description.len() <= 1024, "{description:?}");
     let label = s(level, "label");
@@ -96,6 +99,6 @@ fn the_rooting_export_carries_the_catalog_section() {
         Some(("number".to_string(), "10".to_string()))
     );
     assert!(matches!(level.get("dictionary"), Some(Value::Object(_))));
-    let bare = catalog.get(&format!("{NS}/bare")).unwrap();
+    let bare = entry(&format!("{NS}/bare"));
     assert!(!s(bare, "label").is_empty(), "a label made from the name");
 }

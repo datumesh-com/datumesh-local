@@ -148,7 +148,9 @@ fn l4_a_second_identical_call_makes_no_request() {
     assert_eq!(searched(&third), vec![local_entry(), mesh_entry("cached")]);
     // The cache is in the index: a new resolver on the same home asks nothing either.
     drop(srv);
+    // (A server asks the catalogue summary when it starts, R4: that is before the snapshot.)
     let again = server_of(cfg(&dir, &up, &[HOST]));
+    let all = up.requests();
     let fourth = mcp_find(&again, "quran", false);
     assert_eq!(up.requests(), all);
     assert_eq!(array(&fourth, "results"), array(&first, "results"));
@@ -191,8 +193,9 @@ fn l2_a_local_hit_without_remote_asks_no_mesh() {
             .unwrap(),
     )
     .unwrap();
-    let before = up.requests();
+    // A server asks the mesh's catalogue summary when it starts (R4): the snapshot is after that.
     let srv = McpServer::new(r);
+    let before = up.requests();
     let v = mcp_find(&srv, "quran", false);
     assert_eq!(up.requests(), before);
     assert_eq!(stub.finds(), 0);

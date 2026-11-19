@@ -252,8 +252,8 @@ fn build_upstream(slice_page: usize, tamper: bool) -> Upstream {
 
 /// A stub `/find` for local 0.3.2 (CONTRACT-1.7a L4): datumesh-http 0.3.1's answer shape (H3)
 /// for the query "quran" (the class `VERSE_CLASS` with a `text(edition)` method), an empty
-/// `results` for any other query, or a 500 when `fail` is set. It counts its requests and
-/// keeps their raw query strings. Every other path is the real test mesh's.
+/// `results` for any other query, or a 500 when `fail` is set. It counts its find requests and
+/// keeps their raw query strings (not the summary's). Every other path is the real test mesh's.
 pub struct FindStub {
     pub finds: AtomicU64,
     pub queries: Mutex<Vec<String>>,
@@ -350,9 +350,12 @@ fn build_upstream_with(slice_page: usize, tamper: bool, find: Option<Arc<FindStu
         let handler = move |req: axum::extract::Request| {
             let stub = stub.clone();
             async move {
-                stub.finds.fetch_add(1, Ordering::SeqCst);
                 let raw = req.uri().query().unwrap_or("").to_string();
-                stub.queries.lock().unwrap().push(raw.clone());
+                // The catalogue summary (`summary=1`, fetched when a server starts, R4) is not a find.
+                if !raw.split('&').any(|p| p.starts_with("summary=")) {
+                    stub.finds.fetch_add(1, Ordering::SeqCst);
+                    stub.queries.lock().unwrap().push(raw.clone());
+                }
                 let q = raw.split('&').find_map(|p| p.strip_prefix("q=")).unwrap_or("").replace('+', " ");
                 let (status, body) = if stub.fail.load(Ordering::SeqCst) {
                     (500, r#"{"error":"stub failure"}"#.to_string())

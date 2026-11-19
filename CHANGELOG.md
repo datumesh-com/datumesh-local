@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.4.0 (not yet released)
+
+CONTRACT-build2-part2-read R4, R5 (local side): one-step `get` for a plain reference, tool
+descriptions and instructions written from the mesh's catalogue, `verify` of a quoted text, and
+the catalogue in the rooting export.
+
+- MCP `get` takes a plain reference in its `request` (such as "John 3:16 in Greek"), as well as a
+  call or a cell URI. The first find mesh's `/find?q=` resolves it (http 0.4.0's answer):
+  - `exact`: the answer is read in the same call. Its first item is the resolution's label and
+    canonical call, then the value (a text blob's checked text) and the answer block, which
+    gains `resolved: {label, call}`;
+  - `ambiguous`: not an error; `{resolution: "ambiguous", candidates}` with the candidates'
+    labels and calls, and no value;
+  - a range: `isError` with `E_RANGE_REFUSED`, the detail saying ranges are read verse by verse
+    or as a slice;
+  - `none`: `isError` with `not_covered`, and the find results as `suggestions`.
+- A query-string form (`name?key=value`) is refused with `E_PARSE_URI`, as a call that does not
+  parse, by `get` in the MCP tool and by `Resolver::get`; it is never sent to `/find`. `?asof=` is
+  unchanged.
+- `Resolver::get` keeps its signature and its answers for calls and cell URIs; the plain-reference
+  resolution is the MCP tool's (`Resolver` gives it to the server only, `Resolver::get` still
+  answers a plain reference as before).
+- Tool descriptions and the server instructions are written at start from the first find
+  mesh's catalogue summary (`GET /find?summary=1`): its classes and functions with labels, cell
+  counts and the labels of small dictionaries (at most 50 values per key). They name no cell and
+  no reference. When the summary cannot be had, or the mesh holds nothing, the 0.3.3 text is used.
+- MCP `verify` takes `call` (a call or a cell URI, whose receipt is verified) as well as
+  `receipt`, and `text`: the quoted text is compared with the cell's text blob after NFC on both
+  sides. The result gains `text_matches`, and when false `first_difference` (the first code point
+  after NFC where they differ, or the shorter's length). A blob that fails its hash is
+  `E_BLOB_MISMATCH`.
+- The rooting export bundle (`Resolver::root` with `export`) carries the catalogue: one entry
+  per rooted function, with its label, a description made from its name, its signature's
+  arguments, its examples (the rooted stored cells' calls and values) and an empty dictionary.
+  It is built by `datumesh_http::bundle::build_with_catalog`, so the manifest signs it. The
+  member is an array of entries, each with its `name`, as http 0.4.0 writes it.
+- Depends on datumesh-http 0.4.0, datumesh-store 0.5.0, datumesh-formula 0.4.0 and
+  datumesh-core 0.3.9.
+
 ## 0.3.3 (2026-11-18)
 
 CONTRACT-1.7a-text L1-L4: MCP `get` returns a text blob's content, checked; the `blob` resource.

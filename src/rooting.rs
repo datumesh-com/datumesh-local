@@ -183,6 +183,31 @@ impl datumesh_formula::definition::Callees for RootCallees<'_> {
     }
 }
 
+/// The most examples of a function in a bundle's catalogue.
+const CATALOG_EXAMPLES: usize = 10;
+
+/// A rooted function's catalogue entry (CONTRACT-build2-part2-read R5), for the bundle: its label
+/// (the last segment of its name), its description (made from the name and kind, since a local
+/// descriptor has none), a line per argument of its signature, its examples and an empty
+/// dictionary. The JSON of the entry, as `datumesh_http::bundle::build_with_catalog` takes it.
+fn catalog_entry(name: &str, e: &Entry, examples: Vec<Value>) -> Vec<u8> {
+    let descriptor = json::parse(&e.bytes).unwrap_or(Value::Null);
+    let kind = if e.kind == RootKind::Stored { "stored" } else { "formula" };
+    let label = name.rsplit('/').next().unwrap_or(name).to_string();
+    let args =
+        crate::resolver::signature_args(&descriptor).into_iter().map(|(arg, ty)| (arg, Value::String(ty))).collect();
+    Value::Object(vec![
+        ("name".into(), Value::String(name.to_string())),
+        ("kind".into(), Value::String("function".into())),
+        ("label".into(), Value::String(label)),
+        ("description".into(), Value::String(format!("A {kind} function of {name}, rooted under its namespace."))),
+        ("args".into(), Value::Object(args)),
+        ("examples".into(), Value::Array(examples)),
+        ("dictionary".into(), Value::Object(Vec::new())),
+    ])
+    .to_jcs()
+}
+
 fn rooting(m: impl Into<String>) -> Error {
     Error::Rooting(m.into())
 }
@@ -382,6 +407,8 @@ impl Resolver {
         let mut cells: BTreeMap<String, RootedCell> = BTreeMap::new();
         let mut receipts: Vec<Vec<u8>> = Vec::new();
         let mut seen_cells: BTreeSet<String> = BTreeSet::new();
+        // The examples of the catalogue: each rooted stored cell's call and its value (R5).
+        let mut examples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for c in s.index.cells().map_err(|e| Error::Store(e.to_string()))? {
             if c.slice.is_some() || !seen_cells.insert(c.cell_id.clone()) {
                 continue;
@@ -415,6 +442,10 @@ impl Resolver {
                 .sign(&key)
                 .map_err(|e| rooting(format!("{}: {e}", call_form(&rooted_cell))))?;
             receipts.push(receipt_bytes(&fresh)?);
+            examples.entry(to.clone()).or_default().push(Value::Object(vec![
+                ("call".into(), Value::String(call_form(&rooted_cell))),
+                ("expected".into(), old.value().to_value()),
+            ]));
             cells.insert(
                 call_form(&rooted_cell),
                 RootedCell {
@@ -464,7 +495,15 @@ impl Resolver {
         if let Some(path) = &plan.export {
             let descriptors: Vec<Vec<u8>> = done.values().map(|e| e.bytes.clone()).collect();
             let names: Vec<(String, String)> = done.iter().map(|(f, e)| (to_of(f), e.to_hash.clone())).collect();
-            let bundle = datumesh_http::bundle::build(ns, descriptors, names, receipts, &seed)
+            let catalog = done
+                .iter()
+                .map(|(f, e)| {
+                    let name = to_of(f);
+                    let exs = examples.get(&name).map(|x| x.iter().take(CATALOG_EXAMPLES).cloned().collect());
+                    catalog_entry(&name, e, exs.unwrap_or_default())
+                })
+                .collect();
+            let bundle = datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, &seed)
                 .map_err(|e| Error::Bundle(e.to_string()))?;
             write_new_private(path, &bundle)?;
         }

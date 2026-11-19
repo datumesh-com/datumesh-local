@@ -421,9 +421,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-core"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75cbc0b3eeacf1f8b9b6b1822e6e962bdabd3598702e85f15f57b07460b40c10"
+checksum = "300ec482fe9dc148268b16b4939463794199ea227771408eac854dce4025f031"
 dependencies = [
  "curve25519-dalek",
  "sha2",
@@ -433,8 +433,6 @@ dependencies = [
 [[package]]
 name = "datumesh-engine"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd551e2ceee1fae932e970380f13b47afb642cfa6afefb52d18103a5aa3bf480"
 dependencies = [
  "datumesh-core",
  "datumesh-store",
@@ -443,9 +441,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-formula"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfeb0873f4fd21902df9f381ed591126c2dce418cd03862de3d70bbd2bc32476"
+version = "0.4.0"
 dependencies = [
  "datumesh-core",
  "datumesh-engine",
@@ -455,9 +451,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-http"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79443131117afea12ef6570086ba52bf093ccc479d1c683a6efe0faee4783a97"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -476,13 +470,14 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "ureq",
  "utoipa",
 ]
 
 [[package]]
 name = "datumesh-local"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "axum",
  "datumesh-core",
@@ -494,14 +489,13 @@ dependencies = [
  "rusqlite",
  "tokio",
  "tower",
+ "unicode-normalization",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "datumesh-store"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0dee9ab1865a89949e457ef79adc054f185a9ab2d3b7eab1c6998e4ebac1b74"
+version = "0.5.0"
 dependencies = [
  "datumesh-core",
  "postgres",

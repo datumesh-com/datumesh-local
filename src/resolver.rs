@@ -111,6 +111,29 @@ impl Reply {
     }
 }
 
+/// What `get` gives the MCP tool (CONTRACT-build2-part2-read R4): an answer, a plain reference read
+/// through `/find` (exact), or the reference's candidates, range refusal or nothing found.
+pub(crate) enum Got {
+    /// An answer to a call or a cell URI.
+    Reply(Reply),
+    /// A plain reference that resolved exactly: its answer, with the label and the canonical call
+    /// it resolved to.
+    Read {
+        /// The answer to `call`.
+        reply: Reply,
+        /// The resolution's label.
+        label: String,
+        /// The resolution's canonical call.
+        call: String,
+    },
+    /// Several resolutions: the candidates as the find mesh gave them (no value is read).
+    Ambiguous(Vec<Value>),
+    /// A range, which is refused (`E_RANGE_REFUSED`).
+    Range,
+    /// Nothing resolved: the find results, as suggestions.
+    NotCovered(Vec<Value>),
+}
+
 /// A text blob's content, as `get` gives it (CONTRACT-1.7a-text L1).
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -523,23 +546,113 @@ impl Resolver {
     /// `?asof=`), a cell URI, or the rest of one; short names expanded by the alias map. See
     /// the crate documentation for where answers come from.
     pub fn get(&self, request: &str) -> Result<Reply, Error> {
+        match self.get_or_refer(request, false)? {
+            Got::Reply(reply) | Got::Read { reply, .. } => Ok(reply),
+            // Only a reference is answered otherwise, and `references` is off here.
+            _ => Err(Error::Request(format!("{request}: not a call or a cell URI"))),
+        }
+    }
+
+    /// `get` of the MCP tool (CONTRACT-build2-part2-read R4): as [`Resolver::get`], and a plain
+    /// reference (no call, no cell URI, such as "John 3:16 in Greek") is resolved through the first
+    /// find mesh's `/find` ([`Got`]). A query-string form (`name?key=value`) is refused as a call
+    /// (`E_PARSE_URI`) before anything is parsed further, and never sent to `/find`.
+    pub(crate) fn get_request(&self, request: &str) -> Result<Got, Error> {
+        self.get_or_refer(request, true)
+    }
+
+    fn get_or_refer(&self, request: &str, references: bool) -> Result<Got, Error> {
+        let trimmed = request.trim();
+        if !trimmed.starts_with("cell://")
+            && !trimmed.contains('(')
+            && trimmed.contains('?')
+            && request_asof(trimmed).is_none()
+        {
+            return Err(Error::Client {
+                code: "E_PARSE_URI".into(),
+                detail: format!("{trimmed}: a query string is not a call; write the call as name(key: value, ...)"),
+            });
+        }
         let aliases = self.aliases_at(request_asof(request).as_deref());
         let text = aliases.expand_prefix(request);
         let parsed = crate::classes::note_prefix(self.parse_request(&text, &aliases), request, &text, &aliases);
-        match parsed {
+        let reply = match parsed {
             Parse::Call { rest, resolved, fetched, .. } => {
                 let reply = self.answer(&rest, &Cell::new(fetched))?;
-                Ok(match resolved {
+                match resolved {
                     Some(r) => with_resolved(reply, &r),
                     None => reply,
-                })
+                }
             }
-            Parse::Answered(reply) => Ok(reply),
+            Parse::Answered(reply) => reply,
             // A call the parse refuses: the mesh's own answer to it, which needs no network.
-            Parse::Refused(why) => Err(Error::Request(why)),
-            Parse::Malformed => Ok(self.mesh_reply(self.mesh().cell(&text, None), Source::Local)),
-            Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false)),
+            Parse::Refused(why) => return Err(Error::Request(why)),
+            Parse::Malformed => self.mesh_reply(self.mesh().cell(&text, None), Source::Local),
+            Parse::Plain if references && !text.trim_start().starts_with("cell://") && !text.contains('(') => {
+                return self.reference(trimmed);
+            }
+            Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false))?,
+        };
+        Ok(Got::Reply(reply))
+    }
+
+    /// A plain reference read through the first find mesh (R4): its resolution, `exact` read in
+    /// this call, `ambiguous` and `range` and `none` (with the find results as suggestions) given
+    /// as they are.
+    fn reference(&self, text: &str) -> Result<Got, Error> {
+        let answer = self.find_json(&format!("q={}", datumesh_http::client::pct(text)))?;
+        let resolution = answer.get("resolution");
+        let member =
+            |k: &str| resolution.and_then(|r| r.get(k)).and_then(Value::as_str).unwrap_or_default().to_string();
+        let list = |v: Option<&Value>, k: &str| match v.and_then(|r| r.get(k)) {
+            Some(Value::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        Ok(match member("status").as_str() {
+            "exact" => {
+                let call = member("call");
+                if call.is_empty() {
+                    return Err(Error::Client {
+                        code: "E_INPUT_UNAVAILABLE".into(),
+                        detail: format!("{text}: the find mesh's exact resolution names no call"),
+                    });
+                }
+                let label = match member("label") {
+                    l if l.is_empty() => call.clone(),
+                    l => l,
+                };
+                let reply = self.get(&call)?;
+                Got::Read { reply, label, call }
+            }
+            "ambiguous" => Got::Ambiguous(list(resolution, "candidates")),
+            "range" => Got::Range,
+            _ => Got::NotCovered(list(Some(&answer), "results")),
+        })
+    }
+
+    /// The first find mesh's `GET /find` with `query` (`q=<text>`, or `summary=1`), its answer
+    /// parsed. Not allowed, offline, unreachable or not a 200: `E_INPUT_UNAVAILABLE`.
+    pub(crate) fn find_json(&self, query: &str) -> Result<Value, Error> {
+        let s = &self.shared;
+        let unavailable = |detail: String| Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail };
+        let Some(mesh) = s.config.find_meshes.first().cloned() else {
+            return Err(unavailable("no find mesh is configured".into()));
+        };
+        if !s.client.allowed(&mesh) {
+            return Err(unavailable(format!("{mesh}: not allowed")));
         }
+        if s.offline.load(Ordering::Acquire) {
+            return Err(unavailable(format!("{mesh}: offline")));
+        }
+        let doc = s.client.resolve(&mesh).map_err(|e| client_error(&e))?;
+        let place = doc.url("find", &[]).unwrap_or_else(|| format!("https://{mesh}/find")).to_string();
+        let url = format!("{place}?{query}");
+        let body = match s.client.get(&url, 16 << 20) {
+            Err(e) => return Err(unavailable(format!("{url}: {e}"))),
+            Ok((200, body)) => body,
+            Ok((status, _)) => return Err(unavailable(format!("{url}: status {status}"))),
+        };
+        json::parse(&body).map_err(|e| unavailable(format!("{url}: {e}")))
     }
 
     /// The blob a reply's receipt names (its value is `<sha256>:<length>:<media_type>`), with its
