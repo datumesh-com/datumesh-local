@@ -907,16 +907,33 @@ impl Resolver {
     ///
     /// A formula with no inputs is refused ([`Error::NoInputs`]).
     pub fn define_formula(&self, name: &str, source: &str, signature: &Value) -> Result<Defined, Error> {
-        self.define_formula_at(name, source, signature, None)
+        self.define_formula_at(name, source, signature, None, None)
     }
 
-    /// [`Resolver::define_formula`], bound from `start` (a publish line's `bound`) rather than now.
+    /// [`Resolver::define_formula`] with `tests` (CONTRACT-build2-part3 E6): a JSON array of tests of
+    /// the function, each `{call, expect, asof?, inputs?}` (`call` names the function; `expect` is a
+    /// plain literal typed by its return type, or `{"fault": code}`). Checked before anything is
+    /// bound: a refused test refuses the definition, and nothing is defined. The tests are kept with
+    /// the function's hash (E5); they are not run here.
+    pub fn define_formula_with_tests(
+        &self,
+        name: &str,
+        source: &str,
+        signature: &Value,
+        tests: &Value,
+    ) -> Result<Defined, Error> {
+        self.define_formula_at(name, source, signature, None, Some(tests))
+    }
+
+    /// [`Resolver::define_formula`], bound from `start` (a publish line's `bound`) rather than now,
+    /// with the tests given, if any.
     fn define_formula_at(
         &self,
         name: &str,
         source: &str,
         signature: &Value,
         start: Option<&str>,
+        tests: Option<&Value>,
     ) -> Result<Defined, Error> {
         let s = &self.shared;
         let aliases = self.aliases_at(None);
@@ -947,7 +964,16 @@ impl Resolver {
             return Err(Error::NoInputs { function: name });
         }
         check_rooting(&name, &def.descriptor)?;
-        self.bind(&name, &def.bytes, &def.fn_hash, &start)
+        let kept = match tests {
+            Some(t) => Some(self.normalize_tests(&name, &def.descriptor, t)?),
+            None => None,
+        };
+        let defined = self.bind(&name, &def.bytes, &def.fn_hash, &start)?;
+        if let Some(list) = kept {
+            let bytes: Vec<Vec<u8>> = list.iter().map(|t| t.to_jcs()).collect();
+            self.shared.index.put_tests(&defined.fn_hash, &bytes, &now)?;
+        }
+        Ok(defined)
     }
 
     /// Defines a stored function `name` with `signature`, bound from now.
@@ -1089,7 +1115,7 @@ impl Resolver {
         for (name, v, start) in &formulas {
             let src = v.get("source").and_then(Value::as_str).unwrap_or("");
             let sig = v.get("signature").cloned().unwrap_or(Value::Null);
-            if self.define_formula_at(name, src, &sig, Some(start))?.bound {
+            if self.define_formula_at(name, src, &sig, Some(start), None)?.bound {
                 published.functions += 1;
             }
         }

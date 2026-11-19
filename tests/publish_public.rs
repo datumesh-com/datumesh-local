@@ -235,7 +235,8 @@ fn a_function_with_tests_is_rooted_and_posted_to_the_mesh_documents_bundles_endp
     let b = post.json();
     assert_eq!(b.get("bundle").and_then(Value::as_number_text), Some("1"));
     assert_eq!(s(&b, "namespace"), NS);
-    let bn: Vec<String> = arr(&b, "names").iter().map(|n| n.as_str().unwrap().to_string()).collect();
+    // The bundle names are {fn_hash, name} objects (bundle 1).
+    let bn: Vec<String> = arr(&b, "names").iter().map(|n| s(n, "name")).collect();
     for n in &names {
         assert!(bn.contains(n), "{n} in {bn:?}");
     }

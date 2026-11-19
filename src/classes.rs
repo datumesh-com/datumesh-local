@@ -59,6 +59,9 @@ pub(crate) struct Env<'a> {
     asof: Option<String>,
     /// The refusal of a bare class name, when the call resolved one (see [`Env::alias`]).
     refused: RefCell<Option<String>>,
+    /// A function whose descriptor is given before it is bound (a definition's own tests name it
+    /// before its binding is written, CONTRACT-build2-part3 E6): its name and descriptor.
+    overlay: Option<(String, FunctionDescriptor)>,
 }
 
 /// The refusal of a bare name for a class outside `datumesh.com/std/` (the user's rule, item 8):
@@ -115,6 +118,11 @@ impl CallEnv for Env<'_> {
     }
 
     fn bound(&self, name: &str, asof: Option<&str>) -> Result<Option<FunctionDescriptor>, String> {
+        if let Some((n, d)) = &self.overlay {
+            if n == name {
+                return Ok(Some(d.clone()));
+            }
+        }
         let s = self.shared();
         let at = asof.unwrap_or(END);
         let host = host_of(name);
@@ -326,6 +334,39 @@ impl Shared {
 }
 
 impl Resolver {
+    /// The call `request` denotes (a call, with its arguments typed by the callee's signature),
+    /// parsed by this resolver's environment: the names it needs are fetched when allowed. With
+    /// `overlay`, that function's descriptor is taken as given (a definition not yet bound).
+    pub(crate) fn call_of(
+        &self,
+        request: &str,
+        overlay: Option<(&str, &FunctionDescriptor)>,
+    ) -> Result<datumesh_formula::call::Call, Error> {
+        let aliases = self.aliases_at(request_asof(request).as_deref());
+        let text = aliases.expand_prefix(request);
+        let env = Env {
+            resolver: self,
+            fetched: Cell::new(false),
+            unavailable: RefCell::new(None),
+            aliases: aliases.clone(),
+            asof: request_asof(&text),
+            refused: RefCell::new(None),
+            overlay: overlay.map(|(n, d)| (n.to_string(), d.clone())),
+        };
+        match parse_call(&text, &env) {
+            Ok(call) => Ok(call),
+            Err(e) => {
+                if let Some(why) = env.refused.into_inner() {
+                    return Err(Error::Request(why));
+                }
+                if let Some(reply) = env.unavailable.into_inner() {
+                    return Err(Error::ForeignUnavailable(reply.detail.unwrap_or_else(|| request.to_string())));
+                }
+                Err(Error::Request(format!("{request}: {}", e.code())))
+            }
+        }
+    }
+
     /// Parses a request in the call form (see the module documentation).
     pub(crate) fn parse_request(&self, text: &str, aliases: &AliasMap) -> Parse {
         let env = Env {
@@ -335,6 +376,7 @@ impl Resolver {
             aliases: aliases.clone(),
             asof: request_asof(text),
             refused: RefCell::new(None),
+            overlay: None,
         };
         match parse_call(text, &env) {
             Ok(call) => {
@@ -387,6 +429,7 @@ impl Resolver {
             aliases: self.aliases_at(asof),
             asof: asof.map(str::to_string),
             refused: RefCell::new(None),
+            overlay: None,
         };
         match env.bound_class(full, asof) {
             Ok(Some(_)) => Err(Error::Request(bare_class_error(alias, full))),

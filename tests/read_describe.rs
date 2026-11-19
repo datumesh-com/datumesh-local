@@ -127,7 +127,7 @@ fn instructions_and_descriptions_are_built_from_the_summary() {
     let get = d.iter().find(|(n, _)| n == "get").unwrap();
     assert!(find.1.contains("Sample passages"), "{}", find.1);
     assert!(get.1.contains("Sample passages"), "{}", get.1);
-    assert_eq!(d.len(), 8, "the same eight tools");
+    assert_eq!(d.len(), 10, "the same ten tools");
 }
 
 #[test]

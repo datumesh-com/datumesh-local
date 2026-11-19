@@ -432,7 +432,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-engine"
-version = "0.4.2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78992adc5ec0796487129d99febee2dfb1f3dc25054eaaa1d6e7cae6e6c2166b"
 dependencies = [
  "datumesh-core",
  "datumesh-store",
@@ -441,7 +443,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-formula"
-version = "0.4.0"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58151677c2039f38dd32b6b4b43f3ce50ba0e06f9b1d1b67fedc6bede8e8e984"
 dependencies = [
  "datumesh-core",
  "datumesh-engine",
@@ -485,17 +489,21 @@ dependencies = [
  "datumesh-formula",
  "datumesh-http",
  "datumesh-store",
+ "ed25519-dalek",
  "getrandom 0.3.4",
  "rusqlite",
  "tokio",
  "tower",
  "unicode-normalization",
+ "ureq",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "datumesh-store"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7378b953b46144f3ba1cd1e0ca610d745d8c717b4c073dc07aa8f8cee04701f4"
 dependencies = [
  "datumesh-core",
  "postgres",

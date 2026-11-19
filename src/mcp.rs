@@ -27,8 +27,9 @@ use datumesh_core::{ClassDescriptor, Receipt};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::bundle::base64;
+use crate::calculus::{OverrideArg, SolveArg, WhatifArgs};
 use crate::resolver::{call_form, cell_uri, BlobContent, Got, Source, TEXT_LIMIT};
-use crate::{Error, Reply, Resolver};
+use crate::{Error, PublicPlan, Reply, Resolver, RootPlan};
 
 /// The protocol revision this server speaks.
 const PROTOCOL: &str = "2026-07-28";
@@ -49,9 +50,11 @@ const TOOLS: &str = r#"[
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"},"call":{"type":"string"},"text":{"type":"string"}},"additionalProperties":false}},
-{"name":"define","description":"Defines a function under local/ (a formula with its signature, or a stored function with its signature) or a class (its descriptor).","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"},"formula":{"type":"string"},"signature":{"type":"object"},"stored":{"type":"boolean"},"class":{"type":"object"}},"required":["name"],"additionalProperties":false}},
+{"name":"define","description":"Defines a function under local/ (a formula with its signature, or a stored function with its signature) or a class (its descriptor). A formula may come with its tests, in the same call: each names the function as its call, with its expect (a plain literal typed by the return type, or {\"fault\": code}) and optionally asof and inputs. Tests are optional here, and a stored function takes none; a publish to a public mesh needs them (publish_public).","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"},"formula":{"type":"string"},"signature":{"type":"object"},"stored":{"type":"boolean"},"class":{"type":"object"},"tests":{"type":"array","items":{"type":"object"}}},"required":["name"],"additionalProperties":false}},
 {"name":"publish","description":"Publishes publish-stored lines under local/ (functions, classes and cells), each cell signed by this machine.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"lines":{"type":"array","items":{"type":"object"}}},"required":["lines"],"additionalProperties":false}},
-{"name":"subscribe","description":"Not implemented in this version.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}}
+{"name":"subscribe","description":"Not implemented in this version.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
+{"name":"whatif","description":"The spreadsheet what-if (also called a diddle or a tweak, for those who know SecDB-style systems): the value a cell would have if some cells held other values, or the value of one cell that makes another equal a number (solve). The answer is a labelled scenario, never signed or stored, and never a fact: it has no receipt and is not verified. Nothing else changes.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"overrides":{"type":"array","items":{"type":"object"}},"asof":{"type":"string"},"solve":{"type":"object","properties":{"vary":{"type":"string"},"target":{"type":"string"},"equals":{},"lo":{},"hi":{}},"required":["vary","target","equals","lo","hi"],"additionalProperties":false}},"required":["request"],"additionalProperties":false}},
+{"name":"publish_public","description":"Publishes a rooted namespace of this machine's names to a public mesh (the bundle, with its tests). Each formula needs tests that cover its derived cases and every branch (E_TESTS_MISSING lists what is missing); the mesh checks the rest and refuses with its code.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"to":{"type":"string"},"namespace":{"type":"string"},"key":{"type":"string"},"names":{"type":"array","items":{"type":"string"}},"export":{"type":"string"}},"required":["to","namespace","key","names"],"additionalProperties":false}}
 ]"#;
 /// The resource templates of `resources/templates/list`.
 const TEMPLATES: &str = r#"[
@@ -105,26 +108,59 @@ impl From<Error> for Rpc {
     }
 }
 
-/// A tool failure: its spec code when it has one, and the error's Display.
+/// A tool failure: its spec code when it has one, the error's Display, and, when the failure has
+/// members of its own (`fault`, `functions`, the mesh's `detail`), the structured content instead of
+/// `{error, detail}`.
 struct ToolError {
     code: Option<String>,
     detail: String,
+    body: Option<Value>,
 }
 
 impl ToolError {
     fn arg(detail: impl Into<String>) -> ToolError {
-        ToolError { code: None, detail: detail.into() }
+        ToolError { code: None, detail: detail.into(), body: None }
     }
 }
 
 impl From<Error> for ToolError {
     fn from(e: Error) -> ToolError {
-        let code = e.code().map(str::to_string).or_else(|| match &e {
-            Error::Client { code, .. } => Some(code.clone()),
-            _ => None,
-        });
-        ToolError { code, detail: e.to_string() }
+        match &e {
+            Error::TestsMissing(list) => ToolError {
+                code: Some("E_TESTS_MISSING".into()),
+                detail: e.to_string(),
+                body: Some(obj(vec![
+                    ("error", s("E_TESTS_MISSING")),
+                    ("functions", Value::Array(list.iter().map(missing_json).collect())),
+                ])),
+            },
+            Error::Refused { code, detail } => ToolError {
+                code: Some(code.clone()),
+                detail: e.to_string(),
+                body: Some(obj(vec![
+                    ("error", s(code)),
+                    ("detail", json::parse(detail.as_bytes()).unwrap_or_else(|_| s(detail))),
+                ])),
+            },
+            _ => {
+                let code = e.code().map(str::to_string).or_else(|| match &e {
+                    Error::Client { code, .. } => Some(code.clone()),
+                    _ => None,
+                });
+                ToolError { code, detail: e.to_string(), body: None }
+            }
+        }
     }
+}
+
+/// A missing-tests report as the tool gives it (`E_TESTS_MISSING`'s `functions`).
+fn missing_json(m: &crate::MissingTests) -> Value {
+    obj(vec![
+        ("function", s(&m.function)),
+        ("cases", Value::Array(m.cases.iter().map(s).collect())),
+        ("branches_total", num(m.branches_total as u64)),
+        ("branches_covered", num(m.branches_covered as u64)),
+    ])
 }
 
 type RpcResult = Result<Vec<(String, Value)>, Rpc>;
@@ -227,11 +263,19 @@ impl McpServer {
         if !TOOL_NAMES.contains(&name) {
             return Err(Rpc::new(-32602, format!("Unknown tool: {name}")));
         }
-        // Writes need the token over HTTP (`define` and `publish`).
-        if matches!(transport, Transport::Http { authorized: false }) && (name == "define" || name == "publish") {
+        // Writes need the token over HTTP (`define`, `publish` and `publish_public`).
+        if matches!(transport, Transport::Http { authorized: false })
+            && matches!(name, "define" | "publish" | "publish_public")
+        {
             return Err(Rpc { code: -31001, message: "unauthorized".into(), data: None });
         }
         let args = params.get("arguments").cloned().unwrap_or_else(|| Value::Object(Vec::new()));
+        if name == "whatif" {
+            return Ok(match self.whatif(&args) {
+                Ok(v) => content_members(vec![scenario_text(&v)], v, false),
+                Err(e) => tool_failure(e),
+            });
+        }
         if name == "get" {
             return Ok(match self.get(&args) {
                 Ok(members) => members,
@@ -245,6 +289,7 @@ impl McpServer {
             "verify" => self.verify(&args),
             "define" => self.define(&args),
             "publish" => self.publish(&args),
+            "publish_public" => self.publish_public(&args),
             _ => {
                 let structured = obj(vec![("error", s("not_implemented")), ("tool", s("subscribe"))]);
                 return Ok(tool_members(&json_text(&structured), structured, true));
@@ -303,7 +348,9 @@ impl McpServer {
             Got::Reply(reply) => self.answer(&reply, None),
             Got::Read { reply, label, call } => self.answer(&reply, Some((label, call))),
             Got::Ambiguous(candidates) => Ok(ambiguous_members(request, &candidates)),
-            Got::Range => Err(ToolError { code: Some("E_RANGE_REFUSED".into()), detail: RANGE_DETAIL.into() }),
+            Got::Range => {
+                Err(ToolError { code: Some("E_RANGE_REFUSED".into()), detail: RANGE_DETAIL.into(), body: None })
+            }
             Got::NotCovered(results) => Ok(not_covered_members(request, &results)),
         }
     }
@@ -313,7 +360,7 @@ impl McpServer {
     /// `resolved` (a reference's label and call), the answer starts with them (R4).
     fn answer(&self, reply: &Reply, resolved: Option<(String, String)>) -> Result<Vec<(String, Value)>, ToolError> {
         if let Some(detail) = blob_mismatch(reply) {
-            return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail });
+            return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None });
         }
         let mut block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
         let mut head = Vec::new();
@@ -347,7 +394,9 @@ impl McpServer {
                 head.extend([text, json_text(&checked), json_text(&block)]);
                 Ok(content_members(head, structured, false))
             }
-            BlobContent::Mismatch(detail) => Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail }),
+            BlobContent::Mismatch(detail) => {
+                Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None })
+            }
             BlobContent::NotText | BlobContent::Unavailable(_) => {
                 let mut members = vec![("blob", obj(info)), ("blob_checked", Value::Bool(false))];
                 if let BlobContent::Unavailable(why) = &blob.content {
@@ -442,7 +491,7 @@ impl McpServer {
                 let call = str_arg(args, "call")?;
                 let reply = self.resolver.get(call)?;
                 if let Some(detail) = blob_mismatch(&reply) {
-                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail });
+                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None });
                 }
                 let receipt = reply
                     .envelope()
@@ -483,7 +532,7 @@ impl McpServer {
             let content = match blob.content {
                 BlobContent::Text(t) => t,
                 BlobContent::Mismatch(detail) => {
-                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail })
+                    return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None })
                 }
                 BlobContent::NotText => {
                     return Err(ToolError::arg("text: the value is not a text blob of 64 KiB or less"))
@@ -507,12 +556,20 @@ impl McpServer {
         let stored = args.get("stored") == Some(&Value::Bool(true));
         let class = args.get("class");
         let signature = args.get("signature");
+        let tests = args.get("tests");
         let (kind, defined) = match (formula, stored, class) {
             (Some(source), false, None) => {
                 let sig = signature.ok_or_else(|| ToolError::arg("a formula needs its signature"))?;
-                ("function", self.resolver.define_formula(name, source, sig)?)
+                let defined = match tests {
+                    Some(t) => self.resolver.define_formula_with_tests(name, source, sig, t)?,
+                    None => self.resolver.define_formula(name, source, sig)?,
+                };
+                ("function", defined)
             }
             (None, true, None) => {
+                if tests.is_some() {
+                    return Err(ToolError::arg("a stored function takes no tests (its proof is its source)"));
+                }
                 let sig = signature.ok_or_else(|| ToolError::arg("a stored function needs its signature"))?;
                 ("function", self.resolver.define_stored(name, sig)?)
             }
@@ -528,13 +585,84 @@ impl McpServer {
         } else {
             template(&defined.name, &self.descriptor(&defined.fn_hash))
         };
+        let kept = if kind == "class" { 0 } else { self.tests_kept(&defined.fn_hash)? };
         Ok(obj(vec![
             ("name", s(&defined.name)),
             ("hash", s(&defined.fn_hash)),
             ("kind", s(kind)),
             ("call", s(call)),
             ("uri", s(format!("cell://{}", defined.name))),
+            ("tests", num(kept as u64)),
         ]))
+    }
+
+    /// The number of tests kept with the function `fn_hash`.
+    fn tests_kept(&self, fn_hash: &str) -> Result<usize, ToolError> {
+        Ok(self.resolver.tests_of(fn_hash)?.len())
+    }
+
+    /// `whatif` (E6): the scenario of the request, from the mesh that answers for the cell or from
+    /// this machine's engine. A `not_covered` answer carries its fault.
+    fn whatif(&self, args: &Value) -> ToolResult {
+        let request = str_arg(args, "request")?.to_string();
+        let overrides = match args.get("overrides") {
+            None => Vec::new(),
+            Some(Value::Array(items)) => items.iter().map(override_arg).collect::<Result<Vec<_>, _>>()?,
+            Some(_) => return Err(ToolError::arg("overrides: an array of {cell, value} or {slice, add, remove}")),
+        };
+        let asof = match args.get("asof") {
+            None => None,
+            Some(Value::String(a)) => Some(a.clone()),
+            Some(_) => return Err(ToolError::arg("asof: an instant")),
+        };
+        let solve = match args.get("solve") {
+            None => None,
+            Some(sv) => {
+                let text = |k: &str| {
+                    sv.get(k)
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .ok_or_else(|| ToolError::arg(format!("solve.{k}: a call")))
+                };
+                let literal =
+                    |k: &str| sv.get(k).cloned().ok_or_else(|| ToolError::arg(format!("solve.{k}: a number")));
+                Some(SolveArg {
+                    vary: text("vary")?,
+                    target: text("target")?,
+                    equals: literal("equals")?,
+                    lo: literal("lo")?,
+                    hi: literal("hi")?,
+                })
+            }
+        };
+        let req = WhatifArgs { request, overrides, asof, solve };
+        match self.resolver.whatif(&req) {
+            Ok(v) => Ok(v),
+            Err(Error::Client { code, detail }) if code == "not_covered" => Err(ToolError {
+                code: Some("not_covered".into()),
+                detail: format!("not_covered: {detail}"),
+                body: Some(obj(vec![("error", s("not_covered")), ("fault", s(detail))])),
+            }),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// `publish_public` (P1): roots the names under the namespace and posts the bundle to the public
+    /// mesh; the mesh's answer is the result.
+    fn publish_public(&self, args: &Value) -> ToolResult {
+        let to = str_arg(args, "to")?.to_string();
+        let namespace = str_arg(args, "namespace")?.to_string();
+        let key = str_arg(args, "key")?.to_string();
+        let names = match args.get("names") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|n| n.as_str().map(str::to_string).ok_or_else(|| ToolError::arg("names: strings")))
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(ToolError::arg("names: an array of names")),
+        };
+        let export = args.get("export").and_then(Value::as_str).map(PathBuf::from);
+        let plan = PublicPlan { to, root: RootPlan { namespace, key_path: PathBuf::from(key), names, export } };
+        Ok(self.resolver.publish_public(&plan)?)
     }
 
     fn publish(&self, args: &Value) -> ToolResult {
@@ -691,7 +819,8 @@ impl McpServer {
 }
 
 /// The tool names, in `tools/list` order.
-const TOOL_NAMES: [&str; 8] = ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe"];
+const TOOL_NAMES: [&str; 10] =
+    ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe", "whatif", "publish_public"];
 
 /// `_meta` on a request: the protocol version and the client's capabilities (both required).
 fn meta_check(params: &Value) -> Result<(), Rpc> {
@@ -777,7 +906,9 @@ fn tool_failure(e: ToolError) -> Vec<(String, Value)> {
         Some(c) if !e.detail.starts_with(c.as_str()) => format!("{c}: {}", e.detail),
         _ => e.detail.clone(),
     };
-    let structured = obj(vec![("error", s(e.code.as_deref().unwrap_or("error"))), ("detail", s(e.detail))]);
+    let structured = e
+        .body
+        .unwrap_or_else(|| obj(vec![("error", s(e.code.as_deref().unwrap_or("error"))), ("detail", s(e.detail))]));
     tool_members(&text, structured, true)
 }
 
@@ -1015,6 +1146,81 @@ fn compare_text(quoted: &str, blob: &str) -> (bool, Option<usize>) {
         return (true, None);
     }
     (false, Some(a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()))))
+}
+
+/// An override of a `whatif` request, from its JSON (`{cell, value}` or `{slice, add, remove}`).
+fn override_arg(v: &Value) -> Result<OverrideArg, ToolError> {
+    if let Some(slice) = v.get("slice").and_then(Value::as_str) {
+        let add = match v.get("add") {
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|m| {
+                    let cell =
+                        m.get("cell").and_then(Value::as_str).ok_or_else(|| ToolError::arg("add: {cell, value}"))?;
+                    let value = m.get("value").cloned().ok_or_else(|| ToolError::arg("add: {cell, value}"))?;
+                    Ok((cell.to_string(), value))
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?,
+            Some(_) => return Err(ToolError::arg("add: an array")),
+        };
+        let remove = match v.get("remove") {
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|c| c.as_str().map(str::to_string).ok_or_else(|| ToolError::arg("remove: cells")))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => return Err(ToolError::arg("remove: an array")),
+        };
+        return Ok(OverrideArg::Slice { slice: slice.to_string(), add, remove });
+    }
+    let cell = v
+        .get("cell")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::arg("an override: {cell, value} or {slice, add, remove}"))?;
+    let value = v.get("value").cloned().ok_or_else(|| ToolError::arg("an override: {cell, value}"))?;
+    Ok(OverrideArg::Value { cell: cell.to_string(), value })
+}
+
+/// The text of a scenario's answer: its first line is the label (E6).
+fn scenario_text(v: &Value) -> String {
+    let mut lines = vec![format!(
+        "Scenario (not a fact): {} = {} as of {}.",
+        member_of(v, "call"),
+        member_of(v, "value"),
+        member_of(v, "asof")
+    )];
+    if let Some(Value::Array(items)) = v.get("overrides") {
+        for o in items {
+            lines.push(match o.get("slice") {
+                Some(_) => {
+                    let added: Vec<String> = match o.get("add") {
+                        Some(Value::Array(a)) => {
+                            a.iter().map(|m| format!("{} = {}", member_of(m, "cell"), member_of(m, "value"))).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    format!("  with the slice {} changed: added {}", member_of(o, "slice"), added.join("; "))
+                }
+                None => format!("  with {} = {}", member_of(o, "cell"), member_of(o, "value")),
+            });
+        }
+    }
+    if let Some(sv) = v.get("solved") {
+        lines.push(format!("  solved: {} = {}", member_of(sv, "vary"), member_of(sv, "value")));
+    }
+    lines.push("A scenario is labelled: it is never signed or stored.".to_string());
+    lines.join("\n")
+}
+
+/// A member of a JSON object as text (strings as they are, other values as JSON).
+fn member_of(v: &Value, k: &str) -> String {
+    match v.get(k) {
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Bool(b)) => b.to_string(),
+        Some(other) => String::from_utf8_lossy(&other.to_jcs()).into_owned(),
+        None => String::new(),
+    }
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {

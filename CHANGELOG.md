@@ -2,6 +2,43 @@
 
 ## 0.4.0 (not yet released)
 
+CONTRACT-build2-part3-calculus E6 and CONTRACT-build2-part4-publish P1 (local side): the `whatif`
+tool, `define` with tests, and publishing a rooted namespace to a public mesh.
+
+- MCP `whatif` (the spreadsheet what-if, a scenario never signed or stored): `request` (a call),
+  `overrides` (`{cell, value}` or `{slice, add, remove}`, values plain literals typed by the cell's
+  return type), optional `asof` and `solve` (`vary`, `target`, `equals`, `lo`, `hi`). A cell of a
+  local namespace is evaluated here by the shared engine (`Engine::whatif`, nothing written). Any
+  other cell is asked of its mesh's `whatif` endpoint (spec-0.6.0 5.9, from its mesh document,
+  through the configured peers), and the answer is checked with core's `check_answer`; a failed check
+  is `E_ENVELOPE`. The answer's first text item starts with `Scenario (not a fact):`; the structured
+  content has `outcome: "scenario"`, `call`, `type`, `value`, `asof`, `overrides` and, with a solve,
+  `solved`. It has no receipt and no trust. An error answer is reported with its code (a
+  `not_covered` one with its `fault`).
+- MCP `define` and CLI `define --tests <json array>`: a formula may come with its tests in the same
+  call (`{call, expect, asof?, inputs?}`; `expect` is a plain literal typed by the return type or
+  `{"fault": code}`). They are checked before anything is bound (a test of another function, a
+  malformed expectation, an input that does not fit its type refuses the whole call). Tests are
+  optional locally, and a stored function takes none. The result gains `tests`, the number kept
+  with the function. Tests are kept in the resolver's index by function hash.
+- MCP `publish_public` and CLI `datumesh publish --to <url> --namespace <ns> --key <file>
+  [--export <file>] <name>...`: roots the names under the namespace (in memory, with the catalogue
+  and the tests), checks the public rule locally (every formula's tests cover its derived cases, and
+  every branch arm is taken; a shortfall is `E_TESTS_MISSING`, listing per function the cases and the
+  branch counts, and nothing is sent), then posts the bundle to the mesh's `x_bundles` endpoint, or
+  `<url>/bundles`. The mesh's `201` is the result (`imported`, `names`, `functions` with each page);
+  its refusals are passed on with their code and detail. `publish <file>` is as before.
+- The rooting bundle carries a `tests` section (E5) when the rooted functions have tests; the
+  manifest signs it with the names, the receipts and the catalogue. Without tests the bundle is the
+  datumesh-http crate's, unchanged.
+- The public rule uses formula's coverage observer (`datumesh_formula::coverage`): derived cases are
+  the divisors (zero), the number arguments (negative), the extent ends, the cell inputs (absent,
+  `E_FORMULA_ABSENT`) and the slice inputs (empty); branch arms are those of the body.
+- Depends on datumesh-engine 0.5.0, datumesh-formula 0.5.0, datumesh-store 0.5.0 and datumesh-core
+  0.3.9 (released), and on datumesh-http 0.4.0 (not yet released; path-patched in development). New
+  direct dependencies: `ureq` (plain HTTP for the two POSTs, as datumesh-http uses it) and
+  `ed25519-dalek` (the manifest of a bundle with tests), both optional under `resolver`.
+
 CONTRACT-build2-part2-read R4, R5 (local side): one-step `get` for a plain reference, tool
 descriptions and instructions written from the mesh's catalogue, `verify` of a quoted text, and
 the catalogue in the rooting export.

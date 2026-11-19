@@ -44,12 +44,13 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 
-use crate::{Config, Error, Resolver, RootPlan, Source};
+use crate::{Config, Error, PublicPlan, Resolver, RootPlan, Source};
 
 const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
   get <request>...
-  define <name> (--formula <source> | --stored | --descriptor <file> | --class <file>) [--signature <json>]
+  define <name> (--formula <source> | --stored | --descriptor <file> | --class <file>) [--signature <json>] [--tests <json array>]
   publish <file.jsonl>
+  publish --to <mesh url> --namespace <ns> --key <file> [--export <file>] <name>...
   describe <id>
   explain <request> [--depth <n>]
   find <text> [--remote]
@@ -232,7 +233,8 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             Ok(code)
         }
         "define" => {
-            let a = Args::parse(rest, &["--formula", "--signature", "--descriptor", "--class"], &["--stored"])?;
+            let a =
+                Args::parse(rest, &["--formula", "--signature", "--descriptor", "--class", "--tests"], &["--stored"])?;
             let [name] = a.positional.as_slice() else {
                 return Err(Failure::Usage("define: one name".into()));
             };
@@ -240,9 +242,22 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 Some(t) => Some(json::parse(t.as_bytes()).map_err(|e| Failure::Usage(format!("--signature: {e}")))?),
                 None => None,
             };
+            let tests = match a.value("--tests") {
+                Some(t) => Some(json::parse(t.as_bytes()).map_err(|e| Failure::Usage(format!("--tests: {e}")))?),
+                None => None,
+            };
             let d = if let Some(src) = a.value("--formula") {
-                r.define_formula(name, src, &sig.ok_or_else(|| Failure::Usage("--formula needs --signature".into()))?)?
+                let sig = sig.ok_or_else(|| Failure::Usage("--formula needs --signature".into()))?;
+                match &tests {
+                    Some(t) => r.define_formula_with_tests(name, src, &sig, t)?,
+                    None => r.define_formula(name, src, &sig)?,
+                }
             } else if a.has("--stored") {
+                if tests.is_some() {
+                    return Err(Failure::Usage(
+                        "--stored takes no --tests: a stored function's proof is its source".into(),
+                    ));
+                }
                 r.define_stored(name, &sig.ok_or_else(|| Failure::Usage("--stored needs --signature".into()))?)?
             } else if let Some(f) = a.value("--descriptor") {
                 r.define(name, &std::fs::read(f).map_err(io)?)?
@@ -251,14 +266,37 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             } else {
                 return Err(Failure::Usage("define: --formula, --stored, --descriptor or --class".into()));
             };
+            let kept = r.tests_of(&d.fn_hash)?.len();
             jline(
                 out,
                 Value::Object(vec![
                     ("bound".into(), Value::Bool(d.bound)),
                     ("fn_hash".into(), s(d.fn_hash)),
                     ("name".into(), s(d.name)),
+                    ("tests".into(), json::parse(kept.to_string().as_bytes()).unwrap_or(Value::Null)),
                 ]),
             )?;
+            Ok(0)
+        }
+        "publish" if rest.iter().any(|a| a == "--to") => {
+            let a = Args::parse(rest, &["--to", "--namespace", "--key", "--export"], &[])?;
+            let (Some(to), Some(namespace), Some(key)) = (a.value("--to"), a.value("--namespace"), a.value("--key"))
+            else {
+                return Err(Failure::Usage("publish --to: --namespace and --key".into()));
+            };
+            if a.positional.is_empty() {
+                return Err(Failure::Usage("publish --to: at least one name".into()));
+            }
+            let plan = PublicPlan {
+                to: to.to_string(),
+                root: RootPlan {
+                    namespace: namespace.to_string(),
+                    key_path: PathBuf::from(key),
+                    names: a.positional.clone(),
+                    export: a.value("--export").map(PathBuf::from),
+                },
+            };
+            jline(out, r.publish_public(&plan)?)?;
             Ok(0)
         }
         "publish" => {

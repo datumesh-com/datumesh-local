@@ -17,7 +17,9 @@ use crate::fetch::{host_of, END};
 use crate::gate::is_unrooted;
 use crate::key::parse_hex;
 use crate::resolver::{call_form, cell_uri, rejection_detail, Callees as ResolverCallees};
+use crate::testcases::{rooted_test, MissingTests};
 use crate::{Error, Resolver};
+use ed25519_dalek::Signer;
 
 /// A rooting plan (CONTRACT-1.8b L5): the rooted namespace, the key file of its host, the names of
 /// this machine (`local/...` or full: the rooting set) and, when given, the bundle to write.
@@ -219,7 +221,7 @@ fn is_name_char(c: char) -> bool {
 
 /// `src` with every whole occurrence of a name in `map` (from, to) replaced by its `to`, outside
 /// string literals. A name is whole when neither neighbour is a name character.
-fn rename_calls(src: &str, map: &BTreeMap<String, String>) -> String {
+pub(crate) fn rename_calls(src: &str, map: &BTreeMap<String, String>) -> String {
     let chars: Vec<char> = src.chars().collect();
     let pats: Vec<(Vec<char>, &String)> = map.iter().map(|(f, t)| (f.chars().collect(), t)).collect();
     let mut out = String::with_capacity(src.len());
@@ -260,6 +262,58 @@ fn rename_calls(src: &str, map: &BTreeMap<String, String>) -> String {
         i += 1;
     }
     out
+}
+
+/// The bundle 1 of a rooting (E5): as `datumesh_http::bundle::build_with_catalog`, and with `tests`
+/// a `tests` member, which the manifest signs with the names, the receipts and the catalogue. With no
+/// tests the bundle is the http crate's, unchanged.
+fn bundle_with_tests(
+    ns: &str,
+    descriptors: Vec<Vec<u8>>,
+    names: Vec<(String, String)>,
+    receipts: Vec<Vec<u8>>,
+    catalog: Vec<Vec<u8>>,
+    mut tests: Vec<Value>,
+    seed: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
+    let fail = |e: String| Error::Bundle(e);
+    if tests.is_empty() {
+        return datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, seed)
+            .map_err(|e| fail(e.to_string()));
+    }
+    let mut hashes: Vec<String> = receipts
+        .iter()
+        .map(|r| Receipt::from_json(r).map(|x| x.hash().to_string()).map_err(|e| fail(e.to_string())))
+        .collect::<Result<_, _>>()?;
+    hashes.sort();
+    let base = datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, seed)
+        .map_err(|e| fail(e.to_string()))?;
+    let Value::Object(mut members) = json::parse(&base).map_err(|e| fail(e.to_string()))? else {
+        return Err(fail("the bundle is not an object".into()));
+    };
+    members.retain(|(k, _)| k != "manifest");
+    tests.sort_by_key(|a| a.to_jcs());
+    let member = |k: &str| members.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let mut signed = vec![
+        ("names".to_string(), member("names").unwrap_or(Value::Array(Vec::new()))),
+        ("namespace".to_string(), Value::String(ns.to_string())),
+        ("receipts".to_string(), Value::Array(hashes.into_iter().map(Value::String).collect())),
+        ("tests".to_string(), Value::Array(tests.clone())),
+    ];
+    if let Some(c) = member("catalog") {
+        signed.push(("catalog".to_string(), c));
+    }
+    let sig = ed25519_dalek::SigningKey::from_bytes(seed).sign(&Value::Object(signed).to_jcs()).to_bytes();
+    let key = SigningKey::from_seed(seed);
+    members.push(("tests".to_string(), Value::Array(tests)));
+    members.push((
+        "manifest".to_string(),
+        Value::Object(vec![
+            ("key_id".into(), Value::String(key.key_id().to_string())),
+            ("signature".into(), Value::String(datumesh_core::lexical::to_hex(&sig))),
+        ]),
+    ));
+    Ok(Value::Object(members).to_jcs())
 }
 
 /// The receipt's bytes as the mesh serves them: its payload with `sig`, canonical.
@@ -326,6 +380,17 @@ impl Resolver {
     /// re-signed (`tx` = `asof` = `issued` = now), and the computed cells held (not copied). With
     /// `plan.export`, the bundle 1 is written to that new file (mode 0600).
     pub fn root(&self, plan: &RootPlan) -> Result<Rooted, Error> {
+        let (rooted, bundle) = self.root_with(plan, false)?;
+        if let Some(path) = &plan.export {
+            write_new_private(path, &bundle)?;
+        }
+        Ok(rooted)
+    }
+
+    /// [`Resolver::root`] in memory: the rooting and its bundle (with the tests kept with the
+    /// functions, E5). With `public`, every formula must pass the public rule first (its tests
+    /// cover its derived cases and every branch arm, E5), or nothing is built: `E_TESTS_MISSING`.
+    pub(crate) fn root_with(&self, plan: &RootPlan, public: bool) -> Result<(Rooted, Vec<u8>), Error> {
         let s = &self.shared;
         let ns = plan.namespace.as_str();
         let host = host_of(ns).to_string();
@@ -491,23 +556,35 @@ impl Resolver {
             cells: cells.into_values().collect(),
             computed: computed.into_iter().collect(),
         };
-        // 5. The bundle, written last, to a new file.
-        if let Some(path) = &plan.export {
-            let descriptors: Vec<Vec<u8>> = done.values().map(|e| e.bytes.clone()).collect();
-            let names: Vec<(String, String)> = done.iter().map(|(f, e)| (to_of(f), e.to_hash.clone())).collect();
-            let catalog = done
-                .iter()
-                .map(|(f, e)| {
-                    let name = to_of(f);
-                    let exs = examples.get(&name).map(|x| x.iter().take(CATALOG_EXAMPLES).cloned().collect());
-                    catalog_entry(&name, e, exs.unwrap_or_default())
-                })
-                .collect();
-            let bundle = datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, &seed)
-                .map_err(|e| Error::Bundle(e.to_string()))?;
-            write_new_private(path, &bundle)?;
+        // 5. The tests kept with the functions (E5), checked by the public rule when publishing,
+        // then the bundle.
+        let mut tests: Vec<Value> = Vec::new();
+        let mut missing: Vec<MissingTests> = Vec::new();
+        for (from, e) in &done {
+            let kept = self.tests_of(&e.from_hash)?;
+            if public && e.kind == RootKind::Formula {
+                let report = self.coverage_report(from, &to_of(from), &kept)?;
+                if !report.cases.is_empty() || report.branches_covered < report.branches_total {
+                    missing.push(report);
+                }
+            }
+            tests.extend(kept.iter().map(|t| rooted_test(t, &map)));
         }
-        Ok(rooted)
+        if !missing.is_empty() {
+            return Err(Error::TestsMissing(missing));
+        }
+        let descriptors: Vec<Vec<u8>> = done.values().map(|e| e.bytes.clone()).collect();
+        let names: Vec<(String, String)> = done.iter().map(|(f, e)| (to_of(f), e.to_hash.clone())).collect();
+        let catalog = done
+            .iter()
+            .map(|(f, e)| {
+                let name = to_of(f);
+                let exs = examples.get(&name).map(|x| x.iter().take(CATALOG_EXAMPLES).cloned().collect());
+                catalog_entry(&name, e, exs.unwrap_or_default())
+            })
+            .collect();
+        let bundle = bundle_with_tests(ns, descriptors, names, receipts, catalog, tests, &seed)?;
+        Ok((rooted, bundle))
     }
 
     /// The key document of `host` holds `key_id` with a window holding `now` (the key document

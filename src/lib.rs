@@ -80,6 +80,8 @@ pub mod alias;
 #[cfg(feature = "resolver")]
 pub mod bundle;
 #[cfg(feature = "resolver")]
+mod calculus;
+#[cfg(feature = "resolver")]
 mod classes;
 #[cfg(feature = "resolver")]
 pub mod cli;
@@ -96,11 +98,17 @@ pub mod key;
 #[cfg(feature = "resolver")]
 pub mod mcp;
 #[cfg(feature = "resolver")]
+mod net;
+#[cfg(feature = "resolver")]
+mod public;
+#[cfg(feature = "resolver")]
 mod resolver;
 #[cfg(feature = "resolver")]
 mod rooting;
 #[cfg(feature = "resolver")]
 pub mod serve;
+#[cfg(feature = "resolver")]
+mod testcases;
 #[cfg(feature = "resolver")]
 mod trust;
 #[cfg(feature = "wasm")]
@@ -117,12 +125,16 @@ pub use gate::LicenceGate;
 #[cfg(feature = "resolver")]
 pub use key::MachineKey;
 #[cfg(feature = "resolver")]
+pub use public::PublicPlan;
+#[cfg(feature = "resolver")]
 pub use resolver::{
     BlobAnswer, BlobContent, Defined, FindAnswer, Found, Prefetched, PublishedCell, PublishedCells, Quarantined,
     Refreshed, Reply, Resolver, Rotated, Searched, Source,
 };
 #[cfg(feature = "resolver")]
 pub use rooting::{RootKind, RootPlan, Rooted, RootedCell, RootedFunction};
+#[cfg(feature = "resolver")]
+pub use testcases::MissingTests;
 #[cfg(feature = "resolver")]
 pub use trust::TrustedMachine;
 
@@ -230,6 +242,16 @@ pub enum Error {
     Rooting(String),
     /// `serve` was asked to bind an address other than 127.0.0.1.
     Address(String),
+    /// A publish's formulas do not pass the public rule (E5): their tests miss derived cases or
+    /// branch arms. Nothing was sent. Its code is `E_TESTS_MISSING` ([`Error::code`]).
+    TestsMissing(Vec<MissingTests>),
+    /// A public mesh refused a publish (its `{error, detail}` answer): the mesh's code and detail.
+    Refused {
+        /// The mesh's code (SPEC 10.2 or the write path's own).
+        code: String,
+        /// The mesh's detail as canonical JSON text (a JSON string is its text, unquoted in Display).
+        detail: String,
+    },
 }
 
 #[cfg(feature = "resolver")]
@@ -260,6 +282,24 @@ impl std::fmt::Display for Error {
                 f,
                 "{function} reads {input}, under an unrooted host that is neither this machine's nor trusted here (CONTRACT-1.8b L4)"
             ),
+            Error::TestsMissing(list) => {
+                write!(f, "E_TESTS_MISSING: the public rule is not met")?;
+                for m in list {
+                    write!(
+                        f,
+                        "\n{}: branches {} of {} covered",
+                        m.function, m.branches_covered, m.branches_total
+                    )?;
+                    for c in &m.cases {
+                        write!(f, "\n  {c}")?;
+                    }
+                }
+                Ok(())
+            }
+            Error::Refused { code, detail } => match datumesh_core::json::parse(detail.as_bytes()) {
+                Ok(datumesh_core::json::Value::String(text)) => write!(f, "{code}: {text}"),
+                _ => write!(f, "{code}: {detail}"),
+            },
         }
     }
 }
@@ -276,6 +316,7 @@ impl Error {
         match self {
             Error::UnrootedInput { .. } => Some("E_UNROOTED_INPUT"),
             Error::ForeignUnavailable(_) => Some(FOREIGN_UNAVAILABLE),
+            Error::TestsMissing(_) => Some("E_TESTS_MISSING"),
             _ => None,
         }
     }

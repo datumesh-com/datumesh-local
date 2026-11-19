@@ -252,6 +252,9 @@ pub datumesh_local::Error::ForeignUnavailable(alloc::string::String)
 pub datumesh_local::Error::Key(alloc::string::String)
 pub datumesh_local::Error::NoInputs
 pub datumesh_local::Error::NoInputs::function: alloc::string::String
+pub datumesh_local::Error::Refused
+pub datumesh_local::Error::Refused::code: alloc::string::String
+pub datumesh_local::Error::Refused::detail: alloc::string::String
 pub datumesh_local::Error::Request(alloc::string::String)
 pub datumesh_local::Error::Rooting(alloc::string::String)
 pub datumesh_local::Error::StartBeforeNow
@@ -259,6 +262,7 @@ pub datumesh_local::Error::StartBeforeNow::name: alloc::string::String
 pub datumesh_local::Error::StartBeforeNow::now: alloc::string::String
 pub datumesh_local::Error::StartBeforeNow::start: alloc::string::String
 pub datumesh_local::Error::Store(alloc::string::String)
+pub datumesh_local::Error::TestsMissing(alloc::vec::Vec<datumesh_local::MissingTests>)
 pub datumesh_local::Error::Trust(alloc::string::String)
 pub datumesh_local::Error::UnrootedInput
 pub datumesh_local::Error::UnrootedInput::function: alloc::string::String
@@ -455,6 +459,19 @@ impl core::clone::Clone for datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::clone(&self) -> Self
 impl core::fmt::Debug for datumesh_local::key::MachineKey
 pub fn datumesh_local::key::MachineKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct datumesh_local::MissingTests
+pub datumesh_local::MissingTests::branches_covered: usize
+pub datumesh_local::MissingTests::branches_total: usize
+pub datumesh_local::MissingTests::cases: alloc::vec::Vec<alloc::string::String>
+pub datumesh_local::MissingTests::function: alloc::string::String
+impl core::clone::Clone for datumesh_local::MissingTests
+pub fn datumesh_local::MissingTests::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::MissingTests
+impl core::cmp::PartialEq for datumesh_local::MissingTests
+pub fn datumesh_local::MissingTests::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::MissingTests
+pub fn datumesh_local::MissingTests::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::MissingTests
 #[non_exhaustive] pub struct datumesh_local::Prefetched
 pub datumesh_local::Prefetched::blobs: usize
 pub datumesh_local::Prefetched::members: usize
@@ -472,6 +489,17 @@ pub fn datumesh_local::Prefetched::default() -> Self
 impl core::fmt::Debug for datumesh_local::Prefetched
 pub fn datumesh_local::Prefetched::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_local::Prefetched
+pub struct datumesh_local::PublicPlan
+pub datumesh_local::PublicPlan::root: datumesh_local::RootPlan
+pub datumesh_local::PublicPlan::to: alloc::string::String
+impl core::clone::Clone for datumesh_local::PublicPlan
+pub fn datumesh_local::PublicPlan::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::PublicPlan
+impl core::cmp::PartialEq for datumesh_local::PublicPlan
+pub fn datumesh_local::PublicPlan::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::PublicPlan
+pub fn datumesh_local::PublicPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::PublicPlan
 #[non_exhaustive] pub struct datumesh_local::PublishedCell
 pub datumesh_local::PublishedCell::call: alloc::string::String
 pub datumesh_local::PublishedCell::receipt_hash: alloc::string::String
@@ -551,6 +579,7 @@ pub fn datumesh_local::Resolver::blob_of(&self, &datumesh_local::Reply) -> core:
 pub fn datumesh_local::Resolver::config(&self) -> &datumesh_local::config::Config
 pub fn datumesh_local::Resolver::define(&self, &str, &[u8]) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
 pub fn datumesh_local::Resolver::define_formula(&self, &str, &str, &datumesh_core::json::Value) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
+pub fn datumesh_local::Resolver::define_formula_with_tests(&self, &str, &str, &datumesh_core::json::Value, &datumesh_core::json::Value) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
 pub fn datumesh_local::Resolver::define_stored(&self, &str, &datumesh_core::json::Value) -> core::result::Result<datumesh_local::Defined, datumesh_local::Error>
 pub fn datumesh_local::Resolver::explain(&self, &str, core::option::Option<usize>) -> core::result::Result<datumesh_local::Reply, datumesh_local::Error>
 pub fn datumesh_local::Resolver::find(&self, &str, bool) -> core::result::Result<alloc::vec::Vec<datumesh_local::Found>, datumesh_local::Error>
@@ -578,6 +607,8 @@ pub fn datumesh_local::Resolver::describe(&self, &str) -> core::result::Result<d
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::export(&self) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) -> core::result::Result<datumesh_local::bundle::Imported, datumesh_local::Error>
+impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::publish_public(&self, &datumesh_local::PublicPlan) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::revoke_machine(&self, &str) -> core::result::Result<(), datumesh_local::Error>
 pub fn datumesh_local::Resolver::trust_machine(&self, &[u8]) -> core::result::Result<datumesh_local::TrustedMachine, datumesh_local::Error>

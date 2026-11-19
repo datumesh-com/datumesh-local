@@ -13,6 +13,7 @@
 //! | `quarantine` | imported receipts signed by another machine's local key, not trusted |
 //! | `objects` | objects this machine described by key encoding (16.8), by object id: a short id answers from them |
 //! | `finds` | answers of a mesh's find endpoint (CONTRACT-1.7a L2), by mesh and lowercased query: the endpoint's URL, the body as received and when |
+//! | `function_tests` | the tests of a defined function (CONTRACT-build2-part3 E5), by function hash and position: the test as its JSON, and when it was defined |
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS answered (receipt TEXT PRIMARY KEY, cell_id TEXT NOT 
 CREATE TABLE IF NOT EXISTS quarantine (receipt TEXT PRIMARY KEY, key_id TEXT NOT NULL, bytes BLOB NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS objects (object_id TEXT PRIMARY KEY, encoding TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS finds (mesh TEXT NOT NULL, query TEXT NOT NULL, url TEXT NOT NULL, body BLOB NOT NULL, at TEXT NOT NULL, PRIMARY KEY (mesh, query));
+CREATE TABLE IF NOT EXISTS function_tests (fn_hash TEXT NOT NULL, seq INTEGER NOT NULL, test BLOB NOT NULL, at TEXT NOT NULL, PRIMARY KEY (fn_hash, seq));
 ";
 
 /// A forwarded answer as cached.
@@ -300,6 +302,29 @@ impl Index {
                 params![mesh, query, url, body, at],
             )
             .map(|_| ())
+        })
+    }
+    /// Replaces the tests of the function `fn_hash` with `tests` (JSON, in order), defined at `at`.
+    /// An empty list removes them.
+    pub(crate) fn put_tests(&self, fn_hash: &str, tests: &[Vec<u8>], at: &str) -> Result<(), Error> {
+        self.with(|c| {
+            c.execute("DELETE FROM function_tests WHERE fn_hash = ?1", params![fn_hash])?;
+            for (seq, t) in tests.iter().enumerate() {
+                c.execute(
+                    "INSERT INTO function_tests (fn_hash, seq, test, at) VALUES (?1, ?2, ?3, ?4)",
+                    params![fn_hash, seq as i64, t, at],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The tests of the function `fn_hash`, in order, as their JSON.
+    pub(crate) fn tests(&self, fn_hash: &str) -> Result<Vec<Vec<u8>>, Error> {
+        self.with(|c| {
+            let mut s = c.prepare("SELECT test FROM function_tests WHERE fn_hash = ?1 ORDER BY seq")?;
+            let rows = s.query_map(params![fn_hash], |r| r.get::<_, Vec<u8>>(0))?;
+            rows.collect()
         })
     }
 }
