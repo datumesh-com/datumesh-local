@@ -104,6 +104,10 @@ impl WhatifStub {
                 for (k, v) in m.iter_mut() {
                     if k == "endpoints" {
                         if let Value::Object(e) = v {
+                            // Replace, never duplicate: datumesh-http 0.4.0 already lists `whatif`, and
+                            // 0.4.1 lists `x_bundles` (as `/bundles`); a repeated key makes the document
+                            // unreadable.
+                            e.retain(|(k, _)| k != "whatif" && k != "x_bundles");
                             if !s.no_whatif_endpoint.load(Ordering::SeqCst) {
                                 e.push(("whatif".into(), Value::String(format!("{base}/whatif"))));
                             }

@@ -34,7 +34,6 @@ resolver = [
     "dep:rusqlite",
     "dep:unicode-normalization",
     "dep:ureq",
-    "dep:ed25519-dalek",
 ]
 # wasm32 bindings: the core's verification and call parsing (not the engine). Build with
 # `--no-default-features --features wasm --target wasm32-unknown-unknown`.
@@ -61,9 +60,6 @@ wasm-bindgen = { version = "0.2.129", optional = true }
 # Plain HTTP for a whatif to a mesh's endpoint and a publish to a public mesh (the http client has
 # only GET and its own POSTs): ureq as datumesh-http 0.4.0 uses it, with rustls.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"], optional = true }
-# The manifest of a bundle with tests is signed here (as datumesh-http's, over the same bytes plus the
-# tests): ed25519-dalek as datumesh-http and datumesh-core use it.
-ed25519-dalek = { version = "3.0.0", default-features = false, optional = true }
 
 [dev-dependencies]
 datumesh-core = { version = "0.3.8", features = ["sign"] }

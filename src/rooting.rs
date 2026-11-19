@@ -19,7 +19,6 @@ use crate::key::parse_hex;
 use crate::resolver::{call_form, cell_uri, rejection_detail, Callees as ResolverCallees};
 use crate::testcases::{rooted_test, MissingTests};
 use crate::{Error, Resolver};
-use ed25519_dalek::Signer;
 
 /// A rooting plan (CONTRACT-1.8b L5): the rooted namespace, the key file of its host, the names of
 /// this machine (`local/...` or full: the rooting set) and, when given, the bundle to write.
@@ -264,61 +263,25 @@ pub(crate) fn rename_calls(src: &str, map: &BTreeMap<String, String>) -> String 
     out
 }
 
-/// The bundle 1 of a rooting (E5): as `datumesh_http::bundle::build_with_catalog`, and with `tests`
-/// a `tests` member, which the manifest signs with the names, the receipts and the catalogue. With no
-/// tests the bundle is the http crate's, unchanged.
+/// The bundle 1 of a rooting (E5): `datumesh_http::bundle::build_with_tests`, whose manifest signs the
+/// tests with the names, the receipts and the catalogue. With no tests the bundle is the http crate's
+/// `build_with_catalog`, unchanged.
 fn bundle_with_tests(
     ns: &str,
     descriptors: Vec<Vec<u8>>,
     names: Vec<(String, String)>,
     receipts: Vec<Vec<u8>>,
     catalog: Vec<Vec<u8>>,
-    mut tests: Vec<Value>,
+    tests: Vec<Value>,
     seed: &[u8; 32],
 ) -> Result<Vec<u8>, Error> {
-    let fail = |e: String| Error::Bundle(e);
-    if tests.is_empty() {
-        return datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, seed)
-            .map_err(|e| fail(e.to_string()));
-    }
-    let mut hashes: Vec<String> = receipts
-        .iter()
-        .map(|r| Receipt::from_json(r).map(|x| x.hash().to_string()).map_err(|e| fail(e.to_string())))
-        .collect::<Result<_, _>>()?;
-    hashes.sort();
-    let base = datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, seed)
-        .map_err(|e| fail(e.to_string()))?;
-    let Value::Object(mut members) = json::parse(&base).map_err(|e| fail(e.to_string()))? else {
-        return Err(fail("the bundle is not an object".into()));
+    let built = if tests.is_empty() {
+        datumesh_http::bundle::build_with_catalog(ns, descriptors, names, receipts, catalog, seed)
+    } else {
+        let tests = tests.iter().map(Value::to_jcs).collect();
+        datumesh_http::bundle::build_with_tests(ns, descriptors, names, receipts, catalog, tests, seed)
     };
-    members.retain(|(k, _)| k != "manifest");
-    // Sorted by test name, then by case id: the first 16 hex digits of the SHA-256 of the test's JCS
-    // (E5), as http's build_with_tests sorts them.
-    tests.sort_by_key(|t| {
-        let name = t.get("test").and_then(Value::as_str).unwrap_or_default().to_string();
-        (name, datumesh_core::sha256_hex(&t.to_jcs())[..16].to_string())
-    });
-    let member = |k: &str| members.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-    let mut signed = vec![
-        ("names".to_string(), member("names").unwrap_or(Value::Array(Vec::new()))),
-        ("namespace".to_string(), Value::String(ns.to_string())),
-        ("receipts".to_string(), Value::Array(hashes.into_iter().map(Value::String).collect())),
-        ("tests".to_string(), Value::Array(tests.clone())),
-    ];
-    if let Some(c) = member("catalog") {
-        signed.push(("catalog".to_string(), c));
-    }
-    let sig = ed25519_dalek::SigningKey::from_bytes(seed).sign(&Value::Object(signed).to_jcs()).to_bytes();
-    let key = SigningKey::from_seed(seed);
-    members.push(("tests".to_string(), Value::Array(tests)));
-    members.push((
-        "manifest".to_string(),
-        Value::Object(vec![
-            ("key_id".into(), Value::String(key.key_id().to_string())),
-            ("signature".into(), Value::String(datumesh_core::lexical::to_hex(&sig))),
-        ]),
-    ));
-    Ok(Value::Object(members).to_jcs())
+    built.map_err(|e| Error::Bundle(e.to_string()))
 }
 
 /// The receipt's bytes as the mesh serves them: its payload with `sig`, canonical.

@@ -2,6 +2,10 @@
 
 ## 0.4.0 (not yet released)
 
+Requires datumesh-http 0.4.0 and datumesh-store 0.5.1. A rooting bundle with tests is built by
+http's `bundle::build_with_tests` (local no longer signs the manifest itself; `ed25519-dalek` is
+no longer a dependency).
+
 CONTRACT-build2-part3-calculus E6 and CONTRACT-build2-part4-publish P1 (local side): the `whatif`
 tool, `define` with tests, and publishing a rooted namespace to a public mesh.
 

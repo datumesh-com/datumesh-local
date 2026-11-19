@@ -60,11 +60,25 @@ fn setup() -> Setup {
     let f = jsonl(&tmp, "level.jsonl", &[&line("2026-11-01", "10"), &line("2026-11-02", "20")]);
     r.publish(&f).unwrap();
     clock.set(T);
-    r.define_formula("local/double", "local.invalid/level(day: day) * 2", &sig(LEVEL_SIG)).unwrap();
-    r.define_formula(
+    // Tests are kept with each formula: datumesh-http's import-signed enforces the public test rule
+    // (QUESTIONS-build2 D8), so a bundle of untested formulas is not imported by a mesh.
+    let tests = |text: &str| json::parse(text.as_bytes()).unwrap();
+    r.define_formula_with_tests(
+        "local/double",
+        "local.invalid/level(day: day) * 2",
+        &sig(LEVEL_SIG),
+        &tests(
+            r#"[{"call":"local/double(day: 2026-11-01)","expect":"20"},{"call":"local/double(day: 2026-01-01)","expect":{"fault":"E_FORMULA_ABSENT"}}]"#,
+        ),
+    )
+    .unwrap();
+    r.define_formula_with_tests(
         "local/rate_x",
         r#"mesh-test.datumesh.com/ecb/fx_rate(base: "EUR", quote: "USD", date: date) * 2"#,
         &sig(RATE_SIG),
+        &tests(
+            r#"[{"call":"local/rate_x(date: 2026-10-30)","expect":"2.3234"},{"call":"local/rate_x(date: 2026-01-01)","expect":{"fault":"E_FORMULA_ABSENT"}}]"#,
+        ),
     )
     .unwrap();
     let d = r.get("local/double(day: 2026-11-01)").unwrap();
