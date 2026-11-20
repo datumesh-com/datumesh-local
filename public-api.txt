@@ -403,6 +403,8 @@ pub datumesh_local::Found::held: bool
 pub datumesh_local::Found::kind: alloc::string::String
 pub datumesh_local::Found::methods: alloc::vec::Vec<datumesh_local::Found>
 pub datumesh_local::Found::name: alloc::string::String
+pub datumesh_local::Found::publisher: alloc::string::String
+pub datumesh_local::Found::source: core::option::Option<alloc::string::String>
 impl core::clone::Clone for datumesh_local::Found
 pub fn datumesh_local::Found::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::Found
