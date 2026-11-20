@@ -14,6 +14,7 @@
 //! | `objects` | objects this machine described by key encoding (16.8), by object id: a short id answers from them |
 //! | `finds` | answers of a mesh's find endpoint (CONTRACT-1.7a L2), by mesh and lowercased query: the endpoint's URL, the body as received and when |
 //! | `function_tests` | the tests of a defined function (CONTRACT-build2-part3 E5), by function hash and position: the test as its JSON, and when it was defined |
+//! | `catalogue` | the catalogue entries of this machine's own calculations (`calc`, D28): the label and the description `find` shows, by name |
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS quarantine (receipt TEXT PRIMARY KEY, key_id TEXT NOT
 CREATE TABLE IF NOT EXISTS objects (object_id TEXT PRIMARY KEY, encoding TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS finds (mesh TEXT NOT NULL, query TEXT NOT NULL, url TEXT NOT NULL, body BLOB NOT NULL, at TEXT NOT NULL, PRIMARY KEY (mesh, query));
 CREATE TABLE IF NOT EXISTS function_tests (fn_hash TEXT NOT NULL, seq INTEGER NOT NULL, test BLOB NOT NULL, at TEXT NOT NULL, PRIMARY KEY (fn_hash, seq));
+CREATE TABLE IF NOT EXISTS catalogue (name TEXT PRIMARY KEY, label TEXT NOT NULL, description TEXT NOT NULL, at TEXT NOT NULL);
 ";
 
 /// A forwarded answer as cached.
@@ -98,6 +100,37 @@ impl Index {
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, Error> {
         let c = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&c).map_err(e)
+    }
+
+    /// Records the catalogue entry of a local calculation: its label and description, by name.
+    pub(crate) fn hold_catalogue(&self, name: &str, label: &str, description: &str, at: &str) -> Result<(), Error> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO catalogue (name, label, description, at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (name) DO UPDATE SET label = excluded.label, description = excluded.description, at = excluded.at",
+                params![name, label, description, at],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// The catalogue entry (label and description) of `name`, when one was recorded.
+    pub(crate) fn catalogue(&self, name: &str) -> Result<Option<(String, String)>, Error> {
+        self.with(|c| {
+            c.query_row("SELECT label, description FROM catalogue WHERE name = ?1", params![name], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()
+        })
+    }
+
+    /// Whether a slice (its URI rest) was prefetched here: its members are then held.
+    pub(crate) fn slice_held(&self, rest: &str) -> Result<bool, Error> {
+        self.with(|c| {
+            c.query_row("SELECT 1 FROM slices WHERE rest = ?1", params![rest], |_| Ok(true))
+                .optional()
+                .map(|v| v.is_some())
+        })
     }
 
     /// Records an object described by its key encoding, by its object id.

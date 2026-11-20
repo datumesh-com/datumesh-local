@@ -39,7 +39,8 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 
 | Command | |
 |---|---|
-| `get <request>...` | the envelope (SPEC 5.5) of each, on stdout; a line per answer on stderr (outcome, source, signer, label) |
+| `get <request>...` | the envelope (SPEC 5.5) of each, on stdout; a line per answer on stderr (outcome, source, signer, label). A slice of more than 100 members gives a summary, its first 100 members and the `calc` call that aggregates it |
+| `calc <formula> [--asof <instant>] [--remote]` | a formula over cells, answered in one call with its lineage, on stdout. Here, the result is kept as the local function `local/calc_<h>` (`<h>` the first 16 hex digits of the SHA-256 of the canonical formula), so the same calculation is not run twice; with `--remote`, the forward mesh's `x_calc` evaluates it in a scope and nothing is kept |
 | `define <name> --formula <source> --signature <json>` | a formula function (also `--stored`, `--descriptor <file>`) |
 | `define <name> --class <file>` | a class (16.1: keys, methods, order, steward), under `local/` only (owner `local.invalid`) |
 | `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format); class lines too |

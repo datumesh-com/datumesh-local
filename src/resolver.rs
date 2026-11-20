@@ -770,6 +770,13 @@ impl Resolver {
                 }
             }
         }
+        // A slice of a stored function: its members (C4); a computed function's slice keeps the
+        // mesh's own refusal.
+        if rest.contains('*') {
+            if let Some(reply) = self.slice_answer(&rest)? {
+                return Ok(reply);
+            }
+        }
         let target = match mesh.resolve(&rest, false) {
             Ok(t) => t,
             Err(_) => return Ok(self.mesh_reply(mesh.cell(&rest, None), Source::Local)),
@@ -1007,7 +1014,7 @@ impl Resolver {
         self.bind(&name, &d.canonical(), &d.hash(), &now)
     }
 
-    fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
+    pub(crate) fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
         let s = &self.shared;
         if !datumesh_formula::names::is_function_name(name) {
             // A segment that is not a canonical name (an uppercase letter in a DNS segment, a DNS
@@ -1230,7 +1237,11 @@ impl Resolver {
         for (name, _) in s.index.names()? {
             if name.to_lowercase().contains(&q) {
                 if let Some(b) = s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))? {
-                    let description = self.description_of(&b.fn_hash)?;
+                    // A catalogued calculation (`calc`) shows its formula; any other, its descriptor's.
+                    let description = match s.index.catalogue(&name)? {
+                        Some((_, formula)) => formula,
+                        None => self.description_of(&b.fn_hash)?,
+                    };
                     results.push(Found {
                         publisher: host_of(&name).to_string(),
                         name,

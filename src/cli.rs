@@ -46,8 +46,9 @@ use datumesh_core::json::{self, Value};
 
 use crate::{Config, Error, PublicPlan, Resolver, RootPlan, Source};
 
-const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
+const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|calc|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
   get <request>...
+  calc <formula> [--asof <instant>] [--remote]
   define <name> (--formula <source> | --stored | --descriptor <file> | --class <file>) [--signature <json>] [--tests <json array>]
   publish <file.jsonl>
   publish --to <mesh url> --namespace <ns> --key <file> [--export <file>] <name>...
@@ -204,7 +205,8 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 out.write_all(&reply.body).map_err(io)?;
                 out.write_all(b"\n").map_err(io)?;
                 let receipt = reply.receipt();
-                if receipt.is_none() {
+                // A slice's answer is its members, not a receipt (C4): it succeeds.
+                if receipt.is_none() && reply.outcome().as_deref() != Some(crate::calc::SLICE) {
                     code = 3;
                 }
                 let source = match &reply.source {
@@ -231,6 +233,15 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 writeln!(err, "{line}").map_err(io)?;
             }
             Ok(code)
+        }
+        "calc" => {
+            let a = Args::parse(rest, &["--asof"], &["--remote"])?;
+            let [formula] = a.positional.as_slice() else {
+                return Err(Failure::Usage("calc: one formula".into()));
+            };
+            let answer = r.calc(formula, a.value("--asof"), a.has("--remote"))?;
+            jline(out, answer)?;
+            Ok(0)
         }
         "define" => {
             let a =

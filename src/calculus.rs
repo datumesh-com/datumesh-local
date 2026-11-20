@@ -135,7 +135,7 @@ fn lexical_value(s: &Scalar) -> Value {
 }
 
 /// A slice's JSON form (5.6, 5.9): its open arguments are `"*"`. Its id is the slice's.
-fn slice_value(c: &CellRef, fn_hash: &str) -> Value {
+pub(crate) fn slice_value(c: &CellRef, fn_hash: &str) -> Value {
     let args = c
         .args
         .iter()
@@ -384,7 +384,7 @@ impl Resolver {
 
     /// The URL of a mesh endpoint as this resolver reaches it: a configured peer's origin for the
     /// host, as the http client makes of `https://<host>/...`.
-    fn peer_url(&self, url: &str, host: &str) -> String {
+    pub(crate) fn peer_url(&self, url: &str, host: &str) -> String {
         match (url.strip_prefix(&format!("https://{host}")), self.shared.config.peers.get(host)) {
             (Some(rest), Some(origin)) => format!("{origin}{rest}"),
             _ => url.to_string(),

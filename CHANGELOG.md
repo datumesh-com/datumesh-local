@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.2 (unreleased)
+
+CONTRACT-build2-part3-calc: the `calc` verb, and a slice `get` that answers (C1 to C5; D27 to D30).
+
+- MCP `calc` and CLI `calc <formula> [--asof <instant>] [--remote]`: a formula over cells, answered
+  in one call with `kind: "calculation"`, `value`, `type`, `unit` (when the result has one),
+  `formula` (as given), `canonical`, `asof`, `lineage` (`[{call, receipt, publisher, trust}]`, the
+  cells read) and `name`. Here, the formula is canonicalised (15.6), its return type and unit are
+  inferred from the body, and it is defined as the local function `local/calc_<h>` with no arguments
+  (`<h>` the first 16 hex digits of the SHA-256 of the canonical formula). Its cell is evaluated and
+  kept by the engine, so an identical calculation is not run again unless an input has a newer
+  version. The function is catalogued with the label `calc` and the formula as its description, so
+  `find` shows it; `local/` in a formula reads `local.invalid/`. A formula with no inputs is answered
+  but neither bound nor catalogued (`name` null). A calculation whose unit is not one atom over one
+  atom (or a literal) is refused with `E_CALC_UNIT`, since a signature cannot declare it.
+- `remote` (`--remote`): the forward mesh's `x_calc` (read from its mesh document) evaluates the
+  formula in a scope; its answer is shown as it is, and nothing is memoised. A mesh without `x_calc`
+  is an error naming it (`E_MESH_DOC`).
+- Errors carry the formula library's codes (`E_FORMULA_*`); a formula that reads an absent cell is
+  `E_FORMULA_ABSENT`. A refused formula binds nothing.
+- `get` of a slice (MCP and CLI) answers instead of `E_SLICE_AT_CELL`, for a stored function's slice
+  (a foreign one is prefetched first). Up to 100 members are answered as they are. Above 100, the
+  answer has `summary` (`count`, `first` and `last` keys, and for numbers `min`, `max` and `mean`),
+  the first 100 `members` and `calc`: `{"formula": "mean(<slice>)"}` for numbers, else
+  `count(<slice>)`, the exact call that aggregates the slice. The CLI exits 0 for a slice answer.
+- The MCP tool `calc` is described as C5 asks (calculate here, not in code; try `find` first; the
+  result is memoised on this machine). `get`'s description says a large slice gives a `calc` call.
+- The index keeps a `catalogue` table (the label and description of a local calculation).
+
 ## 0.4.1 (unreleased)
 
 spec-0.6.1: names with a DNS name as a namespace segment after the host

@@ -46,7 +46,7 @@ const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find
 /// The tools, in the order `tools/list` gives them, with their input schemas.
 const TOOLS: &str = r#"[
 {"name":"find","description":"Names held here whose name contains the query (case-insensitive). When none are held, or with remote, also the configured find_meshes (and the forward mesh with remote); searched lists each place looked and its status. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
-{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
+{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size. A slice of more than 100 members answers a summary (count, first and last key, and for numbers min, max and mean), its first 100 members and the calc call that aggregates the slice (mean for numbers, else count): run that calc to get the aggregate.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"},"call":{"type":"string"},"text":{"type":"string"}},"additionalProperties":false}},
@@ -54,6 +54,7 @@ const TOOLS: &str = r#"[
 {"name":"publish","description":"Publishes publish-stored lines under local/ (functions, classes and cells), each cell signed by this machine.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"lines":{"type":"array","items":{"type":"object"}}},"required":["lines"],"additionalProperties":false}},
 {"name":"subscribe","description":"Not implemented in this version.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"whatif","description":"The spreadsheet what-if (also called a diddle or a tweak, for those who know SecDB-style systems): the value a cell would have if some cells held other values, or the value of one cell that makes another equal a number (solve). The answer is a labelled scenario, never signed or stored, and never a fact: it has no receipt and is not verified. Nothing else changes.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"overrides":{"type":"array","items":{"type":"object"}},"asof":{"type":"string"},"solve":{"type":"object","properties":{"vary":{"type":"string"},"target":{"type":"string"},"equals":{},"lo":{},"hi":{}},"required":["vary","target","equals","lo","hi"],"additionalProperties":false}},"required":["request"],"additionalProperties":false}},
+{"name":"calc","description":"Calculate here, not in code: the formula runs beside the data and returns only the result, with its lineage (the cells it read). Try find for an existing function first. The result is memoised on this machine, so the same calculation is not run twice; with remote it is scoped on the forward mesh and nothing is kept.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"formula":{"type":"string"},"asof":{"type":"string"},"remote":{"type":"boolean"}},"required":["formula"],"additionalProperties":false}},
 {"name":"publish_public","description":"Publishes a rooted namespace of this machine's names to a public mesh (the bundle, with its tests). Each formula needs tests that cover its derived cases and every branch (E_TESTS_MISSING lists what is missing); the mesh checks the rest and refuses with its code.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"to":{"type":"string"},"namespace":{"type":"string"},"key":{"type":"string"},"names":{"type":"array","items":{"type":"string"}},"export":{"type":"string"}},"required":["to","namespace","key","names"],"additionalProperties":false}}
 ]"#;
 /// The resource templates of `resources/templates/list`.
@@ -290,6 +291,7 @@ impl McpServer {
             "define" => self.define(&args),
             "publish" => self.publish(&args),
             "publish_public" => self.publish_public(&args),
+            "calc" => self.calc(&args),
             _ => {
                 let structured = obj(vec![("error", s("not_implemented")), ("tool", s("subscribe"))]);
                 return Ok(tool_members(&json_text(&structured), structured, true));
@@ -333,7 +335,12 @@ impl McpServer {
             }
             let call =
                 if f.held { template(&f.name, &self.descriptor(&f.fn_hash)) } else { call_template(&f.name, &f.args) };
-            results.push(published(described(entry_with_call(&f.name, &f.kind, &f.fn_hash, &call), &f.description), f));
+            let mut entry =
+                published(described(entry_with_call(&f.name, &f.kind, &f.fn_hash, &call), &f.description), f);
+            if let (Some(label), Value::Object(m)) = (self.resolver.catalogue_label(&f.name)?, &mut entry) {
+                m.push(("label".into(), s(label)));
+            }
+            results.push(entry);
         }
         let searched = answer
             .searched
@@ -354,7 +361,10 @@ impl McpServer {
     fn get(&self, args: &Value) -> Result<Vec<(String, Value)>, ToolError> {
         let request = str_arg(args, "request")?;
         match self.resolver.get_request(request)? {
-            Got::Reply(reply) => self.answer(&reply, None),
+            Got::Reply(reply) => match slice_answer_of(&reply) {
+                Some(v) => Ok(content_members(vec![json_text(&v)], v, false)),
+                None => self.answer(&reply, None),
+            },
             Got::Read { reply, label, call } => self.answer(&reply, Some((label, call))),
             Got::Ambiguous(candidates) => Ok(ambiguous_members(request, &candidates)),
             Got::Range => {
@@ -610,6 +620,28 @@ impl McpServer {
         Ok(self.resolver.tests_of(fn_hash)?.len())
     }
 
+    /// `calc` (Build 2 Part 3 addition, C1 to C3): a formula over cells, here or through the forward
+    /// mesh (`remote`). Its arguments are `formula`, `asof` and `remote` only.
+    fn calc(&self, args: &Value) -> ToolResult {
+        if let Value::Object(members) = args {
+            if let Some((k, _)) = members.iter().find(|(k, _)| !matches!(k.as_str(), "formula" | "asof" | "remote")) {
+                return Err(ToolError::arg(format!("{k}: not an argument of calc")));
+            }
+        }
+        let formula = str_arg(args, "formula")?;
+        let asof = match args.get("asof") {
+            None => None,
+            Some(Value::String(a)) => Some(a.as_str()),
+            Some(_) => return Err(ToolError::arg("asof: an instant")),
+        };
+        let remote = match args.get("remote") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(ToolError::arg("remote: a boolean")),
+        };
+        Ok(self.resolver.calc(formula, asof, remote)?)
+    }
+
     /// `whatif` (E6): the scenario of the request, from the mesh that answers for the cell or from
     /// this machine's engine. A `not_covered` answer carries its fault.
     fn whatif(&self, args: &Value) -> ToolResult {
@@ -828,8 +860,19 @@ impl McpServer {
 }
 
 /// The tool names, in `tools/list` order.
-const TOOL_NAMES: [&str; 10] =
-    ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe", "whatif", "publish_public"];
+const TOOL_NAMES: [&str; 11] = [
+    "find",
+    "get",
+    "explain",
+    "describe",
+    "verify",
+    "define",
+    "publish",
+    "subscribe",
+    "whatif",
+    "calc",
+    "publish_public",
+];
 
 /// `_meta` on a request: the protocol version and the client's capabilities (both required).
 fn meta_check(params: &Value) -> Result<(), Rpc> {
@@ -919,6 +962,11 @@ fn tool_failure(e: ToolError) -> Vec<(String, Value)> {
         .body
         .unwrap_or_else(|| obj(vec![("error", s(e.code.as_deref().unwrap_or("error"))), ("detail", s(e.detail))]));
     tool_members(&text, structured, true)
+}
+
+/// The slice answer of a reply (C4): its envelope, when the reply is a slice's.
+fn slice_answer_of(reply: &Reply) -> Option<Value> {
+    reply.envelope().filter(|v| v.get("outcome").and_then(Value::as_str) == Some(crate::calc::SLICE))
 }
 
 /// The detail of an error envelope that is `E_BLOB_MISMATCH` (the resolver's own fetch of a blob

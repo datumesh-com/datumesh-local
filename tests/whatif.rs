@@ -236,7 +236,19 @@ fn tools_list_has_whatif_and_it_is_described_as_the_spreadsheet_what_if() {
     let names: Vec<&str> = tools.iter().map(|t| t.get("name").and_then(Value::as_str).unwrap()).collect();
     assert_eq!(
         names,
-        ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe", "whatif", "publish_public"]
+        [
+            "find",
+            "get",
+            "explain",
+            "describe",
+            "verify",
+            "define",
+            "publish",
+            "subscribe",
+            "whatif",
+            "calc",
+            "publish_public",
+        ]
     );
     let t = tools.iter().find(|t| s(t, "name") == "whatif").unwrap();
     let d = s(t, "description").to_lowercase();

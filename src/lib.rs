@@ -80,6 +80,8 @@ pub mod alias;
 #[cfg(feature = "resolver")]
 pub mod bundle;
 #[cfg(feature = "resolver")]
+mod calc;
+#[cfg(feature = "resolver")]
 mod calculus;
 #[cfg(feature = "resolver")]
 mod classes;

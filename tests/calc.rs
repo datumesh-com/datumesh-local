@@ -129,7 +129,9 @@ fn calc_full(formula: &str) -> String {
 fn number(v: &Value) -> f64 {
     match v {
         Value::String(t) => t.parse().unwrap_or_else(|_| panic!("a number: {t}")),
-        other => other.as_number_text().and_then(|t| t.parse().ok()).unwrap_or_else(|| panic!("a number: {}", jcs(other))),
+        other => {
+            other.as_number_text().and_then(|t| t.parse().ok()).unwrap_or_else(|| panic!("a number: {}", jcs(other)))
+        }
     }
 }
 
@@ -171,7 +173,11 @@ fn world() -> W {
     let r = Arc::new(resolver_at(&dir, &up, &clock));
     r.define_stored("local/level", &sig(LEVEL_SIG)).unwrap();
     let tmp = TempDir::new("calc-tmp");
-    let f = jsonl(&tmp, "level.jsonl", &[&level_line("2026-11-01", "10", CELLS_TX), &level_line("2026-11-02", "20", CELLS_TX)]);
+    let f = jsonl(
+        &tmp,
+        "level.jsonl",
+        &[&level_line("2026-11-01", "10", CELLS_TX), &level_line("2026-11-02", "20", CELLS_TX)],
+    );
     r.publish(&f).unwrap();
     clock.set(T);
     let srv = McpServer::new(r.clone());
@@ -418,7 +424,7 @@ fn asof_reads_the_data_as_of_that_instant() {
     let w = world();
     w.new_level("50", T2);
     w.clock.set(T3);
-    let old = calc(&w.srv, &format!("{F1}"));
+    let old = calc(&w.srv, F1);
     let now_value = s(structured(&old), "value");
     assert_eq!(now_value, "100");
     let args = format!(r#"{{"formula":{},"asof":{}}}"#, q(F1), q(T));
@@ -547,10 +553,7 @@ fn remote_sends_asof_and_shows_the_meshs_errors() {
     assert!(!is_error(&v), "{}", jcs(&v));
     assert_eq!(s(&w.stub.posts_to("/x/calc")[0].json(), "asof"), T);
     // the mesh's refusal is an error result with its code
-    w.stub.answer_calc(
-        500,
-        r#"{"outcome":"error","error":"E_EVAL_BUDGET"}"#,
-    );
+    w.stub.answer_calc(500, r#"{"outcome":"error","error":"E_EVAL_BUDGET"}"#);
     let v = tool(&w.srv, "calc", &format!(r#"{{"formula":{},"remote":true}}"#, q(FX)));
     assert!(is_error(&v), "{}", jcs(&v));
     assert!(everything(&v).contains("E_EVAL_BUDGET"), "{}", jcs(&v));
@@ -621,7 +624,11 @@ fn the_cli_calc_writes_the_answer_and_memoises() {
         .unwrap();
         r.define_stored("local/level", &sig(LEVEL_SIG)).unwrap();
         let tmp = TempDir::new("calc-cli-tmp");
-        let f = jsonl(&tmp, "l.jsonl", &[&level_line("2026-11-01", "10", CELLS_TX), &level_line("2026-11-02", "20", CELLS_TX)]);
+        let f = jsonl(
+            &tmp,
+            "l.jsonl",
+            &[&level_line("2026-11-01", "10", CELLS_TX), &level_line("2026-11-02", "20", CELLS_TX)],
+        );
         r.publish(&f).unwrap();
     }
     let (code, out, err) = run(&dir, &["calc", F1]);
@@ -763,7 +770,11 @@ fn a_slice_of_100_or_fewer_has_no_summary_and_no_calc_call() {
     assert!(sc.get("summary").is_none() && sc.get("calc").is_none(), "{}", jcs(sc));
     assert!(!everything(&v).contains("calc {"), "{}", everything(&v));
     // a slice of a mesh, with fewer than 100 members: the same
-    let v = tool(&w.srv, "get", r#"{"request":"mesh-test.datumesh.com/ecb/fx_rate(base: \"EUR\", quote: \"USD\", date: *)"}"#);
+    let v = tool(
+        &w.srv,
+        "get",
+        r#"{"request":"mesh-test.datumesh.com/ecb/fx_rate(base: \"EUR\", quote: \"USD\", date: *)"}"#,
+    );
     assert!(!is_error(&v), "{}", jcs(&v));
     let sc = structured(&v);
     assert_eq!(arr(sc, "members").len(), 30, "{}", jcs(sc));
@@ -802,7 +813,8 @@ fn the_cli_get_of_a_large_slice_gives_the_same() {
         c.peers.insert(HOST.to_string(), up.origin.clone());
         let r = Resolver::open_with_clock(c, clock).unwrap();
         r.define_stored("local/series", &sig(LEVEL_SIG)).unwrap();
-        let lines: Vec<String> = days(150).iter().enumerate().map(|(i, d)| series_line("local/series", d, i + 1)).collect();
+        let lines: Vec<String> =
+            days(150).iter().enumerate().map(|(i, d)| series_line("local/series", d, i + 1)).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let tmp = TempDir::new("calc-cli-slice-tmp");
         r.publish(&jsonl(&tmp, "s.jsonl", &refs)).unwrap();
