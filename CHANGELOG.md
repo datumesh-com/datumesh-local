@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.4.0 (not yet released)
+## 0.4.1 (unreleased)
+
+spec-0.6.1: names with a DNS name as a namespace segment after the host
+(`datumesh.com/relay/ecb.europa.eu/fx_reference`) are read, resolved, defined against and verified,
+through datumesh-core 0.3.10, datumesh-formula 0.5.1 and datumesh-http 0.4.2. `describe` passes the
+mesh's `publisher` through. A domain inside a name is a label only: the publisher is always the host.
+
+- `find` results (MCP and CLI) gain `publisher` (the host; for a held name, its own host) and, for a
+  relayed function, `source` (its source domain), as separate members (`Found::publisher`,
+  `Found::source`).
+- A mesh's `describe` answer for a function is checked by core's `check_describe_with` (with
+  `publisher`) and passed through; before, a function answer was refused as naming no class.
+- A plain name that 2.3 refuses (an uppercase DNS segment, a DNS name as the last segment) is
+  `E_CANON_NAME` at `get` and `define`, and nothing is asked of a mesh (was `E_PARSE_URI` at `get`).
+- Looking for a class, a name that is not a function name is answered "no class" before the store
+  is asked; `get` of any name with a DNS segment failed with `E_NAME_UNBOUND` before.
+
+## 0.4.0 (2026-11-19)
 
 Requires datumesh-http 0.4.0 and datumesh-store 0.5.1. A rooting bundle with tests is built by
 http's `bundle::build_with_tests` (local no longer signs the manifest itself; `ed25519-dalek` is

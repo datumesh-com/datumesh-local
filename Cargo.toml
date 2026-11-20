@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-local"
-version = "0.4.0"
+version = "0.4.1"
 description = "The Datumesh local resolver: the mesh's engine over a local SQLite store, the unrooted local.invalid namespace, explicit fetches, prefetch, a licence gate, export and import, and a localhost endpoint."
 edition = "2021"
 rust-version = "1.97"
@@ -40,14 +40,14 @@ resolver = [
 wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
-datumesh-core = "0.3.9"
+datumesh-core = "0.3.10"
 # The call syntax (parse_call) without the engine for wasm; with it for the resolver.
-datumesh-formula = { version = "0.5.0", default-features = false }
+datumesh-formula = { version = "0.5.1", default-features = false }
 # SQLite explicitly (the store's `sqlite` feature), not through the store's defaults; the
 # PostgreSQL backend (a postgres:// store URL) is always in datumesh-store 0.4.0.
 datumesh-store = { version = "0.5.0", default-features = false, features = ["sqlite"], optional = true }
 datumesh-engine = { version = "0.5.0", default-features = false, optional = true }
-datumesh-http = { version = "0.4.0", optional = true }
+datumesh-http = { version = "0.4.2", optional = true }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
 tower = { version = "0.5.3", features = ["util"], optional = true }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync"], optional = true }
@@ -62,7 +62,7 @@ wasm-bindgen = { version = "0.2.129", optional = true }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"], optional = true }
 
 [dev-dependencies]
-datumesh-core = { version = "0.3.8", features = ["sign"] }
+datumesh-core = { version = "0.3.10", features = ["sign"] }
 
 # The engine signs and the store verifies many receipts in the tests: curve25519 and sha2
 # are optimised even in test builds.
