@@ -29,7 +29,7 @@ CONTRACT-build2-part3-calc: the `calc` verb, and a slice `get` that answers (C1 
   result is memoised on this machine). `get`'s description says a large slice gives a `calc` call.
 - The index keeps a `catalogue` table (the label and description of a local calculation).
 
-## 0.4.1 (unreleased)
+## 0.4.1 (2026-11-20)
 
 spec-0.6.1: names with a DNS name as a namespace segment after the host
 (`datumesh.com/relay/ecb.europa.eu/fx_reference`) are read, resolved, defined against and verified,
