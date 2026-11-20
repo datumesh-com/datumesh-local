@@ -5,6 +5,8 @@
 //! * a mesh document (`/.well-known/datumesh-mesh.json`, the upstream's own plus endpoints) that
 //!   lists `whatif` (spec-0.6.0, 9.6) and, as the unknown member `x_bundles`, the bundles endpoint;
 //! * `POST /whatif`, answering a canned body and status (a scenario envelope, or an error);
+//! * `POST /x/calc` (the mesh document's `x_calc`, CONTRACT-build2-part3-calc C3), answering a
+//!   canned body and status;
 //! * `POST /bundles` (and `POST /x/bundles-in`, where the mesh document's `x_bundles` points when
 //!   it is asked to), answering a canned body and status.
 //!
@@ -54,8 +56,12 @@ pub struct WhatifStub {
     posts: Mutex<Vec<Post>>,
     whatif: Mutex<(u16, String)>,
     bundles: Mutex<(u16, String)>,
+    /// The canned answer of `POST /x/calc` (CONTRACT-build2-part3-calc C3).
+    calc: Mutex<(u16, String)>,
     /// When set, the mesh document leaves `whatif` out.
     pub no_whatif_endpoint: AtomicBool,
+    /// When set, the mesh document leaves `x_calc` out.
+    pub no_calc_endpoint: AtomicBool,
     _rt: tokio::runtime::Runtime,
     pub origin: String,
 }
@@ -72,7 +78,9 @@ impl WhatifStub {
             posts: Mutex::new(Vec::new()),
             whatif: Mutex::new((500, NOT_SET.to_string())),
             bundles: Mutex::new((500, NOT_SET.to_string())),
+            calc: Mutex::new((500, NOT_SET.to_string())),
             no_whatif_endpoint: AtomicBool::new(false),
+            no_calc_endpoint: AtomicBool::new(false),
             _rt: rt,
             origin: origin.clone(),
         });
@@ -107,7 +115,10 @@ impl WhatifStub {
                             // Replace, never duplicate: datumesh-http 0.4.0 already lists `whatif`, and
                             // 0.4.1 lists `x_bundles` (as `/bundles`); a repeated key makes the document
                             // unreadable.
-                            e.retain(|(k, _)| k != "whatif" && k != "x_bundles");
+                            e.retain(|(k, _)| k != "whatif" && k != "x_bundles" && k != "x_calc");
+                            if !s.no_calc_endpoint.load(Ordering::SeqCst) {
+                                e.push(("x_calc".into(), Value::String(format!("{base}/x/calc"))));
+                            }
                             if !s.no_whatif_endpoint.load(Ordering::SeqCst) {
                                 e.push(("whatif".into(), Value::String(format!("{base}/whatif"))));
                             }
@@ -122,7 +133,7 @@ impl WhatifStub {
                     .unwrap()
             }
         };
-        let post_handler = |which: bool, s: Arc<WhatifStub>| {
+        let post_handler = |which: u8, s: Arc<WhatifStub>| {
             move |req: axum::extract::Request| {
                 let s = s.clone();
                 async move {
@@ -135,8 +146,11 @@ impl WhatifStub {
                         content_type,
                         body: String::from_utf8_lossy(&body).into_owned(),
                     });
-                    let (status, answer) =
-                        if which { s.whatif.lock().unwrap().clone() } else { s.bundles.lock().unwrap().clone() };
+                    let (status, answer) = match which {
+                        0 => s.whatif.lock().unwrap().clone(),
+                        1 => s.bundles.lock().unwrap().clone(),
+                        _ => s.calc.lock().unwrap().clone(),
+                    };
                     axum::http::Response::builder()
                         .status(status)
                         .header("content-type", "application/json")
@@ -147,9 +161,10 @@ impl WhatifStub {
         };
         let app = axum::Router::new()
             .route("/.well-known/datumesh-mesh.json", axum::routing::get(doc_handler))
-            .route("/whatif", axum::routing::post(post_handler(true, stub.clone())))
-            .route("/bundles", axum::routing::post(post_handler(false, stub.clone())))
-            .route("/x/bundles-in", axum::routing::post(post_handler(false, stub.clone())))
+            .route("/whatif", axum::routing::post(post_handler(0, stub.clone())))
+            .route("/x/calc", axum::routing::post(post_handler(2, stub.clone())))
+            .route("/bundles", axum::routing::post(post_handler(1, stub.clone())))
+            .route("/x/bundles-in", axum::routing::post(post_handler(1, stub.clone())))
             .fallback_service(router);
         stub._rt.spawn(async move {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
@@ -160,6 +175,11 @@ impl WhatifStub {
     /// The answer of `POST /whatif`.
     pub fn answer_whatif(&self, status: u16, body: &str) {
         *self.whatif.lock().unwrap() = (status, body.to_string());
+    }
+
+    /// The answer of `POST /x/calc`.
+    pub fn answer_calc(&self, status: u16, body: &str) {
+        *self.calc.lock().unwrap() = (status, body.to_string());
     }
 
     /// The answer of the bundles endpoint.
