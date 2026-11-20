@@ -231,6 +231,12 @@ pub struct Found {
     pub args: Vec<(String, String)>,
     /// For a class found on a mesh: its methods (kind `method`), in the mesh's order.
     pub methods: Vec<Found>,
+    /// The publisher: the host of the name's namespace (spec-0.6.1, 16.8), the mesh's own member
+    /// when it gave one. A domain inside the name is never the publisher.
+    pub publisher: String,
+    /// For a relayed function found on a mesh: the domain its values come from (the mesh's
+    /// `source`). Always apart from the publisher.
+    pub source: Option<String>,
 }
 
 /// A place `find` looked (CONTRACT-1.7a L2).
@@ -587,7 +593,10 @@ impl Resolver {
             Parse::Answered(reply) => reply,
             // A call the parse refuses: the mesh's own answer to it, which needs no network.
             Parse::Refused(why) => return Err(Error::Request(why)),
-            Parse::Malformed => self.mesh_reply(self.mesh().cell(&text, None), Source::Local),
+            Parse::Malformed => match canon_refusal(&text) {
+                Some(detail) => Reply::error(ErrorCode::CanonName, detail),
+                None => self.mesh_reply(self.mesh().cell(&text, None), Source::Local),
+            },
             Parse::Plain if references && !text.trim_start().starts_with("cell://") && !text.contains('(') => {
                 return self.reference(trimmed);
             }
@@ -1001,7 +1010,14 @@ impl Resolver {
     fn bind(&self, name: &str, bytes: &[u8], fn_hash: &str, now: &str) -> Result<Defined, Error> {
         let s = &self.shared;
         if !datumesh_formula::names::is_function_name(name) {
-            return Err(Error::Define(format!("{name} is not a full function name")));
+            // A segment that is not a canonical name (an uppercase letter in a DNS segment, a DNS
+            // name as the last segment, spec-0.6.1 2.3) is E_CANON_NAME.
+            return Err(Error::Define(match datumesh_core::lexical::check_function_name(name, "$") {
+                Err(e) if e.code() == ErrorCode::CanonName => {
+                    format!("E_CANON_NAME: {name} is not a full function name")
+                }
+                _ => format!("{name} is not a full function name"),
+            }));
         }
         let h = s.store.put_descriptor(bytes).map_err(|e| Error::Store(e.to_string()))?;
         debug_assert_eq!(h, fn_hash);
@@ -1216,6 +1232,7 @@ impl Resolver {
                 if let Some(b) = s.store.resolve_binding(&name, END).map_err(|e| Error::Store(e.to_string()))? {
                     let description = self.description_of(&b.fn_hash)?;
                     results.push(Found {
+                        publisher: host_of(&name).to_string(),
                         name,
                         fn_hash: b.fn_hash,
                         held: true,
@@ -1223,12 +1240,14 @@ impl Resolver {
                         description,
                         args: Vec::new(),
                         methods: Vec::new(),
+                        source: None,
                     });
                 } else if let Some(c) =
                     s.store.resolve_class_binding(&name, END).map_err(|e| Error::Store(e.to_string()))?
                 {
                     let description = self.description_of(&c.class_hash)?;
                     results.push(Found {
+                        publisher: host_of(&name).to_string(),
                         name,
                         fn_hash: c.class_hash,
                         held: true,
@@ -1236,6 +1255,7 @@ impl Resolver {
                         description,
                         args: Vec::new(),
                         methods: Vec::new(),
+                        source: None,
                     });
                 }
             }
@@ -1574,6 +1594,23 @@ fn parse_find(body: &[u8]) -> Result<Vec<Found>, String> {
     Ok(rs.iter().filter_map(found_of).collect())
 }
 
+/// The refusal of a call whose function name is not a canonical name (spec-0.6.1, 2.3: a segment
+/// after the host that is neither a name nor a DNS name, an uppercase letter, a DNS name as the last
+/// segment): `E_CANON_NAME`, its detail. `None` for any other malformed text.
+fn canon_refusal(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("cell://").unwrap_or(text);
+    let name = name_of(rest);
+    // Only a plain name: a label (`class[label].method`) or other call syntax is not judged here.
+    let plain = name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'/'));
+    if !plain || !name.contains('/') || datumesh_formula::names::is_function_name(name) {
+        return None;
+    }
+    datumesh_core::lexical::check_function_name(name, "$")
+        .err()
+        .filter(|e| e.code() == ErrorCode::CanonName)
+        .map(|e| e.to_string())
+}
+
 fn found_of(r: &Value) -> Option<Found> {
     let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let name = text(r, "name");
@@ -1585,7 +1622,14 @@ fn found_of(r: &Value) -> Option<Found> {
         "class" | "method" => text(r, "kind"),
         _ => "function".to_string(),
     };
+    let publisher = match r.get("publisher").and_then(Value::as_str) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => host_of(&name).to_string(),
+    };
+    let source = r.get("source").and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_string);
     let mut found = Found {
+        publisher: publisher.clone(),
+        source,
         name: name.clone(),
         fn_hash: text(r, "fn_hash"),
         held: false,
@@ -1600,6 +1644,8 @@ fn found_of(r: &Value) -> Option<Found> {
             found.methods = ms
                 .iter()
                 .map(|(m, info)| Found {
+                    publisher: publisher.clone(),
+                    source: None,
                     name: format!("{name}/{m}"),
                     fn_hash: text(info, "fn_hash"),
                     held: false,

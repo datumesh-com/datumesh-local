@@ -349,13 +349,18 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 .results
                 .iter()
                 .map(|f| {
-                    Value::Object(vec![
+                    let mut m = vec![
                         ("description".into(), s(f.description.clone())),
                         ("fn_hash".into(), s(f.fn_hash.clone())),
                         ("held".into(), Value::Bool(f.held)),
                         ("kind".into(), s(f.kind.clone())),
                         ("name".into(), s(f.name.clone())),
-                    ])
+                        ("publisher".into(), s(f.publisher.clone())),
+                    ];
+                    if let Some(source) = &f.source {
+                        m.push(("source".into(), s(source.clone())));
+                    }
+                    Value::Object(m)
                 })
                 .collect();
             let searched = answer

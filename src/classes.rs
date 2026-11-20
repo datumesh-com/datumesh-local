@@ -157,6 +157,11 @@ impl CallEnv for Env<'_> {
     fn bound_class(&self, name: &str, asof: Option<&str>) -> Result<Option<ClassDescriptor>, String> {
         let s = self.shared();
         let at = asof.unwrap_or(END);
+        // Not a function name (a DNS name as its last segment, spec-0.6.1 2.3): no class, and the
+        // store is not asked, since it refuses such a class name.
+        if !datumesh_formula::names::is_function_name(name) {
+            return Ok(None);
+        }
         if let Some(d) = s.held_class(name, at).map_err(|e| e.detail)? {
             return Ok(Some(d));
         }
@@ -444,6 +449,20 @@ impl Resolver {
         let s = &self.shared;
         let bad = |d: String| Error::Client { code: ErrorCode::Describe.as_str().into(), detail: d };
         let v = json::parse(answer).map_err(|e| bad(e.to_string()))?;
+        // A function answer (spec-0.6.0 16.8, `publisher` since 0.6.1): checked by core, against the
+        // function's descriptor when it is held; it names no class.
+        if v.get("kind").and_then(Value::as_str) == Some("function") {
+            let held_fn: Vec<FunctionDescriptor> = v
+                .get("fn_hash")
+                .and_then(Value::as_str)
+                .and_then(|h| s.store.descriptor(h))
+                .and_then(|b| FunctionDescriptor::from_json(&b).ok())
+                .into_iter()
+                .collect();
+            check_describe_with(answer, &BTreeMap::new(), &held_fn)
+                .map_err(|e| Error::Client { code: e.code_str().into(), detail: e.to_string() })?;
+            return Ok(());
+        }
         let class = match v.get("kind").and_then(Value::as_str) {
             Some("class") => v.get("class"),
             Some("object") => v.get("object").and_then(|o| o.get("class")),

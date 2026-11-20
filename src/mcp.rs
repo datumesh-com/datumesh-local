@@ -309,22 +309,31 @@ impl McpServer {
         for f in &answer.results {
             if f.kind == "class" && f.held {
                 if let Some((hash, class)) = self.class_of(&f.name)? {
-                    results.push(described(entry_with_call(&f.name, "class", &hash, &f.name), &f.description));
+                    results.push(published(
+                        described(entry_with_call(&f.name, "class", &hash, &f.name), &f.description),
+                        f,
+                    ));
                     results.extend(self.method_entries(&f.name, &class));
                     continue;
                 }
             }
             if f.kind == "class" {
-                results.push(described(entry_with_call(&f.name, "class", &f.fn_hash, &f.name), &f.description));
+                results.push(published(
+                    described(entry_with_call(&f.name, "class", &f.fn_hash, &f.name), &f.description),
+                    f,
+                ));
                 for m in &f.methods {
                     let call = call_template(&m.name, &m.args);
-                    results.push(described(entry_with_call(&m.name, "method", &m.fn_hash, &call), &m.description));
+                    results.push(published(
+                        described(entry_with_call(&m.name, "method", &m.fn_hash, &call), &m.description),
+                        m,
+                    ));
                 }
                 continue;
             }
             let call =
                 if f.held { template(&f.name, &self.descriptor(&f.fn_hash)) } else { call_template(&f.name, &f.args) };
-            results.push(described(entry_with_call(&f.name, &f.kind, &f.fn_hash, &call), &f.description));
+            results.push(published(described(entry_with_call(&f.name, &f.kind, &f.fn_hash, &call), &f.description), f));
         }
         let searched = answer
             .searched
@@ -981,6 +990,18 @@ fn call_template(name: &str, args: &[(String, String)]) -> String {
 fn described(mut entry: Value, description: &str) -> Value {
     if let Value::Object(m) = &mut entry {
         m.push(("description".into(), s(description)));
+    }
+    entry
+}
+
+/// A result entry with its `publisher` (the host) and, for a relayed function, its `source` (the
+/// domain its values come from), as separate members (spec-0.6.1, 16.8).
+fn published(mut entry: Value, found: &crate::Found) -> Value {
+    if let Value::Object(m) = &mut entry {
+        m.push(("publisher".into(), s(&found.publisher)));
+        if let Some(source) = &found.source {
+            m.push(("source".into(), s(source)));
+        }
     }
     entry
 }
