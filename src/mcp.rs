@@ -283,10 +283,15 @@ impl McpServer {
                 Err(e) => tool_failure(e),
             });
         }
+        if name == "describe" {
+            return Ok(match self.describe(&args) {
+                Ok((structured, texts)) => content_members(texts, structured, false),
+                Err(e) => tool_failure(e),
+            });
+        }
         let outcome = match name {
             "find" => self.find(&args),
             "explain" => self.explain(&args),
-            "describe" => self.describe(&args),
             "verify" => self.verify(&args),
             "define" => self.define(&args),
             "publish" => self.publish(&args),
@@ -479,9 +484,12 @@ impl McpServer {
         self.resolver.signer_label(&r)
     }
 
-    fn describe(&self, args: &Value) -> ToolResult {
+    /// `describe` (SPEC 16.8): the structured content, and the text items: the answer as JSON,
+    /// then, for a function, its tests (`tests`, CONTRACT-0.4.9 L1: null with `tests_note` when
+    /// they cannot be read).
+    fn describe(&self, args: &Value) -> Result<(Value, Vec<String>), ToolError> {
         let id = str_arg(args, "id")?;
-        let reply = self.resolver.describe(id)?;
+        let (reply, listing) = self.resolver.describe_listing(id)?;
         let answer = json::parse(&reply.body).unwrap_or(Value::Null);
         let mut members = vec![("status", num(u64::from(reply.status))), ("describe", answer.clone())];
         if answer.get("kind").and_then(Value::as_str) == Some("class") {
@@ -492,7 +500,15 @@ impl McpServer {
             };
             members.push(("methods", Value::Array(methods)));
         }
-        Ok(obj(members))
+        let mut texts = vec![json_text(&obj(members.clone()))];
+        if let Some(listing) = listing {
+            members.push(("tests", listing.tests.clone()));
+            if let Some(note) = &listing.note {
+                members.push(("tests_note", s(note)));
+            }
+            texts.push(listing.lines(false).join("\n"));
+        }
+        Ok((obj(members), texts))
     }
 
     /// `verify` (R4): a receipt, or the receipt of a `call`; with `text`, the quoted text is checked

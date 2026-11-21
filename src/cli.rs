@@ -8,7 +8,7 @@
 //!   define <name> --descriptor <file>
 //!   define <name> --class <file>       a class (16.1), under local/ only
 //!   publish <file.jsonl>               define plus put_version, under local/ only
-//!   describe <id>                      a class, object, cell or short id (16.8), as the endpoint serves it
+//!   describe <id>                      a class, object, cell or short id (16.8), as the endpoint serves it; a function's tests after it
 //!   explain <request> [--depth <n>]    the lineage, as nested envelopes
 //!   find <text> [--remote]             names held (and, with --remote, the forward mesh's)
 //!   prefetch <slice or function>... [--page <n>] [--blobs]
@@ -331,9 +331,14 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             let [id] = a.positional.as_slice() else {
                 return Err(Failure::Usage("describe: one id".into()));
             };
-            let reply = r.describe(id)?;
+            let (reply, listing) = r.describe_listing(id)?;
             out.write_all(&reply.body).map_err(io)?;
             out.write_all(b"\n").map_err(io)?;
+            // A function's tests, after the answer (CONTRACT-0.4.9 L1): the count, the last run, one line per case.
+            for line in listing.iter().flat_map(|l| l.lines(true)) {
+                out.write_all(line.as_bytes()).map_err(io)?;
+                out.write_all(b"\n").map_err(io)?;
+            }
             Ok(if reply.status == 200 { 0 } else { 3 })
         }
         "explain" => {

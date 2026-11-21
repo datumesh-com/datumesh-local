@@ -272,7 +272,9 @@ fn cli_describe_shows_the_publisher_apart_from_the_source() {
     let dir = home(&up);
     let (code, out, err) = run(&dir, &["describe", FX]);
     assert_eq!(code, 0, "{err}{out}");
-    let d = json::parse(out.trim_end().as_bytes()).unwrap();
+    // The describe answer is line 1; a function's tests follow it (CONTRACT-0.4.9 L1).
+    let first = out.lines().next().unwrap_or_default();
+    let d = json::parse(first.as_bytes()).unwrap();
     assert_eq!(s(&d, "publisher"), HOST, "{out}");
     assert_eq!(s(d.get("source").unwrap_or_else(|| panic!("source in {out}")), "name"), "ecb.europa.eu");
 }

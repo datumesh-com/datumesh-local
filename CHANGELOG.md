@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3 (unreleased)
+
+CONTRACT-0.4.9 L1: `describe` of a function lists its tests (MCP and CLI).
+
+- MCP `describe` of a function gives `tests` in the structured content: `count`, `cases_total`,
+  `last_run` (`{result, at}`, or null), and `cases` (the first 100: `call`, `expect`, `result`). The
+  text content adds "N tests" (or "no tests"), the last run, and one line per case.
+- A public function's tests are read from its mesh's function page, `/fn/<name>?format=json` (the
+  host's configured peer). The page's 0.4.9 `last_run` members (`pass`, `fail`, `error`, `not_run`)
+  are accepted and not shown. A page that cannot be read leaves `tests` null, with `tests_note` giving
+  the reason; `describe` itself still answers.
+- A local formula lists its own tests (as `define` kept them); each case's result is "not run" and
+  `last_run` is null.
+- CLI `describe <id>` prints the describe answer on its first line as before, then `tests: N` (or
+  `no tests`), `last run <at> <result>`, and one line per case. A function that cannot be read says so.
+
 ## 0.4.2 (unreleased)
 
 CONTRACT-build2-part3-calc: the `calc` verb, and a slice `get` that answers (C1 to C5; D27 to D30).

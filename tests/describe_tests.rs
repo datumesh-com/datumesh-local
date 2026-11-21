@@ -69,16 +69,12 @@ impl FnStub {
                         .header("content-type", "application/json")
                         .body(axum::body::Body::from(b))
                         .unwrap(),
-                    None => axum::http::Response::builder()
-                        .status(404)
-                        .body(axum::body::Body::from("{}"))
-                        .unwrap(),
+                    None => axum::http::Response::builder().status(404).body(axum::body::Body::from("{}")).unwrap(),
                 }
             }
         };
-        let router = axum::Router::new()
-            .route("/fn/{*name}", axum::routing::get(handler))
-            .fallback_service(up.mesh.router());
+        let router =
+            axum::Router::new().route("/fn/{*name}", axum::routing::get(handler)).fallback_service(up.mesh.router());
         rt.spawn(async move {
             axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
@@ -310,10 +306,7 @@ fn the_cli_describe_prints_the_tests_of_a_public_function() {
 fn the_cli_describe_says_no_tests_for_a_function_without_tests() {
     let up = upstream();
     let stub = FnStub::start(&up);
-    stub.page(
-        "ecb/holiday",
-        r#"{"count":0,"cases":[],"cases_total":0,"last_run":null}"#,
-    );
+    stub.page("ecb/holiday", r#"{"count":0,"cases":[],"cases_total":0,"last_run":null}"#);
     let dir = home(&up, &stub);
     let (code, out, err) = run(&dir, &["describe", HOLIDAY]);
     assert_eq!(code, 0, "{err}");
@@ -322,7 +315,14 @@ fn the_cli_describe_says_no_tests_for_a_function_without_tests() {
     let sig = r#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": "boolean"}"#;
     let (code, _, err) = run(
         &dir,
-        &["define", "local/closed", "--formula", r#"mesh-test.datumesh.com/ecb/holiday(calendar: "TARGET", date: date)"#, "--signature", sig],
+        &[
+            "define",
+            "local/closed",
+            "--formula",
+            r#"mesh-test.datumesh.com/ecb/holiday(calendar: "TARGET", date: date)"#,
+            "--signature",
+            sig,
+        ],
     );
     assert_eq!(code, 0, "{err}");
     let (code, out, err) = run(&dir, &["describe", "local/closed"]);
@@ -336,10 +336,8 @@ fn the_cli_describe_lists_the_tests_of_a_local_formula() {
     let stub = FnStub::start(&up);
     let dir = home(&up, &stub);
     let tests = r#"[{"call":"local/rate_x(date: 2026-01-01)","expect":{"fault":"E_FORMULA_ABSENT"}},{"call":"local/rate_x(date: 2026-01-02)","expect":{"fault":"E_FORMULA_ABSENT"}}]"#;
-    let (code, _, err) = run(
-        &dir,
-        &["define", "local/rate_x", "--formula", RATE_X_SRC, "--signature", RATE_X_SIG, "--tests", tests],
-    );
+    let (code, _, err) =
+        run(&dir, &["define", "local/rate_x", "--formula", RATE_X_SRC, "--signature", RATE_X_SIG, "--tests", tests]);
     assert_eq!(code, 0, "{err}");
     let (code, out, err) = run(&dir, &["describe", "local/rate_x"]);
     assert_eq!(code, 0, "{err}");

@@ -25,7 +25,7 @@ use datumesh_formula::eval::{
 use datumesh_formula::memory::MemoryWorld;
 use datumesh_formula::{check_descriptor, Code, Compiled, Env, Extent, Function};
 
-use crate::fetch::END;
+use crate::fetch::{host_of, name_of, END};
 use crate::resolver::call_form;
 use crate::{Error, Resolver};
 
@@ -532,4 +532,197 @@ fn input_receipt(cell: &Cell, value: &Scalar, asof: &str) -> Value {
         ("tx".into(), Value::String(asof.to_string())),
         ("asof".into(), Value::String(asof.to_string())),
     ])
+}
+
+/// The cases describe lists of a function's tests (CONTRACT-0.4.9 L1, S3 and H1).
+pub(crate) const LISTED_CASES: usize = 100;
+
+/// What describe says of a function's tests (datumesh-local 0.4.3, L1): the `tests` member, or
+/// `null` with `note` saying why they cannot be read.
+#[derive(Clone, Debug)]
+pub(crate) struct TestsListing {
+    pub(crate) tests: Value,
+    pub(crate) note: Option<String>,
+}
+
+impl TestsListing {
+    /// A listing whose tests cannot be read, and why.
+    pub(crate) fn unread(note: impl Into<String>) -> TestsListing {
+        TestsListing { tests: Value::Null, note: Some(note.into()) }
+    }
+
+    /// The count of the tests, or `None` when they are unread.
+    fn count(&self) -> Option<u64> {
+        self.tests.get("count").and_then(number_of)
+    }
+
+    /// The text of describe: a headline (`N tests`, or `tests: N` for the command line, or
+    /// `no tests`), the last run, and one line per listed case. When the tests cannot be read, one
+    /// line says so.
+    pub(crate) fn lines(&self, cli: bool) -> Vec<String> {
+        if let Some(note) = &self.note {
+            return vec![format!("tests: unavailable ({note})")];
+        }
+        let count = self.count().unwrap_or(0);
+        if count == 0 {
+            return vec!["no tests".to_string()];
+        }
+        let mut out = vec![if cli {
+            format!("tests: {count}")
+        } else {
+            format!("{count} {}", if count == 1 { "test" } else { "tests" })
+        }];
+        match self.tests.get("last_run") {
+            Some(lr @ Value::Object(_)) => {
+                let result = lr.get("result").and_then(Value::as_str).unwrap_or("");
+                let at = lr.get("at").and_then(Value::as_str).unwrap_or("");
+                out.push(format!("last run {at} {result}"));
+            }
+            _ => out.push("last run: none".to_string()),
+        }
+        let cases = match self.tests.get("cases") {
+            Some(Value::Array(a)) => a.as_slice(),
+            _ => &[],
+        };
+        for c in cases {
+            let call = c.get("call").and_then(Value::as_str).unwrap_or("");
+            let expect = c.get("expect").and_then(Value::as_str).unwrap_or("");
+            let result = c.get("result").and_then(Value::as_str).unwrap_or("");
+            out.push(format!("  {call}  expect {expect}  result {result}"));
+        }
+        let total = self.tests.get("cases_total").and_then(number_of).unwrap_or(count);
+        if total > cases.len() as u64 {
+            out.push(format!("  {} of {total} cases shown", cases.len()));
+        }
+        out
+    }
+}
+
+/// A JSON number's value as a `u64`, when it is one.
+fn number_of(v: &Value) -> Option<u64> {
+    v.as_number_text()?.parse().ok()
+}
+
+/// A count as a JSON number.
+fn number(n: u64) -> Value {
+    json::parse(n.to_string().as_bytes()).unwrap_or(Value::Null)
+}
+
+/// One listed case: its call, its expectation and its result.
+fn case_value(call: &str, expect: &str, result: &str) -> Value {
+    Value::Object(vec![
+        ("call".into(), Value::String(call.to_string())),
+        ("expect".into(), Value::String(expect.to_string())),
+        ("result".into(), Value::String(result.to_string())),
+    ])
+}
+
+/// The `tests` member: the count, the total, the last run (or null) and the listed cases.
+fn tests_value(count: u64, total: u64, last_run: Value, cases: Vec<Value>) -> Value {
+    Value::Object(vec![
+        ("count".into(), number(count)),
+        ("cases_total".into(), number(total)),
+        ("last_run".into(), last_run),
+        ("cases".into(), Value::Array(cases)),
+    ])
+}
+
+/// A stored expectation as text: the fault code, or the value's literal text.
+fn expect_text(e: Option<&Value>) -> String {
+    let Some(e) = e else { return String::new() };
+    if let Some(code) = e.get("fault").and_then(Value::as_str) {
+        return format!("fault {code}");
+    }
+    match e.get("value") {
+        Some(v) => literal_text(v).unwrap_or_else(|| String::from_utf8_lossy(&v.to_jcs()).into_owned()),
+        None => String::new(),
+    }
+}
+
+impl Resolver {
+    /// The tests of the local function with fn hash `hash` (its own, as `define` kept them). No run
+    /// is recorded for a local function, so each case's result is "not run" and `last_run` is null.
+    pub(crate) fn local_tests_listing(&self, hash: &str) -> Result<TestsListing, Error> {
+        let tests = self.tests_of(hash)?;
+        let cases = tests
+            .iter()
+            .take(LISTED_CASES)
+            .map(|t| {
+                let call = t.get("call").and_then(Value::as_str).unwrap_or("");
+                case_value(call, &expect_text(t.get("expect")), "not run")
+            })
+            .collect();
+        let n = tests.len() as u64;
+        Ok(TestsListing { tests: tests_value(n, n, Value::Null, cases), note: None })
+    }
+}
+
+/// The largest function page the tests are read from (as a describe answer's fetch).
+const PAGE_MAX: u64 = 16 << 20;
+
+impl Resolver {
+    /// The tests of the public function `full`, read from its function page
+    /// (`https://<host>/fn/<name>?format=json`; the host's configured peer answers it). A page that
+    /// cannot be read leaves the tests null, with the reason as the note.
+    pub(crate) fn public_tests_listing(&self, full: &str) -> TestsListing {
+        let s = &self.shared;
+        let name = name_of(full);
+        let host = host_of(name);
+        let rest = name[host.len()..].trim_start_matches('/');
+        if let Err(why) = s.may_fetch(host) {
+            return TestsListing::unread(why);
+        }
+        let url = format!("https://{host}/fn/{rest}?format=json");
+        let body = match s.client.get(&url, PAGE_MAX) {
+            Ok((200, body)) => body,
+            Ok((status, _)) => return TestsListing::unread(format!("{url}: status {status}")),
+            Err(e) => return TestsListing::unread(format!("{url}: {e}")),
+        };
+        let Ok(page) = json::parse(&body) else {
+            return TestsListing::unread(format!("{url}: not JSON"));
+        };
+        let Some(t @ Value::Object(_)) = page.get("tests") else {
+            return TestsListing::unread(format!("{url}: no tests member"));
+        };
+        let Some(count) = t.get("count").and_then(number_of) else {
+            return TestsListing::unread(format!("{url}: no tests count"));
+        };
+        let total = t.get("cases_total").and_then(number_of).unwrap_or(count);
+        let cases = match t.get("cases") {
+            Some(Value::Array(a)) => a
+                .iter()
+                .take(LISTED_CASES)
+                .map(|c| {
+                    let call = c.get("call").and_then(Value::as_str).unwrap_or("");
+                    let result = c.get("result").and_then(Value::as_str).unwrap_or("");
+                    case_value(call, &plain_text(c.get("expect")), result)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        // The 0.4.8 last run ({result, at}) and the 0.4.9 one, which adds pass/fail/error/not_run.
+        let last_run = match t.get("last_run") {
+            Some(lr @ Value::Object(_)) => match lr.get("result").and_then(Value::as_str) {
+                Some(result) => Value::Object(vec![
+                    ("result".into(), Value::String(result.to_string())),
+                    (
+                        "at".into(),
+                        lr.get("at").and_then(Value::as_str).map_or(Value::Null, |a| Value::String(a.to_string())),
+                    ),
+                ]),
+                None => Value::Null,
+            },
+            _ => Value::Null,
+        };
+        TestsListing { tests: tests_value(count, total, last_run, cases), note: None }
+    }
+}
+
+/// A page's expectation as text: a string as it is, anything else as its literal or JSON text.
+fn plain_text(v: Option<&Value>) -> String {
+    match v {
+        None => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => literal_text(other).unwrap_or_else(|| String::from_utf8_lossy(&other.to_jcs()).into_owned()),
+    }
 }

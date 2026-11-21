@@ -28,6 +28,7 @@ use crate::alias::{request_asof, request_head, AliasMap};
 use crate::fetch::{host_of, name_of, network_failure, Shared, END};
 use crate::gate::is_unrooted;
 use crate::resolver::{call_form_of, client_error, Callees, Reply, Resolver, Source};
+use crate::testcases::TestsListing;
 use crate::{Error, FOREIGN_UNAVAILABLE_STATUS};
 
 /// The largest document a class or describe fetch reads.
@@ -583,6 +584,32 @@ impl Resolver {
             }
         }
         Ok(Reply::new(status, body, Source::Forwarded { mesh: target }))
+    }
+
+    /// [`Resolver::describe`] and, for a function, its tests (datumesh-local 0.4.3, L1): a local
+    /// function's own tests, a public function's from its function page. `None` for an answer that
+    /// is not a function.
+    pub(crate) fn describe_listing(&self, id: &str) -> Result<(Reply, Option<TestsListing>), Error> {
+        let reply = self.describe(id)?;
+        let kind =
+            json::parse(&reply.body).ok().and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string));
+        if reply.status != 200 || kind.as_deref() != Some("function") {
+            return Ok((reply, None));
+        }
+        let full = self.aliases_at(request_asof(id).as_deref()).expand(id);
+        let name = name_of(&full);
+        let listing = if host_of(name) == self.shared.config.host {
+            let hash = json::parse(&reply.body)
+                .ok()
+                .and_then(|v| v.get("fn_hash").and_then(Value::as_str).map(str::to_string));
+            match hash {
+                Some(hash) => self.local_tests_listing(&hash)?,
+                None => TestsListing::unread("the answer names no function hash"),
+            }
+        } else {
+            self.public_tests_listing(name)
+        };
+        Ok((reply, Some(listing)))
     }
 
     /// Remembers the object an answer describes, by its key encoding (for its short id later).
