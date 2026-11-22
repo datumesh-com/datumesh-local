@@ -91,7 +91,7 @@ fn describe_an_object_by_encoding_id_and_short_id() {
     assert_eq!((id.len(), short.len()), (64, 12));
     assert_eq!(&id[..12], short);
     assert_eq!(field(&doc, "call"), format!(r#"{PAIR_CLASS}(base: "EUR", quote: "USD")"#));
-    // The same object by its id and by its short id, as an id the mesh holds a cell for.
+    // The same object by its object id and by its short id (a cell id names no object since http 0.4.10), once the mesh holds a cell of it.
     r.get(&format!("{PAIR_CLASS}(EUR, USD).rate({DAY})")).unwrap();
     for what in [&id, &short] {
         let reply = r.describe(what).unwrap();
@@ -103,12 +103,6 @@ fn describe_an_object_by_encoding_id_and_short_id() {
     let verse = r.describe(&encoding(VERSE_CLASS, r#"book:"1",chapter:1,corpus:"quran",verse:2"#)).unwrap();
     assert_eq!(verse.status, 200, "{}", String::from_utf8_lossy(&verse.body));
     check_describe_with(&verse.body, &held, &[]).unwrap();
-    // A cell id (of the cell the call above read).
-    let cell = r.get(&call_plain_rate()).unwrap();
-    let cell_id = datumesh_core::Receipt::from_value(&receipt(&cell.body)).unwrap().cell().id();
-    let reply = r.describe(&cell_id).unwrap();
-    assert_eq!(reply.status, 200, "{}", String::from_utf8_lossy(&reply.body));
-    check_describe_with(&reply.body, &held, &[]).unwrap();
 }
 
 fn call_plain_rate() -> String {
