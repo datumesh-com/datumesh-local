@@ -1,7 +1,8 @@
-//! CONTRACT-classes-round C8 (local): the MCP instructions sentence "This mesh (<host>) holds: ..." uses the `held` member of
-//! the mesh's `find?summary=1` unchanged when it is there (http: a string generated from the catalogue, at most 60 words, as
-//! `{"summary":true,"mesh":..,"classes":[..],"functions":[..],"held":"finance: fundamentals sec/company; ..."}`), and
-//! today's text (built from the classes and functions) when it is absent (an older mesh, or a mesh with no facets).
+//! CONTRACT-classes-round C8 and CONTRACT-round-0.7 R8 (local): the MCP instructions use the `held` member of the mesh's
+//! `find?summary=1` unchanged when it is there. Under R8 it is the whole sentence, in plain words (http: generated from the
+//! catalogue, at most 60 words, "This mesh holds D1, D2 ... and Dn. Ask find in plain words for what you need."), so local adds
+//! no "This mesh (<host>) holds:" in front of it. Without it (an older mesh, or a mesh with no facets), today's text, built
+//! from the classes and functions, with its own "This mesh (<host>) holds: ..." sentence.
 //!
 //! The summary is canned (`tests/support/read_stub.rs`); the names are invented.
 
@@ -31,8 +32,8 @@ fn with_held(held: &str) -> String {
     summary(&format!(r#","held":{h}"#))
 }
 
-/// A held text in the shape the mesh generates: domains, measures, rank-1 sources, under 60 words.
-const HELD: &str = "finance: fundamentals sample/company; interest rate sample/policy_rate; exchange rate sample/fx_reference; scripture: text sample/passage; tools: ratio sample/ratio;";
+/// A held text in the shape the mesh generates under R8: one sentence of plain words, ending with the instruction to ask find.
+const HELD: &str = "This mesh holds finance (interest rates from the ECB and the Bank of England, exchange rates from the ECB, yields from the US Treasury), scripture (texts, provenance), earth (monthly rainfall from CHIRPS) and registry (licences). Ask find in plain words for what you need.";
 
 fn jcs(v: &Value) -> String {
     String::from_utf8(v.to_jcs()).unwrap()
@@ -57,9 +58,9 @@ fn server(summary: &str) -> (McpServer, Upstream, TempDir) {
     (McpServer::new(Arc::new(Resolver::open(c).unwrap())), up, dir)
 }
 
-/// The sentence of the instructions that names the mesh: from "This mesh (" to the sentence "Use find".
+/// The sentence of the instructions about what the mesh holds: from "This mesh " to the sentence "Use find".
 fn sentence(ins: &str) -> &str {
-    let from = ins.find("This mesh (").unwrap_or_else(|| panic!("no 'This mesh (' in {ins}"));
+    let from = ins.find("This mesh ").unwrap_or_else(|| panic!("no 'This mesh ' in {ins}"));
     let to = ins[from..].find(" Use find").map(|i| from + i).unwrap_or(ins.len());
     &ins[from..to]
 }
@@ -68,8 +69,9 @@ fn sentence(ins: &str) -> &str {
 fn the_instructions_use_held_verbatim_when_the_summary_has_it() {
     let (srv, _up, _dir) = server(&with_held(HELD));
     let ins = instructions(&srv);
-    let want = format!("This mesh (mesh-test.datumesh.com) holds: {HELD}");
-    assert!(ins.contains(&want), "held is the sentence's text: {ins}");
+    assert!(ins.contains(&format!("signed receipt. {HELD} Use find")), "held is the sentence, verbatim: {ins}");
+    assert_eq!(ins.matches("This mesh ").count(), 1, "no second 'This mesh' sentence before or after it: {ins}");
+    assert!(!ins.contains("holds: "), "no \"holds:\" lead-in over it: {ins}");
     // today's member text is not used beside it
     for today in ["Sample passages", "Sample exchange rates", "31,102", "Book One"] {
         assert!(!sentence(&ins).contains(today), "{today} is not in the sentence when held is: {ins}");
@@ -79,15 +81,13 @@ fn the_instructions_use_held_verbatim_when_the_summary_has_it() {
     assert!(ins.contains("Use find to discover names"), "{ins}");
 }
 
+/// Under R8 the sentence is the mesh's and names no host and no function: local adds neither the host nor a lead-in.
 #[test]
-fn the_sentence_still_names_the_host() {
+fn the_sentence_is_the_meshs_own_and_local_adds_no_host() {
     let (srv, _up, _dir) = server(&with_held(HELD));
     let ins = instructions(&srv);
-    assert!(sentence(&ins).starts_with("This mesh (mesh-test.datumesh.com) holds: "), "{ins}");
-    // and a different mesh name in the summary is the one named
-    let other = with_held(HELD).replace(r#""mesh":"mesh-test.datumesh.com""#, r#""mesh":"other.example""#);
-    let (srv, _up, _dir) = server(&other);
-    assert!(instructions(&srv).contains("This mesh (other.example) holds: finance:"), "{}", instructions(&srv));
+    assert_eq!(sentence(&ins), HELD, "{ins}");
+    assert!(!ins.contains("This mesh (mesh-test.datumesh.com)"), "{ins}");
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn a_plain_held_is_not_truncated_or_reworded() {
     for held in [long.as_str(), "a b c", "one-word", HELD] {
         let (srv, _up, _dir) = server(&with_held(held));
         let ins = instructions(&srv);
-        assert!(ins.contains(&format!("holds: {held}")), "{held:?} is verbatim in {ins}");
+        assert!(ins.contains(&format!("signed receipt. {held} Use find")), "{held:?} is verbatim in {ins}");
     }
 }
 
@@ -129,5 +129,5 @@ fn held_with_non_ascii_text_and_quotes_is_read_back_unchanged() {
     let held = "scripture: texte \"cité\" sample/passage; é à ü 日本 sample/jp;";
     let (srv, _up, _dir) = server(&with_held(held));
     let ins = instructions(&srv);
-    assert!(ins.contains(&format!("holds: {held}")), "{ins}");
+    assert!(ins.contains(&format!("signed receipt. {held} Use find")), "{ins}");
 }
