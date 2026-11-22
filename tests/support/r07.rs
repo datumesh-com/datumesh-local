@@ -4,7 +4,6 @@
 
 #![allow(dead_code)]
 
-
 use datumesh_core::json::{self, Value};
 use datumesh_http::publish::{publish_stored_with, PublishOptions};
 use datumesh_local::mcp::{McpServer, Transport};
@@ -68,11 +67,7 @@ pub fn upstream_label_withdrawn() -> Upstream {
     publish_at(
         &up,
         T_WITHDRAW,
-        &[withdrawal_line(
-            &format!("{NAMED_CLASS}/named"),
-            r#"{"label":{"type":"string","value":"cable"}}"#,
-            REASON,
-        )],
+        &[withdrawal_line(&format!("{NAMED_CLASS}/named"), r#"{"label":{"type":"string","value":"cable"}}"#, REASON)],
     );
     up
 }
