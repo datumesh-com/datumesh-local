@@ -176,7 +176,7 @@ impl McpServer {
         let mut tools = json_const(TOOLS);
         let instructions = match catalogue {
             Some(c) => {
-                let held = format!("This mesh ({}) holds: {}.", c.mesh, c.held);
+                let held = format!("This mesh ({}) holds: {}", c.mesh, c.held);
                 append_description(&mut tools, "find", &held);
                 append_description(
                     &mut tools,
@@ -1097,7 +1097,10 @@ struct Catalogue {
 }
 
 impl Catalogue {
-    /// The catalogue of a summary; `None` when it holds no class or function, or is not a summary.
+    /// The catalogue of a summary; `None` when it has no `held` text and no class or function, or is
+    /// not a summary. A `held` string (the mesh's own summary, CONTRACT-classes-round C8) is used
+    /// verbatim, with nothing added after it; without one, the text is built from the classes and
+    /// functions and ends with a full stop.
     fn of(v: &Value) -> Option<Catalogue> {
         let mut members = Vec::new();
         for key in ["classes", "functions"] {
@@ -1105,13 +1108,14 @@ impl Catalogue {
                 members.extend(a.iter().map(member_text));
             }
         }
-        if members.is_empty() {
-            return None;
-        }
         let mesh = v.get("mesh").and_then(Value::as_str).filter(|m| !m.is_empty()).unwrap_or("this mesh").to_string();
-        let held = members.join("; ");
+        let held = match v.get("held").and_then(Value::as_str).filter(|h| !h.is_empty()) {
+            Some(h) => h.to_string(),
+            None if members.is_empty() => return None,
+            None => format!("{}.", members.join("; ")),
+        };
         let instructions = format!(
-            "Datumesh: every answer is a signed receipt. This mesh ({mesh}) holds: {held}. Use find to discover names, by words, a name, a label or a value of the lists above. Use get for a cell: a call (name(arg: value, ...)) or a cell:// URI, or a plain reference (a label and a reference, such as \"<label> <reference>\") that the mesh resolves and reads in the same call. For a text value, get gives its text, checked. Use explain for its lineage and verify for a receipt; verify with text checks a quoted text against the cell's text after NFC. define and publish write under this machine's unrooted namespace."
+            "Datumesh: every answer is a signed receipt. This mesh ({mesh}) holds: {held} Use find to discover names, by words, a name, a label or a value of the lists above. Use get for a cell: a call (name(arg: value, ...)) or a cell:// URI, or a plain reference (a label and a reference, such as \"<label> <reference>\") that the mesh resolves and reads in the same call. For a text value, get gives its text, checked. Use explain for its lineage and verify for a receipt; verify with text checks a quoted text against the cell's text after NFC. define and publish write under this machine's unrooted namespace."
         );
         Some(Catalogue { mesh, held, instructions })
     }

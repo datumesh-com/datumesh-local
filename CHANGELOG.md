@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+CONTRACT-classes-round C8: the MCP instructions use the mesh's catalogue `held` summary.
+
+- The instructions' sentence "This mesh (<host>) holds: …" and the `find` and `get` descriptions use the
+  `held` string of the mesh's `find?summary=1`, verbatim, when it is there (a mesh with no facets, or an
+  older mesh, has none). With `held`, nothing is added after it; without it, the text built from the
+  classes and functions is as before.
+
 ## 0.4.3 (unreleased)
 
 CONTRACT-0.4.9 L1: `describe` of a function lists its tests (MCP and CLI).
