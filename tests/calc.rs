@@ -699,12 +699,12 @@ fn series_line(function: &str, day: &str, v: usize) -> String {
     )
 }
 
-/// `local/series` has 150 members (1 to 150 for 2026-01-01 on) and `local/hundred` has exactly 100.
+/// `local/rates` has 150 members (1 to 150 for 2026-01-01 on) and `local/hundred` has exactly 100.
 fn slice_world() -> W {
     let w = world();
     w.clock.set("2026-11-15T10:30:00.000000Z");
     let tmp = TempDir::new("calc-series");
-    for (name, n) in [("local/series", 150), ("local/hundred", 100)] {
+    for (name, n) in [("local/rates", 150), ("local/hundred", 100)] {
         w.r.define_stored(name, &sig(LEVEL_SIG)).unwrap();
         let lines: Vec<String> = days(n).iter().enumerate().map(|(i, d)| series_line(name, d, i + 1)).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
@@ -729,7 +729,7 @@ fn calc_formula(sc: &Value) -> String {
 #[test]
 fn a_large_number_slice_shows_a_summary_the_first_page_and_the_calc_call() {
     let w = slice_world();
-    let v = tool(&w.srv, "get", r#"{"request":"local/series(day: *)"}"#);
+    let v = tool(&w.srv, "get", r#"{"request":"local/rates(day: *)"}"#);
     assert!(!is_error(&v), "{}", jcs(&v));
     let sc = structured(&v);
     // the summary
@@ -748,7 +748,7 @@ fn a_large_number_slice_shows_a_summary_the_first_page_and_the_calc_call() {
     assert!(!jcs(&Value::Array(members.to_vec())).contains("2026-04-11"));
     // the exact calc call
     let f = calc_formula(sc);
-    assert!(f == "mean(local.invalid/series(day: *))" || f == "mean(local/series(day: *))", "{f}");
+    assert!(f == "mean(local.invalid/rates(day: *))" || f == "mean(local/rates(day: *))", "{f}");
     let text = everything(&v);
     assert!(text.contains("calc") && text.contains("mean("), "the call is shown: {text}");
     // run, it gives the aggregate
@@ -812,20 +812,20 @@ fn the_cli_get_of_a_large_slice_gives_the_same() {
         let mut c = Config::in_dir(dir.path()).unwrap();
         c.peers.insert(HOST.to_string(), up.origin.clone());
         let r = Resolver::open_with_clock(c, clock).unwrap();
-        r.define_stored("local/series", &sig(LEVEL_SIG)).unwrap();
+        r.define_stored("local/rates", &sig(LEVEL_SIG)).unwrap();
         let lines: Vec<String> =
-            days(150).iter().enumerate().map(|(i, d)| series_line("local/series", d, i + 1)).collect();
+            days(150).iter().enumerate().map(|(i, d)| series_line("local/rates", d, i + 1)).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let tmp = TempDir::new("calc-cli-slice-tmp");
         r.publish(&jsonl(&tmp, "s.jsonl", &refs)).unwrap();
     }
-    let (code, out, err) = run(&dir, &["get", "local/series(day: *)"]);
+    let (code, out, err) = run(&dir, &["get", "local/rates(day: *)"]);
     assert_eq!(code, 0, "{err}");
     let a = json::parse(out.trim_end().as_bytes()).unwrap_or_else(|e| panic!("{e}: {out}"));
     assert_eq!(number(a.get("summary").unwrap().get("count").unwrap()), 150.0);
     assert_eq!(arr(&a, "members").len(), 100);
     let f = calc_formula(&a);
-    assert!(f == "mean(local.invalid/series(day: *))" || f == "mean(local/series(day: *))", "{f}");
+    assert!(f == "mean(local.invalid/rates(day: *))" || f == "mean(local/rates(day: *))", "{f}");
     let (code, out, err) = run(&dir, &["calc", &f]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(number(json::parse(out.trim_end().as_bytes()).unwrap().get("value").unwrap()), 75.5);
