@@ -9,7 +9,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use datumesh_core::json::Value;
-use datumesh_core::{Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, Receipt, Reference, Scalar, Type};
+use datumesh_core::{
+    Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, Receipt, Reference, Scalar, Type, Withdrawal,
+};
 use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern};
 use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
@@ -308,6 +310,30 @@ impl Shared {
     /// Imports a fetched receipt: its signer's key document, the receipt (verified again by
     /// the store) and, for a stored cell, the version (unless one at or after its `tx` is
     /// held). `Ok(true)` when a version was added.
+    /// Stores a withdrawal (SPEC 8.1, store 0.6.0) as the version of its cell at its `tx`, with its cell held, as a
+    /// receipt is: a cell withdrawn as of an instant has no value there, and its history stays (CONTRACT-round-0.7 R1).
+    pub(crate) fn import_withdrawal(&self, w: &Withdrawal) -> Result<(), ClientError> {
+        let cell = w.cell();
+        let host = w.signer_host().to_string();
+        self.ensure_namespace(&host)?;
+        let id = cell.id();
+        self.store_version(&id, w.tx(), w.canonical())?;
+        let held = HeldCell { cell_id: id, host: host_of(&cell.ns).to_string(), rest: cell_rest(cell), slice: None };
+        self.index.hold_cell(&held, &self.now()).map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Puts the bytes of a receipt or a withdrawal as the version of cell `id` at `tx`, unless that version is held.
+    /// Unlike `import_receipt`, an older version is kept too (a read as of an earlier instant needs it).
+    pub(crate) fn store_version(&self, id: &str, tx: &str, bytes: &[u8]) -> Result<(), ClientError> {
+        let held = self.store.version_asof(id, tx).map_err(store_err)?;
+        if held.is_some_and(|v| v.tx == tx) {
+            return Ok(());
+        }
+        let h = self.store.put_receipt(bytes).map_err(store_err)?;
+        self.store.put_version(id, tx, &h).map_err(store_err)
+    }
+
     pub(crate) fn import_receipt(&self, r: &Receipt, stored: bool, slice: Option<&str>) -> Result<bool, ClientError> {
         let bytes = datumesh_http::publish::receipt_json(r);
         self.ensure_namespace(r.signer_host())?;

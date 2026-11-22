@@ -176,7 +176,7 @@ impl McpServer {
         let mut tools = json_const(TOOLS);
         let instructions = match catalogue {
             Some(c) => {
-                let held = format!("This mesh ({}) holds: {}", c.mesh, c.held);
+                let held = c.held;
                 append_description(&mut tools, "find", &held);
                 append_description(
                     &mut tools,
@@ -388,6 +388,10 @@ impl McpServer {
         }
         let mut block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
         let mut head = Vec::new();
+        // A withdrawn cell, or a label through one, is not covered: the words say so, with the reason (CONTRACT-round-0.7 R1).
+        if let Some(reason) = not_covered_reason(reply) {
+            head.push(format!("not covered: {reason}"));
+        }
         if let Some((label, call)) = &resolved {
             block = with_members(block, vec![("resolved", obj(vec![("label", s(label)), ("call", s(call))]))]);
             head.push(format!("{label}\n{call}"));
@@ -492,6 +496,11 @@ impl McpServer {
         let (reply, listing) = self.resolver.describe_listing(id)?;
         let answer = json::parse(&reply.body).unwrap_or(Value::Null);
         let mut members = vec![("status", num(u64::from(reply.status))), ("describe", answer.clone())];
+        let unbound = self.resolver.describe_unbound(id, reply.status);
+        if let Some(sentence) = &unbound {
+            members.push(("error", s("E_NAME_UNBOUND")));
+            members.push(("detail", s(sentence)));
+        }
         if answer.get("kind").and_then(Value::as_str) == Some("class") {
             let class = answer.get("class").and_then(Value::as_str).unwrap_or("");
             let methods = match self.class_of(class)? {
@@ -501,6 +510,9 @@ impl McpServer {
             members.push(("methods", Value::Array(methods)));
         }
         let mut texts = vec![json_text(&obj(members.clone()))];
+        if let Some(sentence) = unbound {
+            texts.insert(0, sentence);
+        }
         if let Some(listing) = listing {
             members.push(("tests", listing.tests.clone()));
             if let Some(note) = &listing.note {
@@ -1088,19 +1100,18 @@ fn resource(uri: &str, name: &str) -> Value {
 const RANGE_DETAIL: &str =
     "a range is refused, not shortened: read a range verse by verse, or as a slice (a call with * for the key)";
 
-/// What the catalogue summary (`GET /find?summary=1`) builds (R4): the mesh, what it holds (its
-/// classes and functions, with labels, cell counts and small dictionaries), and the instructions.
+/// What the catalogue summary (`GET /find?summary=1`) builds (R4): what the mesh holds, as one sentence
+/// (`held`, the mesh's own under R8, or the text built from its classes and functions), and the instructions.
 struct Catalogue {
-    mesh: String,
     held: String,
     instructions: String,
 }
 
 impl Catalogue {
     /// The catalogue of a summary; `None` when it has no `held` text and no class or function, or is
-    /// not a summary. A `held` string (the mesh's own summary, CONTRACT-classes-round C8) is used
-    /// verbatim, with nothing added after it; without one, the text is built from the classes and
-    /// functions and ends with a full stop.
+    /// not a summary. A `held` string (the mesh's own summary, a whole sentence under CONTRACT-round-0.7
+    /// R8) is used verbatim, with nothing added before or after it; without one, the text is "This mesh
+    /// (<host>) holds: " and the classes and functions, ending with a full stop.
     fn of(v: &Value) -> Option<Catalogue> {
         let mut members = Vec::new();
         for key in ["classes", "functions"] {
@@ -1112,12 +1123,12 @@ impl Catalogue {
         let held = match v.get("held").and_then(Value::as_str).filter(|h| !h.is_empty()) {
             Some(h) => h.to_string(),
             None if members.is_empty() => return None,
-            None => format!("{}.", members.join("; ")),
+            None => format!("This mesh ({mesh}) holds: {}.", members.join("; ")),
         };
         let instructions = format!(
-            "Datumesh: every answer is a signed receipt. This mesh ({mesh}) holds: {held} Use find to discover names, by words, a name, a label or a value of the lists above. Use get for a cell: a call (name(arg: value, ...)) or a cell:// URI, or a plain reference (a label and a reference, such as \"<label> <reference>\") that the mesh resolves and reads in the same call. For a text value, get gives its text, checked. Use explain for its lineage and verify for a receipt; verify with text checks a quoted text against the cell's text after NFC. define and publish write under this machine's unrooted namespace."
+            "Datumesh: every answer is a signed receipt. {held} Use find to discover names, by words, a name, a label or a value of the lists above. Use get for a cell: a call (name(arg: value, ...)) or a cell:// URI, or a plain reference (a label and a reference, such as \"<label> <reference>\") that the mesh resolves and reads in the same call. For a text value, get gives its text, checked. Use explain for its lineage and verify for a receipt; verify with text checks a quoted text against the cell's text after NFC. define and publish write under this machine's unrooted namespace."
         );
-        Some(Catalogue { mesh, held, instructions })
+        Some(Catalogue { held, instructions })
     }
 }
 
@@ -1208,6 +1219,15 @@ fn ambiguous_members(request: &str, candidates: &[Value]) -> Vec<(String, Value)
 }
 
 /// The failure of a reference nothing resolves to: the find results as suggestions.
+/// The reason of a `not_covered` envelope (a withdrawn cell's `withdrawn` text, or a label's lookup reason).
+fn not_covered_reason(reply: &Reply) -> Option<String> {
+    let envelope = reply.envelope()?;
+    if envelope.get("outcome").and_then(Value::as_str) != Some("not_covered") {
+        return None;
+    }
+    envelope.get("reason").and_then(Value::as_str).map(str::to_string)
+}
+
 fn not_covered_members(request: &str, results: &[Value]) -> Vec<(String, Value)> {
     let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let detail = format!("{request}: nothing the find mesh holds resolves to a value for this reference");

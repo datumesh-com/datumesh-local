@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (unreleased)
+
+CONTRACT-round-0.7 R1, R2, R8 (with core 0.3.13, formula 0.6.0, store 0.6.0, engine 0.6.0, http 0.5.0).
+
+- A withdrawn cell is the null version (R1): `get` of it (MCP and CLI) says in words that the answer is not covered, with
+  the reason (the withdrawal's `withdrawn` text). The CLI's status line says so too, and exits 3. A label whose lookup cell
+  is withdrawn is not covered with the lookup's reason, and has no receipt. The envelope is the mesh's, as it gave it.
+- A foreign cell whose latest version is a withdrawal is stored as that version (no value). A read as of an instant the store
+  holds no version for is answered with the mesh's answer for it, its receipt checked and held.
+- The resolver accepts a `not_covered` envelope whose receipt is a withdrawal (core 0.3.13's `check_answer`), and
+  `verify` (the MCP tool and the resolver) reports a withdrawal receipt ok at level `signed`.
+- A closed name (R2): `describe` of an unbound name says it is unbound (`E_NAME_UNBOUND`), in words in the MCP text and
+  on the CLI's stderr; the mesh's 404 and its body are unchanged. An object id's 404 is not reworded.
+- The MCP instructions use the mesh's `held` sentence verbatim (R8: it is a whole sentence), with nothing added before it.
+  Without `held`, the text is as before ("This mesh (<host>) holds: ...").
 
 CONTRACT-classes-round C8: the MCP instructions use the mesh's catalogue `held` summary.
 

@@ -612,6 +612,22 @@ impl Resolver {
         Ok((reply, Some(listing)))
     }
 
+    /// The sentence that says a describe's `404` is an unbound name (CONTRACT-round-0.7 R2, SPEC 16.8): the mesh answers
+    /// `404` for a name it does not bind (a closed one too), and local says so in words. `None` for any other answer,
+    /// an object id's `404` included (the mesh's own).
+    pub fn describe_unbound(&self, id: &str, status: u16) -> Option<String> {
+        if status != 404 {
+            return None;
+        }
+        let full = self.aliases_at(request_asof(id).as_deref()).expand(id);
+        let name = name_of(&full);
+        let object = full.contains(['(', '[']) || is_hex(&full, 64) || is_hex(&full, 12);
+        if object || !datumesh_formula::names::is_function_name(name) {
+            return None;
+        }
+        Some(format!("E_NAME_UNBOUND: {name} is unbound on this mesh: it is not bound, or it has been closed."))
+    }
+
     /// Remembers the object an answer describes, by its key encoding (for its short id later).
     fn remember_object(&self, encoding: &str, body: &[u8]) -> Result<(), Error> {
         let Ok(v) = json::parse(body) else { return Ok(()) };

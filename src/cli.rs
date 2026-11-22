@@ -230,6 +230,11 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 if let Some(d) = &reply.detail {
                     line.push_str(&format!("; {d}"));
                 }
+                // A withdrawn cell (or a label through one) is not covered, and the reason says why (CONTRACT-round-0.7 R1).
+                let reason = reply.envelope().and_then(|v| v.get("reason").and_then(Value::as_str).map(str::to_string));
+                if let (Some(reason), Some("not_covered")) = (reason, reply.outcome().as_deref()) {
+                    line.push_str(&format!("; not covered: {reason}"));
+                }
                 writeln!(err, "{line}").map_err(io)?;
             }
             Ok(code)
@@ -334,6 +339,9 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             let (reply, listing) = r.describe_listing(id)?;
             out.write_all(&reply.body).map_err(io)?;
             out.write_all(b"\n").map_err(io)?;
+            if let Some(sentence) = r.describe_unbound(id, reply.status) {
+                writeln!(err, "{sentence}").map_err(io)?;
+            }
             // A function's tests, after the answer (CONTRACT-0.4.9 L1): the count, the last run, one line per case.
             for line in listing.iter().flat_map(|l| l.lines(true)) {
                 out.write_all(line.as_bytes()).map_err(io)?;

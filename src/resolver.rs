@@ -789,6 +789,7 @@ impl Resolver {
         let stored = target.bound.descriptor.lang == "stored";
         if foreign && stored {
             let id = target.cell_id().to_string();
+            let requested = target.pinned_reference().asof;
             if s.store.latest(&id).map_err(|e| Error::Store(e.to_string()))?.is_none() {
                 if let Err(why) = s.may_fetch(&host) {
                     return Ok(Reply::unavailable(why));
@@ -819,8 +820,49 @@ impl Resolver {
                         mesh.stored_version_added(&id);
                         fetched.set(true);
                     }
-                    // The host's answer without a receipt (not_covered, unlicensed, ...).
-                    None => return Ok(Reply::new(f.status, f.body, Source::Fetched)),
+                    // A withdrawn latest version: stored as the version it is, with no value (R1).
+                    None => match f.answer.withdrawn.as_ref() {
+                        Some(w) => {
+                            if let Err(e) = s.import_withdrawal(w) {
+                                return Ok(match network_failure(&e) {
+                                    Some(why) => Reply::unavailable(why),
+                                    None => Reply::error(e.code, rejection_detail(&e)),
+                                });
+                            }
+                            mesh.stored_version_added(&id);
+                            fetched.set(true);
+                        }
+                        // The host's answer without a receipt (not_covered, unlicensed, ...).
+                        None => return Ok(Reply::new(f.status, f.body, Source::Fetched)),
+                    },
+                }
+            }
+            // A read as of an instant the store holds no version for: the mesh's answer for it, its receipt checked and
+            // held (the store takes versions only later than its latest, so an older one is not stored, R1).
+            if let Some(at) = requested.as_deref() {
+                if s.store.version_asof(&id, at).map_err(|e| Error::Store(e.to_string()))?.is_none() {
+                    if let Err(why) = s.may_fetch(&host) {
+                        return Ok(Reply::unavailable(why));
+                    }
+                    let f = match s.fetch_cell(&host, &target.pinned_reference()) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            return Ok(match network_failure(&e) {
+                                Some(why) => Reply::unavailable(why),
+                                None => Reply::error(e.code, rejection_detail(&e)),
+                            })
+                        }
+                    };
+                    if let Some(r) = f.answer.receipt.as_ref() {
+                        let (imported, _) = fetch::with_ctx(|| s.import_receipt(r, false, None));
+                        if let Err(e) = imported {
+                            return Ok(match network_failure(&e) {
+                                Some(why) => Reply::unavailable(why),
+                                None => Reply::error(e.code, rejection_detail(&e)),
+                            });
+                        }
+                    }
+                    return Ok(Reply::new(f.status, f.body, Source::Fetched));
                 }
             }
             let source = if fetched.get() { Source::Fetched } else { Source::Local };
@@ -1350,7 +1392,9 @@ impl Resolver {
     /// (this machine's own for `local.invalid`), at level `recomputed` with the engine as the
     /// resolver. The result as JSON (`ok`, `level`, `code`, `hash`, ...).
     pub fn verify(&self, receipt: &[u8]) -> Value {
-        let v = self.mesh().verify(receipt, false, None);
+        // A withdrawal has no value to recompute (SPEC 10.1): its level is `signed`.
+        let withdrawal = json::parse(receipt).is_ok_and(|v| v.get("withdrawn").is_some());
+        let v = self.mesh().verify(receipt, withdrawal, None);
         json::parse(&v.body).unwrap_or(Value::Null)
     }
 
