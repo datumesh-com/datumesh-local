@@ -105,10 +105,6 @@ fn describe_an_object_by_encoding_id_and_short_id() {
     check_describe_with(&verse.body, &held, &[]).unwrap();
 }
 
-fn call_plain_rate() -> String {
-    format!(r#"{PAIR_CLASS}/rate(base: "EUR", quote: "USD", date: {DAY})"#)
-}
-
 /// describe of an id the mesh does not know is its 404; a malformed encoding is `bad_request`
 /// `E_KEY_ENCODING`; both pass through unchanged (the body is the mesh's).
 #[test]
