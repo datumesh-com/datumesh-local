@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0
 
 CONTRACT-round-0.7 R1, R2, R8 (with core 0.3.13, formula 0.6.0, store 0.6.0, engine 0.6.0, http 0.5.0).
 
