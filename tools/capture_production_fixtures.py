@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Captures the production responses tests/data/production/routes.jsonl holds (datumesh-local 0.5.1
-tests). Read-only: GET only. Run: python3 tools/capture_production_fixtures.py > tests/data/production/routes.jsonl"""
+tests). Read-only: GET only. Run: python3 tools/capture_production_fixtures.py > tests/data/production/routes.jsonl
+With paths as arguments it captures only those (to append a route without re-recording the rest):
+python3 tools/capture_production_fixtures.py '<path>' >> tests/data/production/routes.jsonl"""
 import json, sys, urllib.request, urllib.error, urllib.parse
 
 BASE = "https://datumesh.com"
@@ -22,7 +24,13 @@ for m in METHODS:
 paths += ["/x/interval/datumesh.com/relay/treasury.gov/par_yield?tenor=10Y&from=2026-11-16&to=2026-11-24",
           "/x/interval/datumesh.com/relay/ecb.europa.eu/fx_reference?currency=USD&from=2024-01-01&to=2024-06-30",
           "/x/interval/datumesh.com/relay/treasury.gov/par_yield?tenor=10Y&from=1999-01-01&to=2026-11-24",
-          "/x/interval/datumesh.com/relay/nothing/here?from=2024-01-01&to=2024-01-02"]
+          # The window of Bank Rate the fake serves as its whole slice (local 0.5.2, item 12).
+          "/x/interval/datumesh.com/relay/bankofengland.co.uk/bank_rate?from=2026-09-01&to=2026-11-20",
+          "/x/interval/datumesh.com/relay/nothing/here?from=2024-01-01&to=2024-01-02",
+          # A ranged slice has no URI on production (SPEC 4.4): its refusal (local 0.5.2, item 12).
+          "/slice/datumesh.com/relay/bankofengland.co.uk/bank_rate(date:[2026-10-06..2026-11-05])"]
+if len(sys.argv) > 1:
+    paths = sys.argv[1:]
 seen = set()
 def get(p):
     if p in seen: return None

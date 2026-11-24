@@ -70,6 +70,7 @@ pub struct ProdMesh {
     log: Arc<Mutex<Vec<Req>>>,
     describe_order: Arc<AtomicBool>,
     tamper: Arc<AtomicBool>,
+    bank: Arc<Bank>,
 }
 
 fn decode(s: &str) -> String {
@@ -247,6 +248,167 @@ fn answer(
     r.clone()
 }
 
+/// Bank Rate as a slice (local 0.5.2, item 12). The fake's whole slice of
+/// `datumesh.com/relay/bankofengland.co.uk/bank_rate` is the recorded window `2026-09-01..2026-11-20`
+/// (59 business days, production's own receipts, captured by `/x/interval`); production's is
+/// 13,118 members from 1975, which no test needs.
+///
+/// * `/slice/<bank_rate with date open>`: JSON pages in production's form (`fn_hash`, `members`,
+///   `next`, `outcome`, `slice`), page size `limit` (production's default is 1,000; the fake's is
+///   20, so that paging is exercised), and `next` written as production writes it:
+///   `https://datumesh.com/slice/<fn>?date=*&asof=<instant>&limit=<n>&after=<hex of the JSON array
+///   of the last key's typed scalars>`.
+/// * `/slice/<bank_rate with a date range>`: production has no URI for a ranged slice (SPEC 4.4:
+///   slice objects "have no cell URI in this revision") and answers 400 `E_PARSE_URI`, as recorded;
+///   the fake answers the same.
+/// * `/x/interval/<bank_rate>?from=&to=`: the members of the window between the two dates, in
+///   production's `/x/interval` form.
+pub struct Bank {
+    /// (date, the `/slice` member envelope, the `/x/interval` member).
+    members: Vec<(String, Value, Value)>,
+    /// Production's answer to a ranged slice (recorded).
+    ranged: Route,
+    served: std::sync::atomic::AtomicUsize,
+}
+
+const BANK_FN: &str = "datumesh.com/relay/bankofengland.co.uk/bank_rate";
+const BANK_WINDOW: &str = "/x/interval/datumesh.com/relay/bankofengland.co.uk/bank_rate?from=2026-09-01&to=2026-11-20";
+const BANK_RANGED: &str = "/slice/datumesh.com/relay/bankofengland.co.uk/bank_rate(date:[2026-10-06..2026-11-05])";
+const BANK_ASOF: &str = "2026-11-24T20:40:59.817138Z";
+
+fn recorded(path: &str) -> Route {
+    let text = std::fs::read_to_string(data("production/routes.jsonl")).unwrap();
+    for line in text.lines() {
+        let v = json::parse(line.as_bytes()).unwrap();
+        if v.get("path").and_then(Value::as_str) == Some(path) {
+            return Route {
+                status: v.get("status").and_then(Value::as_number_text).unwrap().parse().unwrap(),
+                ct: v.get("ct").and_then(Value::as_str).unwrap().to_string(),
+                body: v.get("body").and_then(Value::as_str).unwrap().as_bytes().to_vec(),
+            };
+        }
+    }
+    panic!("{path} is not in routes.jsonl: run tools/capture_production_fixtures.py")
+}
+
+fn bank_load() -> Vec<(String, Value, Value)> {
+    let body = json::parse(&recorded(BANK_WINDOW).body).unwrap();
+    let Some(Value::Array(ms)) = body.get("members") else { panic!("the window has members") };
+    ms.iter()
+        .map(|m| {
+            let r = m.get("receipt").unwrap().clone();
+            let date = m.get("keys").unwrap().get("date").and_then(Value::as_str).unwrap().to_string();
+            let fn_hash = r.get("cell").unwrap().get("fn_hash").cloned().unwrap();
+            let env = Value::Object(vec![
+                ("fn_hash".into(), fn_hash),
+                ("outcome".into(), Value::String("ok".into())),
+                ("receipt".into(), r),
+                ("trust".into(), Value::String("relayed".into())),
+            ]);
+            (date, env, m.clone())
+        })
+        .collect()
+}
+
+/// Whether `s` names a date range (`lo..hi`) anywhere.
+fn has_range(s: &str) -> bool {
+    let b = s.as_bytes();
+    let is_date = |i: usize| {
+        i + 10 <= b.len()
+            && b[i..i + 10]
+                .iter()
+                .enumerate()
+                .all(|(k, c)| if k == 4 || k == 7 { *c == b'-' } else { c.is_ascii_digit() })
+    };
+    (0..b.len()).any(|i| is_date(i) && s[i + 10..].starts_with("..") && is_date(i + 12))
+}
+
+/// A JSON number (numbers come only from parsing).
+fn num(n: usize) -> Value {
+    json::parse(n.to_string().as_bytes()).unwrap()
+}
+
+fn param(q: &str, k: &str) -> Option<String> {
+    q.split('&').find_map(|p| p.strip_prefix(&format!("{k}=")).map(str::to_string))
+}
+
+fn unhex(h: &str) -> Option<Vec<u8>> {
+    (0..h.len()).step_by(2).map(|i| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok())).collect()
+}
+
+fn hex_of(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The date of production's `after` cursor (hex of `[{"type":"date","value":"<date>"}]`).
+fn after_date(h: &str) -> Option<String> {
+    let v = json::parse(&unhex(h)?).ok()?;
+    let Value::Array(a) = v else { return None };
+    a.first()?.get("value").and_then(Value::as_str).map(str::to_string)
+}
+
+impl Bank {
+    fn respond(&self, target: &str) -> Option<Route> {
+        let d = decode(target);
+        if !d.contains(BANK_FN) {
+            return None;
+        }
+        let (path, query) = d.split_once('?').unwrap_or((&d, ""));
+        let json_ok = |body: Value| Route { status: 200, ct: "application/json".into(), body: body.to_jcs() };
+        if path.starts_with("/x/interval/") {
+            let (from, to) = (param(query, "from")?, param(query, "to")?);
+            let picked: Vec<&(String, Value, Value)> =
+                self.members.iter().filter(|m| m.0 >= from && m.0 <= to).collect();
+            self.served.fetch_add(picked.len(), Ordering::SeqCst);
+            return Some(json_ok(Value::Object(vec![
+                ("asof".into(), Value::String(BANK_ASOF.into())),
+                ("count".into(), num(picked.len())),
+                ("from".into(), Value::String(from)),
+                ("function".into(), Value::String(BANK_FN.into())),
+                ("members".into(), Value::Array(picked.iter().map(|m| m.2.clone()).collect())),
+                ("to".into(), Value::String(to)),
+            ])));
+        }
+        if !path.starts_with("/slice/") {
+            return None;
+        }
+        if has_range(&d) {
+            return Some(self.ranged.clone());
+        }
+        let limit: usize = param(query, "limit").and_then(|l| l.parse().ok()).filter(|n| *n > 0).unwrap_or(20);
+        let after = param(query, "after").and_then(|h| after_date(&h));
+        let rest: Vec<&(String, Value, Value)> =
+            self.members.iter().filter(|m| after.as_ref().is_none_or(|a| &m.0 > a)).collect();
+        let page = &rest[..rest.len().min(limit)];
+        self.served.fetch_add(page.len(), Ordering::SeqCst);
+        let fn_hash = self.members[0].1.get("fn_hash").cloned().unwrap();
+        let mut o = vec![
+            ("fn_hash".to_string(), fn_hash.clone()),
+            ("members".to_string(), Value::Array(page.iter().map(|m| m.1.clone()).collect())),
+        ];
+        if rest.len() > limit {
+            let key = format!(r#"[{{"type":"date","value":"{}"}}]"#, page.last().unwrap().0);
+            let next = format!(
+                "https://datumesh.com/slice/{BANK_FN}?date=*&asof={BANK_ASOF}&limit={limit}&after={}",
+                hex_of(key.as_bytes())
+            );
+            o.push(("next".into(), Value::String(next)));
+        }
+        o.push(("outcome".into(), Value::String("ok".into())));
+        let (ns, f) = BANK_FN.rsplit_once('/').unwrap();
+        o.push((
+            "slice".into(),
+            Value::Object(vec![
+                ("args".into(), Value::Object(vec![("date".into(), Value::String("*".into()))])),
+                ("fn".into(), Value::String(f.into())),
+                ("fn_hash".into(), fn_hash),
+                ("ns".into(), Value::String(ns.into())),
+            ]),
+        ));
+        Some(json_ok(Value::Object(o)))
+    }
+}
+
 fn serve(
     mut s: TcpStream,
     routes: &BTreeMap<String, Route>,
@@ -254,6 +416,7 @@ fn serve(
     log: &Mutex<Vec<Req>>,
     order: &AtomicBool,
     tamper: &AtomicBool,
+    bank: &Bank,
 ) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -271,7 +434,10 @@ fn serve(
     let line = head.lines().next().unwrap_or("");
     let mut parts = line.split(' ');
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let r = if method == "GET" {
+    let banked = if method == "GET" { bank.respond(&target) } else { None };
+    let r = if let Some(r) = banked {
+        r
+    } else if method == "GET" {
         answer(routes, cells, order.load(Ordering::SeqCst), tamper.load(Ordering::SeqCst), &target)
     } else {
         Route {
@@ -302,15 +468,33 @@ impl ProdMesh {
         let log = Arc::new(Mutex::new(Vec::new()));
         let order = Arc::new(AtomicBool::new(describe_order));
         let tamper = Arc::new(AtomicBool::new(false));
-        let (l2, o2, t2) = (log.clone(), order.clone(), tamper.clone());
+        let bank = Arc::new(Bank {
+            members: bank_load(),
+            ranged: recorded(BANK_RANGED),
+            served: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (l2, o2, t2, b2) = (log.clone(), order.clone(), tamper.clone(), bank.clone());
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
-                let (routes, cells, log, order, tamper) =
-                    (routes.clone(), cells.clone(), l2.clone(), o2.clone(), t2.clone());
-                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order, &tamper));
+                let (routes, cells, log, order, tamper, bank) =
+                    (routes.clone(), cells.clone(), l2.clone(), o2.clone(), t2.clone(), b2.clone());
+                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order, &tamper, &bank));
             }
         });
-        ProdMesh { origin, log, describe_order: order, tamper }
+        ProdMesh { origin, log, describe_order: order, tamper, bank }
+    }
+
+    /// Bank Rate members served so far, by `/slice` pages and `/x/interval` answers.
+    pub fn bank_served(&self) -> usize {
+        self.bank.served.load(Ordering::SeqCst)
+    }
+
+    /// The decoded targets of the requests for Bank Rate members (`/slice/...` and `/x/interval/...`).
+    pub fn bank_requests(&self) -> Vec<String> {
+        self.targets()
+            .into_iter()
+            .filter(|t| (t.starts_with("/slice/") || t.starts_with("/x/interval/")) && t.contains("bank_rate"))
+            .collect()
     }
 
     /// Break the signature of the second member of every interval answer.
@@ -455,4 +639,42 @@ pub fn agent_refusal(v: &Value) -> String {
         .get("error")
         .unwrap_or_else(|| panic!("neither a result nor an error: {}", String::from_utf8_lossy(&v.to_jcs())));
     String::from_utf8_lossy(&e.to_jcs()).into_owned()
+}
+
+/// The Bank Rate window the fake serves as its whole slice: (date, value), ascending.
+pub fn bank_window() -> Vec<(String, String)> {
+    bank_load().iter().map(|m| (m.0.clone(), m.2.get("value").and_then(Value::as_str).unwrap().to_string())).collect()
+}
+
+/// The value of the last member of the window at or before `day`.
+pub fn bank_value_on_or_before(day: &str) -> String {
+    bank_window().into_iter().rfind(|(d, _)| d.as_str() <= day).expect("a member").1
+}
+
+/// `fresh_home`, with `"slice_fetch_max": <max>` in `config.json` (item 12's bound): its value
+/// replaced when the installed file states it, else the member put after `"offline": false,`.
+/// (`config.json` has `//` comment lines, so it is edited as text.)
+pub fn fresh_home_bounded(peers: &[(&str, &str)], max: u64) -> TempDir {
+    let dir = fresh_home(peers);
+    let p = dir.path().join("config.json");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let key = "\"slice_fetch_max\":";
+    let patched = match text.find(key) {
+        Some(at) => {
+            let start = at + key.len();
+            let rest = &text[start..];
+            let skip = rest.len() - rest.trim_start().len();
+            let digits = rest.trim_start().bytes().take_while(u8::is_ascii_digit).count();
+            format!("{} {max}{}", &text[..start], &text[start + skip + digits..])
+        }
+        None => {
+            assert!(
+                text.contains("\"offline\": false,"),
+                "config.json has `\"offline\": false,` to put the bound after"
+            );
+            text.replacen("\"offline\": false,", &format!("\"offline\": false,\n  \"slice_fetch_max\": {max},"), 1)
+        }
+    };
+    std::fs::write(&p, patched).unwrap();
+    dir
 }
