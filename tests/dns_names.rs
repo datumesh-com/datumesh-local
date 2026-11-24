@@ -236,7 +236,7 @@ fn mcp_describe_of_a_dotted_function_shows_the_publisher_and_the_source_apart() 
 
 fn home(up: &Upstream) -> TempDir {
     let dir = TempDir::new("dns-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     let text = text

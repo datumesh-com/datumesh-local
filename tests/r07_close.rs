@@ -87,7 +87,7 @@ fn mcp_describe_of_an_open_name_is_unchanged() {
 fn cli_describe_of_a_closed_name_says_it_is_unbound() {
     let up = upstream_fn_closed();
     let dir = TempDir::new("r07-close-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))

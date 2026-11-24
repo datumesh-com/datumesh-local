@@ -107,7 +107,7 @@ fn a_stored_function_takes_no_tests() {
 fn the_cli_defines_with_tests() {
     let up = upstream();
     let dir = TempDir::new("define-tests-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))
@@ -139,4 +139,3 @@ fn the_cli_defines_with_tests() {
     assert_eq!(v.get("tests").and_then(Value::as_number_text), Some("2"), "{out}");
 }
 
-use datumesh_local::Config;

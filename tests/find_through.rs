@@ -79,7 +79,7 @@ fn mesh_entry(status: &str) -> (String, Option<String>) {
 #[test]
 fn l1_find_meshes_defaults_to_datumesh_com_and_is_in_the_installed_file() {
     let dir = TempDir::new("find-l1");
-    let c = Config::in_dir(dir.path()).unwrap();
+    let c = common::in_dir_050(dir.path()).unwrap();
     assert_eq!(c.find_meshes, vec!["datumesh.com".to_string()]);
     let installed = std::fs::read_to_string(dir.path().join("config.json")).unwrap();
     assert!(installed.contains("\"find_meshes\": [\"datumesh.com\"]"), "{installed}");
@@ -94,7 +94,7 @@ fn l1_find_meshes_defaults_to_datumesh_com_and_is_in_the_installed_file() {
         installed.replace("\"find_meshes\": [\"datumesh.com\"]", "\"find_meshes\": [\"a.example\", \"b.example\"]"),
     )
     .unwrap();
-    assert_eq!(Config::in_dir(dir.path()).unwrap().find_meshes, vec!["a.example".to_string(), "b.example".to_string()]);
+    assert_eq!(common::in_dir_050(dir.path()).unwrap().find_meshes, vec!["a.example".to_string(), "b.example".to_string()]);
 }
 
 // ---- L4 ---------------------------------------------------------------------------------------
@@ -318,7 +318,7 @@ fn l3_a_remote_class_lists_its_methods_with_call_templates_from_the_meshes_args(
 
 fn home(up: &Upstream) -> TempDir {
     let dir = TempDir::new("find-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     let with_peer = text.replace(

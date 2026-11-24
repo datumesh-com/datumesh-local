@@ -99,8 +99,10 @@ fn tools_list_has_the_eight_tools_in_order() {
     let v = rpc(&srv, "tools/list", "");
     let tools = array(result(&v), "tools");
     let names: Vec<&str> = tools.iter().map(|t| t.get("name").and_then(Value::as_str).unwrap()).collect();
+    // 0.5.1 (L7) adds `interval`; the eleven of 0.5.0 keep their order. No tool accepts a licence (L4).
+    let old: Vec<&str> = names.iter().copied().filter(|n| *n != "interval").collect();
     assert_eq!(
-        names,
+        old,
         [
             "find",
             "get",
@@ -115,6 +117,7 @@ fn tools_list_has_the_eight_tools_in_order() {
             "publish_public",
         ]
     );
+    assert!(names.contains(&"interval"), "{names:?}");
     for t in tools {
         let schema = t.get("inputSchema").unwrap();
         assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));

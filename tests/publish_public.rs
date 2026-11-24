@@ -50,7 +50,7 @@ use std::sync::Arc;
 use common::*;
 use datumesh_core::json::{self, Value};
 use datumesh_local::mcp::{McpServer, Transport};
-use datumesh_local::{Config, Resolver};
+use datumesh_local::{Resolver};
 use tools::*;
 use whatif_stub::{DocMode, WhatifStub};
 
@@ -374,7 +374,7 @@ fn the_meshs_refusals_are_passed_on_with_their_codes_and_details() {
 
 fn home(w: &W) -> TempDir {
     let dir = TempDir::new("publish-public-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", w.up.origin)))

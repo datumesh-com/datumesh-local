@@ -590,7 +590,7 @@ fn a_calc_that_is_not_remote_never_posts() {
 // ---------------------------------------------------------------------------------------------
 
 fn home(up: &Upstream, dir: &TempDir) {
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))
@@ -615,7 +615,7 @@ fn the_cli_calc_writes_the_answer_and_memoises() {
         let clock = ManualClock::new("2026-11-15T10:00:00.000000Z");
         let r = Resolver::open_with_clock(
             {
-                let mut c = Config::in_dir(dir.path()).unwrap();
+                let mut c = common::in_dir_050(dir.path()).unwrap();
                 c.peers.insert(HOST.to_string(), up.origin.clone());
                 c
             },
@@ -660,7 +660,7 @@ fn the_cli_calc_remote_asks_x_calc_and_keeps_nothing() {
     let up = upstream();
     let stub = WhatifStub::start(&up, DocMode::Peer);
     let dir = TempDir::new("calc-cli-remote");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", stub.origin)))
@@ -809,7 +809,7 @@ fn the_cli_get_of_a_large_slice_gives_the_same() {
     home(&up, &dir);
     {
         let clock = ManualClock::new("2026-11-15T10:00:00.000000Z");
-        let mut c = Config::in_dir(dir.path()).unwrap();
+        let mut c = common::in_dir_050(dir.path()).unwrap();
         c.peers.insert(HOST.to_string(), up.origin.clone());
         let r = Resolver::open_with_clock(c, clock).unwrap();
         r.define_stored("local/rates", &sig(LEVEL_SIG)).unwrap();

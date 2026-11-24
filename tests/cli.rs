@@ -4,11 +4,10 @@ mod common;
 
 use common::*;
 use datumesh_core::json::{self, Value};
-use datumesh_local::Config;
 
 fn home(up: &Upstream) -> TempDir {
     let dir = TempDir::new("cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))

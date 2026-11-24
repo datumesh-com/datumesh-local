@@ -92,7 +92,7 @@ fn mcp_get_through_a_withdrawn_label_says_it_is_not_covered_and_gives_the_reason
 
 fn home(up: &Upstream) -> TempDir {
     let dir = TempDir::new("r07-wd-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))

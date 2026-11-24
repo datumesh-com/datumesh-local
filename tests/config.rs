@@ -14,21 +14,16 @@ fn first_run_installs_the_default_files() {
     // The comments the user asked for are in the installed file.
     assert!(cfg.contains("mesh-test.datumesh.com"), "{cfg}");
     assert_eq!(c.allowlist, vec!["datumesh.com".to_string(), "mesh-test.datumesh.com".to_string()]);
-    assert_eq!(c.forward_mesh.as_deref(), Some("mesh-test.datumesh.com"));
+    // 0.5.1 (L1): the forward mesh is production's; the test mesh stays on the allowlist.
+    assert_eq!(c.forward_mesh.as_deref(), Some("datumesh.com"));
     assert!(!c.offline);
     // Since 0.2.0 the gate is the engine's inheritance rule (spec-0.4.3 8.5): the installed
     // file has no open list, and says so.
     assert!(!cfg.contains("\"open_licences\""), "{cfg}");
     assert!(cfg.contains("8.5"), "{cfg}");
     assert!(c.open_licences.is_empty());
-    // The alias map is a file, installed on first run: local/, scripture/ and ecb/ only, and tx.
-    let aliases = json::parse(&std::fs::read(dir.path().join("aliases.json")).unwrap()).unwrap();
-    let m = aliases.as_object().unwrap();
-    let names: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(names, vec!["ecb/", "local/", "scripture/", "tx"]);
-    assert_eq!(aliases.get("local/").and_then(Value::as_str), Some("local.invalid/"));
-    assert_eq!(aliases.get("ecb/").and_then(Value::as_str), Some("mesh-test.datumesh.com/ecb/"));
-    assert_eq!(aliases.get("scripture/").and_then(Value::as_str), Some("mesh-test.datumesh.com/scripture/"));
+    // The alias map is a file, installed on first run (its 0.5.1 defaults: local_051_defaults.rs).
+    assert!(dir.path().join("aliases.json").exists());
     // A second load reads the files as they are (an edit stands).
     std::fs::write(dir.path().join("config.json"), cfg.replace("\"offline\": false", "\"offline\": true")).unwrap();
     assert!(Config::in_dir(dir.path()).unwrap().offline);

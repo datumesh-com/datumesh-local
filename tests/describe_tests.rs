@@ -266,7 +266,7 @@ fn a_local_function_without_tests_says_no_tests() {
 
 fn home(up: &Upstream, stub: &FnStub) -> TempDir {
     let dir = TempDir::new("describe-tests-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     let _ = up;

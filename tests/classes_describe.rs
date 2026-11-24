@@ -16,7 +16,7 @@ use common::*;
 use datumesh_core::json::{self, Value};
 use datumesh_core::{check_describe_with, DescribeKind};
 use datumesh_local::serve::Server;
-use datumesh_local::{Config, Source};
+use datumesh_local::{Source};
 
 fn encoding(class: &str, keys: &str) -> String {
     format!("{class}({keys})")
@@ -157,7 +157,7 @@ fn describe_answers_from_local_classes() {
 
 fn home(up: &Upstream) -> TempDir {
     let dir = TempDir::new("describe-cli");
-    Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{\"{HOST}\": \"{}\"}}", up.origin)))

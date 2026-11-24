@@ -12,7 +12,7 @@ use std::sync::Arc;
 use common::*;
 use datumesh_core::json::{self, Value};
 use datumesh_core::Receipt;
-use datumesh_local::{Config, Error, Resolver, RootPlan};
+use datumesh_local::{Error, Resolver, RootPlan};
 
 const T: &str = "2026-11-15T12:00:00.000000Z";
 const T_IMPORT: &str = "2026-11-15T12:00:01.000000Z";
@@ -285,7 +285,7 @@ fn the_namespace_key_is_nowhere_but_its_file() {
     let needles: Vec<Vec<u8>> = vec![lower.clone().into_bytes(), lower.to_uppercase().into_bytes(), seed.to_vec()];
     let mut haystacks: Vec<(String, Vec<u8>)> = Vec::new();
     let mut files = Vec::new();
-    files_under(&Config::in_dir(t.dir.path()).unwrap().data_dir, &mut files);
+    files_under(&common::in_dir_050(t.dir.path()).unwrap().data_dir, &mut files);
     for f in &files {
         haystacks.push((f.display().to_string(), std::fs::read(f).unwrap()));
     }

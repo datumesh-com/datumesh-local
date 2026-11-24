@@ -118,7 +118,7 @@ fn the_network_down_or_a_host_not_allowed_is_e_foreign_unavailable_with_the_fail
 fn the_cli_writes_the_envelope_and_exits_3() {
     let up = upstream();
     let dir = TempDir::new("offline-cli");
-    datumesh_local::Config::in_dir(dir.path()).unwrap();
+    common::in_dir_050(dir.path()).unwrap();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let args: Vec<String> =
         ["--home", dir.path().to_str().unwrap(), "--offline", "get", USD].iter().map(|s| s.to_string()).collect();

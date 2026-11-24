@@ -7,7 +7,7 @@ mod common;
 
 use common::*;
 use datumesh_core::json::Value;
-use datumesh_local::{Config, Resolver, Source, FOREIGN_UNAVAILABLE};
+use datumesh_local::{Resolver, Source, FOREIGN_UNAVAILABLE};
 
 fn live() -> Option<(TempDir, Resolver)> {
     if std::env::var("DATUMESH_LIVE").is_err() {
@@ -15,7 +15,7 @@ fn live() -> Option<(TempDir, Resolver)> {
         return None;
     }
     let dir = TempDir::new("live");
-    let r = Resolver::open(Config::in_dir(dir.path()).unwrap()).unwrap();
+    let r = Resolver::open(common::in_dir_050(dir.path()).unwrap()).unwrap();
     Some((dir, r))
 }
 

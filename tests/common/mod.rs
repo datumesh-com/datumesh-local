@@ -409,9 +409,25 @@ pub fn upstream() -> Upstream {
     upstream_with(1000)
 }
 
+/// The configuration of a home made as 0.5.0 made it: the test mesh as the forward mesh and
+/// the short names `ecb/` and `scripture/` on it (the defaults of 0.5.0, `tests/data/home-050/`).
+/// The tests of the older rounds run on such a home; 0.5.1's defaults are production's
+/// (`local_051_defaults.rs`).
+pub fn in_dir_050(dir: impl AsRef<Path>) -> Result<Config, datumesh_local::Error> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir).unwrap();
+    for f in ["config.json", "aliases.json"] {
+        let p = dir.join(f);
+        if !p.exists() {
+            std::fs::copy(data(&format!("home-050/{f}")), &p).unwrap();
+        }
+    }
+    Config::in_dir(dir)
+}
+
 /// A resolver's configuration in its own directory, reaching `upstream` for the test mesh.
 pub fn config(dir: &TempDir, upstream: &Upstream) -> Config {
-    let mut c = Config::in_dir(dir.path()).unwrap();
+    let mut c = in_dir_050(dir.path()).unwrap();
     c.peers.insert(HOST.to_string(), upstream.origin.clone());
     c
 }
