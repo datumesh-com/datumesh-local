@@ -12,7 +12,7 @@ use datumesh_http::client::{Client, ClientConfig, ClientError};
 use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_store::{SqliteStore, Store};
 
-use crate::acceptance::Acceptance;
+use crate::acceptance::{accept_hint, Acceptance};
 use crate::alias::{request_asof, request_head, AliasMap};
 use crate::classes::{with_resolved, Parse};
 use crate::config::Config;
@@ -902,6 +902,29 @@ impl Resolver {
             let mut r = Reply::new(403, datumesh_http::envelope::unlicensed(), Source::Local);
             r.detail = Some(why);
             return Ok(r);
+        }
+        // L4 (NotAccepted): the engine refuses a computation whose restricted input licences are not all
+        // accepted (engine 0.6.1, EngineError::NotAccepted). The mesh answers that as E_EVAL_UNAVAILABLE and
+        // keeps no detail, so the refusal is recognised here: the same `unlicensed` answer the gate gives.
+        let engine_refusal = json::parse(&reply.body)
+            .ok()
+            .and_then(|v| v.get("error").and_then(Value::as_str).map(|e| e == "E_EVAL_UNAVAILABLE"))
+            .unwrap_or(false);
+        if engine_refusal && !ctx.restricted.is_empty() {
+            let accepted = s.acceptance.engine_set()?;
+            let mut missing: Vec<&String> = ctx.restricted.iter().filter(|l| !accepted.contains(*l)).collect();
+            missing.sort();
+            if !missing.is_empty() {
+                let why = format!(
+                    "licence inheritance (SPEC 8.5) refuses {}: not accepted: {}; {}",
+                    cell_uri(&target.cell),
+                    missing.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", "),
+                    missing.iter().map(|l| accept_hint(l.as_str())).collect::<Vec<_>>().join("; ")
+                );
+                let mut r = Reply::new(403, datumesh_http::envelope::unlicensed(), Source::Local);
+                r.detail = Some(why);
+                return Ok(r);
+            }
         }
         if let Some(why) = ctx.refused {
             // A local name (a formula here) reading a declared restricted computation: no

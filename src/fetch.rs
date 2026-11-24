@@ -17,7 +17,7 @@ use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member
 use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
 
-use crate::acceptance::{is_restricted, Acceptance};
+use crate::acceptance::{accept_hint, is_restricted, Acceptance};
 use crate::config::Config;
 use crate::gate::{is_unrooted, GateDecision, LicenceGate};
 use crate::index::{HeldCell, Index};
@@ -154,6 +154,9 @@ pub(crate) struct Ctx {
     pub(crate) remote: Option<ClientError>,
     /// Cells whose versions were imported.
     pub(crate) added: Vec<String>,
+    /// The restricted licences of the inputs the evaluation read (L4: the engine's acceptance rule
+    /// needs every one of them accepted).
+    pub(crate) restricted: Vec<String>,
 }
 
 thread_local! {
@@ -402,6 +405,13 @@ impl Shared {
         // L4: the licences this machine accepted (`licences.json`) decide what the gate's rule refuses.
         let accepted = self.acceptance.engine_set().map_err(|e| unavailable(e.to_string()))?;
         let licence = r.licence();
+        if is_restricted(licence) {
+            note(|c| {
+                if !c.restricted.iter().any(|l| l == licence) {
+                    c.restricted.push(licence.to_string());
+                }
+            });
+        }
         let decision = match self.gate.permits(function, licence, r.signer_host(), declarations.as_ref(), &self.now()) {
             // A receipt this machine signed: a restricted licence is computed over only when accepted.
             GateDecision::Compute
@@ -428,9 +438,8 @@ impl Shared {
                 let mut why =
                     format!("licence inheritance (SPEC 8.5) refuses {function}: {input}: {}", reason.as_str());
                 if is_restricted(licence) && !accepted.contains(licence) {
-                    why.push_str(&format!(
-                        "; the user must accept {licence} at the command line: datumesh licence accept '{licence}'"
-                    ));
+                    why.push_str("; ");
+                    why.push_str(&accept_hint(licence));
                 }
                 note(|c| {
                     c.unlicensed.get_or_insert(why.clone());

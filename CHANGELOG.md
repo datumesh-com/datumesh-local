@@ -28,7 +28,10 @@ Protocol round, Part 1 (CONTRACT-protocol-part1, datumesh-local 0.5.1; with datu
   (`signature.order`, fetched by hash), so `par_yield(10Y, 2026-11-20)` parses where `/cell` takes it.
 - **The MCP tool `interval` (L7, D8).** `{function, keys?, from, to}` asks the forward mesh's `x_interval`, resolving aliases,
   and gives the members with their receipts. Over 100 members it gives a summary, the first 100 and the call for the rest.
-  The mesh's errors (`E_RANGE_TOO_LARGE`, `not_covered`) are passed through.
+  The mesh's errors (`E_RANGE_TOO_LARGE`, `not_covered`) are passed through. Each member's receipt is verified against
+  the publisher's keys; a member that does not verify makes the tool answer an error naming it.
+- A computation the engine refuses for a restricted input licence not accepted (`EngineError::NotAccepted`) is answered
+  `unlicensed` with the same message as the gate's refusal, naming `datumesh licence accept '<licence>'`.
 - The engine is datumesh-engine 0.6.1 (`EngineBuilder::accepted_licences`, `Engine::set_accepted_licences`,
   `LOCAL_DERIVATION_LICENCE`, `EngineError::NotAccepted`).
 

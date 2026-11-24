@@ -7,6 +7,7 @@
 use datumesh_core::json::{self, Value};
 use datumesh_http::client::pct;
 
+use crate::resolver::client_error;
 use crate::{Error, Resolver};
 
 /// The members listed in full; over this many the answer summarises and gives the call for the rest.
@@ -65,6 +66,30 @@ impl Resolver {
         let Some(Value::Array(members)) = v.get("members") else {
             return Err(Error::Client { code: "E_ENVELOPE".into(), detail: format!("{url}: no members") });
         };
+        // Every member is verified like any other answer: the publisher's key document is held, then each
+        // member's receipt is checked against it. A member that does not verify fails the whole answer.
+        s.ensure_namespace(&mesh).map_err(|e| client_error(&e))?;
+        for m in members {
+            let Some(receipt) = m.get("receipt") else {
+                return Err(Error::Client {
+                    code: "E_ENVELOPE".into(),
+                    detail: format!("{url}: a member has no receipt"),
+                });
+            };
+            let checked = self.verify(&receipt.to_jcs());
+            if checked.get("ok") != Some(&Value::Bool(true)) {
+                let code = checked.get("code").and_then(Value::as_str).unwrap_or("E_RECEIPT_UNVERIFIED").to_string();
+                let detail = checked.get("detail").and_then(Value::as_str).unwrap_or("").to_string();
+                let key = m.get("keys").map(Value::to_jcs).unwrap_or_default();
+                return Err(Error::Client {
+                    code: code.clone(),
+                    detail: format!(
+                        "member {} of {full}: its receipt does not verify ({code}): {detail}",
+                        String::from_utf8_lossy(&key)
+                    ),
+                });
+            }
+        }
         let mut out = vec![
             ("function".to_string(), Value::String(full.clone())),
             (
