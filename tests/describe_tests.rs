@@ -81,8 +81,9 @@ impl FnStub {
         FnStub { pages, requests, _rt: rt, origin: format!("http://{addr}") }
     }
 
+    /// A page for the function's FULL name (with its host), as `/fn/<full name>?format=json` asks (L2).
     fn page(&self, name: &str, tests: &str) {
-        let body = format!(r#"{{"name":"{HOST}/{name}","tests":{tests}}}"#);
+        let body = format!(r#"{{"name":"{name}","tests":{tests}}}"#);
         self.pages.lock().unwrap().insert(name.to_string(), body);
     }
 
@@ -134,7 +135,7 @@ fn num_of(v: &Value, k: &str) -> String {
 #[test]
 fn describe_of_a_public_function_lists_its_tests_from_the_function_page() {
     let (_up, stub, _dir, _r, srv) = world();
-    stub.page("ecb/fx_rate", &tests_json(3, 3, "pass"));
+    stub.page("mesh-test.datumesh.com/ecb/fx_rate", &tests_json(3, 3, "pass"));
     let v = describe(&srv, RATE);
     let t = tests_of(&v);
     assert_eq!(num_of(t, "count"), "3", "{}", jcs(t));
@@ -149,7 +150,7 @@ fn describe_of_a_public_function_lists_its_tests_from_the_function_page() {
     assert_eq!(s(&cases[2], "result"), "pass");
     // The tests were read from the mesh's function page JSON, once the describe answer named it.
     assert!(
-        stub.asked().iter().any(|r| r.starts_with("/fn/ecb/fx_rate") && r.contains("format=json")),
+        stub.asked().iter().any(|r| r.starts_with("/fn/mesh-test.datumesh.com/ecb/fx_rate") && r.contains("format=json")),
         "{:?}",
         stub.asked()
     );
@@ -161,7 +162,7 @@ fn describe_of_a_public_function_lists_its_tests_from_the_function_page() {
 #[test]
 fn the_text_of_describe_gives_count_last_run_and_cases() {
     let (_up, stub, _dir, _r, srv) = world();
-    stub.page("ecb/fx_rate", &tests_json(2, 2, "fail"));
+    stub.page("mesh-test.datumesh.com/ecb/fx_rate", &tests_json(2, 2, "fail"));
     let v = describe(&srv, RATE);
     assert!(!is_error(&v), "{}", jcs(&v));
     let text = items(&v).join("\n");
@@ -176,7 +177,7 @@ fn the_text_of_describe_gives_count_last_run_and_cases() {
 fn describe_lists_the_first_100_cases_with_the_total() {
     let (_up, stub, _dir, _r, srv) = world();
     // The page already holds the first 100 of 250; describe shows them and says 250.
-    stub.page("ecb/fx_rate", &tests_json(100, 250, "pass"));
+    stub.page("mesh-test.datumesh.com/ecb/fx_rate", &tests_json(100, 250, "pass"));
     let v = describe(&srv, RATE);
     let t = tests_of(&v);
     assert_eq!(num_of(t, "count"), "250");
@@ -185,7 +186,7 @@ fn describe_lists_the_first_100_cases_with_the_total() {
     let text = items(&v).join("\n");
     assert!(text.contains("250"), "{text}");
     // Even if a page gave more than 100, describe shows at most 100.
-    stub.page("ecb/fx_rate", &tests_json(130, 250, "pass"));
+    stub.page("mesh-test.datumesh.com/ecb/fx_rate", &tests_json(130, 250, "pass"));
     let v = describe(&srv, RATE);
     assert_eq!(arr(tests_of(&v), "cases").len(), 100);
     assert_eq!(num_of(tests_of(&v), "cases_total"), "250");
@@ -195,7 +196,7 @@ fn describe_lists_the_first_100_cases_with_the_total() {
 fn the_0_4_9_last_run_members_are_accepted_and_a_bare_0_4_8_last_run_too() {
     let (_up, stub, _dir, _r, srv) = world();
     stub.page(
-        "ecb/fx_rate",
+        "mesh-test.datumesh.com/ecb/fx_rate",
         &format!(
             r#"{{"count":1,"cases":[{{"call":"ecb/fx_rate(base: \"EUR\", quote: \"USD\", date: 2026-01-02)","expect":"1","result":"error"}}],"cases_total":1,"last_run":{{"result":"error","at":"{LAST_AT}","pass":0,"fail":0,"error":1,"not_run":0}}}}"#
         ),
@@ -203,7 +204,7 @@ fn the_0_4_9_last_run_members_are_accepted_and_a_bare_0_4_8_last_run_too() {
     let v = describe(&srv, RATE);
     assert_eq!(s(tests_of(&v).get("last_run").unwrap(), "result"), "error");
     stub.page(
-        "ecb/fx_rate",
+        "mesh-test.datumesh.com/ecb/fx_rate",
         &format!(
             r#"{{"count":1,"cases":[{{"call":"ecb/fx_rate(base: \"EUR\", quote: \"USD\", date: 2026-01-02)","expect":"1","result":"pass"}}],"cases_total":1,"last_run":{{"result":"pass","at":"{LAST_AT}"}}}}"#
         ),
@@ -216,7 +217,7 @@ fn the_0_4_9_last_run_members_are_accepted_and_a_bare_0_4_8_last_run_too() {
 fn a_public_function_with_no_tests_says_no_tests() {
     let (_up, stub, _dir, _r, srv) = world();
     stub.page(
-        "ecb/holiday",
+        "mesh-test.datumesh.com/ecb/holiday",
         r#"{"count":0,"branches":0,"covered":0,"counterexamples":0,"open_counterexamples":0,"cases":[],"cases_total":0,"last_run":null}"#,
     );
     let v = describe(&srv, HOLIDAY);
@@ -287,7 +288,7 @@ fn run(dir: &TempDir, args: &[&str]) -> (i32, String, String) {
 fn the_cli_describe_prints_the_tests_of_a_public_function() {
     let up = upstream();
     let stub = FnStub::start(&up);
-    stub.page("ecb/fx_rate", &tests_json(3, 250, "pass"));
+    stub.page("mesh-test.datumesh.com/ecb/fx_rate", &tests_json(3, 250, "pass"));
     let dir = home(&up, &stub);
     let (code, out, err) = run(&dir, &["describe", RATE]);
     assert_eq!(code, 0, "{err}");
@@ -306,7 +307,7 @@ fn the_cli_describe_prints_the_tests_of_a_public_function() {
 fn the_cli_describe_says_no_tests_for_a_function_without_tests() {
     let up = upstream();
     let stub = FnStub::start(&up);
-    stub.page("ecb/holiday", r#"{"count":0,"cases":[],"cases_total":0,"last_run":null}"#);
+    stub.page("mesh-test.datumesh.com/ecb/holiday", r#"{"count":0,"cases":[],"cases_total":0,"last_run":null}"#);
     let dir = home(&up, &stub);
     let (code, out, err) = run(&dir, &["describe", HOLIDAY]);
     assert_eq!(code, 0, "{err}");
