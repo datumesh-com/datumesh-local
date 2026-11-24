@@ -362,15 +362,15 @@ impl Resolver {
             }
         }
         let (ty, unit) = inferred_returns(name, canonical, &functions)?;
-        let mut returns = vec![("type", js(ty.as_str()))];
-        if ty == "number" {
-            returns.push(("unit", declared_unit(unit.as_deref().unwrap_or("1"))?));
-        }
-        let sig = obj(vec![
-            ("args", Value::Object(Vec::new())),
-            ("order", Value::Array(Vec::new())),
-            ("returns", obj(returns)),
-        ]);
+        // A number's returns is an object with its unit; any other type is written as its name (SPEC 7.1),
+        // as the body's type is found (item 33).
+        let returns = if ty == "number" {
+            obj(vec![("type", js(ty.as_str())), ("unit", declared_unit(unit.as_deref().unwrap_or("1"))?)])
+        } else {
+            js(ty.as_str())
+        };
+        let sig =
+            obj(vec![("args", Value::Object(Vec::new())), ("order", Value::Array(Vec::new())), ("returns", returns)]);
         match define_function(name, canonical, &sig, &aliases, &callees, now) {
             Ok(def) => Ok(def),
             Err(e) => {

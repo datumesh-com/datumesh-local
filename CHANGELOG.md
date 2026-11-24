@@ -35,6 +35,18 @@ Protocol round, Part 1 (CONTRACT-next-patch, items 12, 13, 14 and 18; datumesh-l
   rewritten, and a short name the file has is its own.
 - **Fixed.** A `calc` over a slice read named its slice's call (`bank_rate(*)`) where a function's name belongs, and asked production
   for a binding of that name. The client's slice rest is the canonical URI form, as `prefetch` holds it.
+- **`datumesh allow add|list|remove <domain>` (item 30).** Manages the CLI's allowlist in `config.json`: only the
+  `allowlist` array's text is rewritten, so every comment line is kept, and the file is read back to check it. Add is
+  idempotent; removing a domain that is not there says so, exit 0, and changes nothing. A domain that is a URL, a path, has
+  an uppercase letter or a trailing dot is refused (exit 2) and the file is not touched. No MCP tool does this.
+- **A `peers` origin must be `http://` or `https://` (item 31).** Any other origin is refused when the configuration loads,
+  naming the entry, its host and the origin.
+- **Local `calc` takes its result type from the body (item 33).** A text, date, instant or boolean result is answered with
+  its type and value, not refused with `E_CANON_UNIT`: a non-number's signature `returns` is its type name, as SPEC 7.1
+  writes it. Numbers are answered as before, with their unit. (`/x/calc` on the forward mesh is datumesh-http's, not this
+  crate's.)
+- **The installed `config.json` says the forward mesh is asked too with `--remote` (item 32).** The comment above
+  `find_meshes` (`Resolver::find_in` asks `forward_mesh` whenever `remote` is true).
 - **Fixed.** Replacing the mesh (`reload_aliases`, the endpoint's base URL) gave the new engine no licences in force until they
   changed, so a restricted input a `serve` answer read was refused as not accepted. The new mesh is given them at once.
 

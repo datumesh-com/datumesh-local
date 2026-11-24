@@ -77,8 +77,95 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|calc|define
   licence <accept <licence>|list|revoke <licence>>
   trust <add <file>|revoke <host>|list>
   root --namespace <ns> --key <file> [--export <file>] <name>...
+  allow <add|list|remove> [<domain>]   the allowlist in config.json (comments kept)
   (a read fetches the foreign slices it needs, up to slice_fetch_max members per evaluation in config.json,
    default 50000; past it E_SLICE_FETCH_LIMIT, and prefetch holds a slice first)";
+
+/// Whether `d` is a domain the allowlist takes: lowercase labels of letters, digits and hyphens, joined
+/// by dots, with no trailing dot (no scheme, path, port, uppercase or other character).
+fn valid_domain(d: &str) -> bool {
+    !d.is_empty()
+        && d.len() <= 253
+        && !d.ends_with('.')
+        && d.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+}
+
+/// The allowlist's array in `config.json`'s text: its span (`[`..`]`) after the `"allowlist":` member.
+fn allowlist_span(text: &str) -> Option<(usize, usize)> {
+    let key = text.find("\"allowlist\":")?;
+    let open = key + text[key..].find('[')?;
+    let close = open + text[open..].find(']')?;
+    Some((open, close + 1))
+}
+
+/// `datumesh allow add|list|remove <domain>` (datumesh-local 0.5.2, item 30): the allowlist in the
+/// configuration file. Only the array's text changes, so every comment line is kept.
+fn allow_command(config: &Config, rest: &[String], out: &mut dyn Write) -> Result<i32, Failure> {
+    let path = config.config_dir.join("config.json");
+    let usage = |m: &str| Failure::Usage(format!("allow: {m}"));
+    let (sub, domain) = match rest {
+        [sub] if sub == "list" => return allow_list(config, out),
+        [sub, d] if sub == "add" || sub == "remove" => (sub.as_str(), d.as_str()),
+        _ => return Err(usage("add <domain>, list, or remove <domain>")),
+    };
+    if !valid_domain(domain) {
+        return Err(usage(&format!(
+            "{domain}: a domain (lowercase letters, digits, hyphens and dots, no scheme, path, port or trailing dot)"
+        )));
+    }
+    let text = std::fs::read_to_string(&path).map_err(io)?;
+    let (open, close) = allowlist_span(&text)
+        .ok_or_else(|| Failure::Error(Error::Config(format!("{}: no allowlist", path.display()))))?;
+    let mut list = config.allowlist.clone();
+    let present = list.iter().any(|d| d == domain);
+    if sub == "add" {
+        if present {
+            writeln!(out, "{domain} is already on the allowlist").map_err(io)?;
+            return Ok(0);
+        }
+        list.push(domain.to_string());
+    } else {
+        if !present {
+            writeln!(out, "{domain} is not on the allowlist").map_err(io)?;
+            return Ok(0);
+        }
+        list.retain(|d| d != domain);
+    }
+    let array = format!("[{}]", list.iter().map(|d| format!("\"{d}\"")).collect::<Vec<_>>().join(", "));
+    let updated = format!("{}{}{}", &text[..open], array, &text[close..]);
+    // The file is written whole, then read back: the allowlist it gives is the one asked for.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, updated).map_err(io)?;
+    std::fs::rename(&tmp, &path).map_err(io)?;
+    let check = Config::in_dir(&config.config_dir)?;
+    if check.allowlist != list {
+        return Err(Failure::Error(Error::Config(format!(
+            "{}: the allowlist was not written as asked",
+            path.display()
+        ))));
+    }
+    writeln!(
+        out,
+        "{} {domain} {}",
+        if sub == "add" { "added" } else { "removed" },
+        if sub == "add" { "to the allowlist" } else { "from the allowlist" }
+    )
+    .map_err(io)?;
+    Ok(0)
+}
+
+fn allow_list(config: &Config, out: &mut dyn Write) -> Result<i32, Failure> {
+    for d in &config.allowlist {
+        writeln!(out, "{d}").map_err(io)?;
+    }
+    Ok(0)
+}
 
 /// Runs the command line (without the program name) with these streams; the exit status.
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -216,6 +303,9 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             path.display()
         )
         .map_err(io)?;
+    }
+    if cmd == "allow" {
+        return allow_command(&config, rest, out);
     }
     let r = Resolver::open(config)?;
     match cmd.as_str() {

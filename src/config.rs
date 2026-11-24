@@ -252,6 +252,12 @@ impl Config {
                     for (h, origin) in o {
                         let origin =
                             origin.as_str().ok_or_else(|| Error::Config(format!("peers.{h}: not a string")))?;
+                        // An origin is a URL's origin: http:// or https:// (datumesh-local 0.5.2, item 31).
+                        if !(origin.starts_with("http://") || origin.starts_with("https://")) {
+                            return Err(Error::Config(format!(
+                                "peers.{h}: {origin} is not an origin: it must start with http:// or https://"
+                            )));
+                        }
                         c.peers.insert(h.clone(), origin.to_string());
                     }
                 }

@@ -41,7 +41,7 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 | Command | |
 |---|---|
 | `get <request>...` | the envelope (SPEC 5.5) of each, on stdout; a line per answer on stderr (outcome, source, signer, label). A slice of more than 100 members gives a summary, its first 100 members and the `calc` call that aggregates it |
-| `calc <formula> [--asof <instant>] [--remote]` | a formula over cells, answered in one call with its lineage, on stdout. Here, the result is kept as the local function `local/calc_<h>` (`<h>` the first 16 hex digits of the SHA-256 of the canonical formula), so the same calculation is not run twice; with `--remote`, the forward mesh's `x_calc` evaluates it in a scope and nothing is kept |
+| `calc <formula> [--asof <instant>] [--remote]` | a formula over cells, answered in one call with its lineage, on stdout. Its result type is the body's: a text, date, instant or boolean result is answered with its type and value (since 0.5.2), a number with its unit. Here, the result is kept as the local function `local/calc_<h>` (`<h>` the first 16 hex digits of the SHA-256 of the canonical formula), so the same calculation is not run twice; with `--remote`, the forward mesh's `x_calc` evaluates it in a scope and nothing is kept |
 | `define <name> --formula <source> --signature <json> [--tests <json array>]` | a formula function (also `--stored`, `--descriptor <file>`). A test's `inputs` may give a slice as `{"<slice call>": {"members": {}}}` (empty) or with a members map of cell calls to plain literals (since 0.5.2) |
 | `define <name> --class <file>` | a class (16.1: keys, methods, order, steward), under `local/` only (owner `local.invalid`) |
 | `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format); class lines too |
@@ -51,6 +51,7 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 | `find <text> [--remote]` | names held here (and the forward mesh's) |
 | `prefetch <slice or function>... [--page n] [--blobs]` | pull a slice's pages (or a function's binding and descriptor), keys included; a short name works (`prefetch 'boe/bank_rate(*)'`) |
 | `whatif <request> --set '<cell>=<value>' [--set ...] [--asof <instant>] [--json]` | a scenario (never a fact): the value a cell would have if some cells held other values, as the MCP tool `whatif` prints it (`Scenario (not a fact): ...`); `--json` prints the structured answer. Exit 0 for a scenario, 3 otherwise (the code on stderr) |
+| `allow add <domain>`, `allow list`, `allow remove <domain>` | the CLI's allowlist (`config.json`'s `allowlist`, comments kept). Add is idempotent; removing a domain that is not there says so and changes nothing. A domain is lowercase letters, digits, hyphens and dots, no scheme, path, port or trailing dot. No MCP tool manages it |
 | `refresh` | re-pull the latest versions of what is held (`/versions` where a host lists it) |
 | `export [--out file]`, `import <file> [--trust-key <key id>]` | move a working set between resolvers |
 | `verify <file or ->` | SPEC 10.1 with this machine's keys |
