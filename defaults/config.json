@@ -40,6 +40,13 @@
   // The time limit of one request to a mesh, in seconds.
   "timeout_seconds": 10,
 
+  // The most members one evaluation fetches from the mesh for the slices it reads and does not
+  // hold (a lookup narrowed by its bound fetches its range), summed over the slices it reads. Past
+  // it the evaluation is refused with E_SLICE_FETCH_LIMIT and nothing it fetched is kept; prefetch
+  // the slice first to hold it. 50,000 covers the whole of Bank Rate's history (13,118 members) and
+  // one currency of the ECB references (about 7,000).
+  "slice_fetch_max": 50000,
+
   // The store: null for <data directory>/store.sqlite, a SQLite path, or a postgres:// URL.
   "store": null,
 

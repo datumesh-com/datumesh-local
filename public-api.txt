@@ -54,6 +54,7 @@ pub fn datumesh_local::alias::AliasMap::expand_source(&self, &str) -> alloc::str
 pub fn datumesh_local::alias::AliasMap::from_json(&[u8]) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::load(&std::path::Path) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::tx(&self) -> &str
+pub fn datumesh_local::alias::AliasMap::with_defaults(self) -> datumesh_local::alias::AliasMap
 impl core::clone::Clone for datumesh_local::alias::AliasMap
 pub fn datumesh_local::alias::AliasMap::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::alias::AliasMap
@@ -117,6 +118,7 @@ pub datumesh_local::config::Config::licence: alloc::string::String
 pub datumesh_local::config::Config::offline: bool
 pub datumesh_local::config::Config::open_licences: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::config::Config::peers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_local::config::Config::slice_fetch_max: u64
 pub datumesh_local::config::Config::store: core::option::Option<alloc::string::String>
 pub datumesh_local::config::Config::timeout: core::time::Duration
 impl datumesh_local::config::Config
@@ -227,6 +229,20 @@ pub fn datumesh_local::key::key_entries(&[u8]) -> alloc::vec::Vec<datumesh_core:
 pub fn datumesh_local::key::local_key_document(&str, &[datumesh_core::json::Value]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::key::retired_entries(&std::path::Path) -> core::result::Result<alloc::vec::Vec<datumesh_core::json::Value>, datumesh_local::Error>
 pub mod datumesh_local::mcp
+pub enum datumesh_local::mcp::Profile
+pub datumesh_local::mcp::Profile::Full
+pub datumesh_local::mcp::Profile::Small
+impl datumesh_local::mcp::Profile
+pub fn datumesh_local::mcp::Profile::named(&str) -> core::option::Option<datumesh_local::mcp::Profile>
+impl core::clone::Clone for datumesh_local::mcp::Profile
+pub fn datumesh_local::mcp::Profile::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::mcp::Profile
+impl core::cmp::PartialEq for datumesh_local::mcp::Profile
+pub fn datumesh_local::mcp::Profile::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::mcp::Profile
+pub fn datumesh_local::mcp::Profile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_local::mcp::Profile
+impl core::marker::StructuralPartialEq for datumesh_local::mcp::Profile
 pub enum datumesh_local::mcp::Transport
 pub datumesh_local::mcp::Transport::Http
 pub datumesh_local::mcp::Transport::Http::authorized: bool
@@ -250,6 +266,7 @@ pub struct datumesh_local::mcp::McpServer
 impl datumesh_local::mcp::McpServer
 pub fn datumesh_local::mcp::McpServer::handle(&self, &str, datumesh_local::mcp::Transport) -> core::option::Option<alloc::string::String>
 pub fn datumesh_local::mcp::McpServer::new(alloc::rcs::arc::Arc<datumesh_local::Resolver>) -> datumesh_local::mcp::McpServer
+pub fn datumesh_local::mcp::McpServer::with_profile(alloc::rcs::arc::Arc<datumesh_local::Resolver>, datumesh_local::mcp::Profile) -> datumesh_local::mcp::McpServer
 pub struct datumesh_local::mcp::Token(_)
 impl datumesh_local::mcp::Token
 pub fn datumesh_local::mcp::Token::load_or_create(&std::path::Path) -> core::result::Result<datumesh_local::mcp::Token, datumesh_local::Error>
@@ -257,7 +274,9 @@ impl core::fmt::Debug for datumesh_local::mcp::Token
 pub fn datumesh_local::mcp::Token::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn datumesh_local::mcp::http_router(alloc::rcs::arc::Arc<datumesh_local::mcp::McpServer>, datumesh_local::mcp::Token) -> axum::routing::Router
 pub fn datumesh_local::mcp::serve_http(alloc::rcs::arc::Arc<datumesh_local::Resolver>, u16) -> core::result::Result<datumesh_local::mcp::HttpServer, datumesh_local::Error>
+pub fn datumesh_local::mcp::serve_http_with(alloc::rcs::arc::Arc<datumesh_local::Resolver>, datumesh_local::mcp::Profile, u16) -> core::result::Result<datumesh_local::mcp::HttpServer, datumesh_local::Error>
 pub fn datumesh_local::mcp::serve_stdio<R: alloc::io::buf_read::BufRead, W: core::io::write::Write>(alloc::rcs::arc::Arc<datumesh_local::Resolver>, R, W) -> core::result::Result<(), datumesh_local::Error>
+pub fn datumesh_local::mcp::serve_stdio_with<R: alloc::io::buf_read::BufRead, W: core::io::write::Write>(alloc::rcs::arc::Arc<datumesh_local::Resolver>, datumesh_local::mcp::Profile, R, W) -> core::result::Result<(), datumesh_local::Error>
 pub mod datumesh_local::serve
 pub struct datumesh_local::serve::Server
 impl datumesh_local::serve::Server
@@ -367,6 +386,7 @@ pub fn datumesh_local::alias::AliasMap::expand_source(&self, &str) -> alloc::str
 pub fn datumesh_local::alias::AliasMap::from_json(&[u8]) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::load(&std::path::Path) -> core::result::Result<datumesh_local::alias::AliasMap, datumesh_local::Error>
 pub fn datumesh_local::alias::AliasMap::tx(&self) -> &str
+pub fn datumesh_local::alias::AliasMap::with_defaults(self) -> datumesh_local::alias::AliasMap
 impl core::clone::Clone for datumesh_local::alias::AliasMap
 pub fn datumesh_local::alias::AliasMap::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::alias::AliasMap
@@ -402,6 +422,7 @@ pub datumesh_local::Config::licence: alloc::string::String
 pub datumesh_local::Config::offline: bool
 pub datumesh_local::Config::open_licences: alloc::vec::Vec<alloc::string::String>
 pub datumesh_local::Config::peers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_local::Config::slice_fetch_max: u64
 pub datumesh_local::Config::store: core::option::Option<alloc::string::String>
 pub datumesh_local::Config::timeout: core::time::Duration
 impl datumesh_local::config::Config

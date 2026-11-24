@@ -27,6 +27,7 @@ use axum::Router;
 use datumesh_core::json::{self, Value};
 use datumesh_http::Mesh;
 
+use crate::calculus::{OverrideArg, SolveArg, WhatifArgs};
 use crate::{Error, Resolver};
 
 /// Percent-encodes what a URI path cannot carry as itself (spaces, quotes, non-ASCII).
@@ -78,8 +79,100 @@ pub fn router(resolver: Arc<Resolver>) -> Router {
         .mesh()
         .router()
         .layer(axum::middleware::from_fn_with_state(resolver.clone(), describe))
+        .layer(axum::middleware::from_fn_with_state(resolver.clone(), whatif))
         .layer(axum::middleware::from_fn_with_state(resolver.clone(), cell))
         .layer(axum::middleware::from_fn_with_state(resolver, loopback))
+}
+
+/// `POST /whatif` (SPEC 5.9's body, datumesh-local 0.5.2 item 13): the scenario of the request through the
+/// resolver, as the MCP tool `whatif` gives it: `{"outcome": "scenario", "scenario": {...}}`, or the
+/// refusal with its code in `error`.
+async fn whatif(State(r): State<Arc<Resolver>>, req: Request, next: Next) -> Response {
+    if req.method() != axum::http::Method::POST || req.uri().path() != "/whatif" {
+        return next.run(req).await;
+    }
+    let bytes = match axum::body::to_bytes(req.into_body(), 1 << 20).await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    let answer = tokio::task::spawn_blocking(move || {
+        let args = whatif_request(&bytes)?;
+        r.whatif(&args)
+    })
+    .await;
+    match answer {
+        Ok(Ok(sc)) => {
+            let body =
+                Value::Object(vec![("outcome".into(), Value::String("scenario".into())), ("scenario".into(), sc)]);
+            json_response(StatusCode::OK, body.to_jcs())
+        }
+        Ok(Err(e)) => {
+            let detail = e.to_string();
+            let code = crate::mcp::tool_code_of(e);
+            let status = if code == "E_REQUEST" { StatusCode::BAD_REQUEST } else { StatusCode::UNPROCESSABLE_ENTITY };
+            let body =
+                Value::Object(vec![("error".into(), Value::String(code)), ("detail".into(), Value::String(detail))]);
+            json_response(status, body.to_jcs())
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn json_response(status: StatusCode, body: Vec<u8>) -> Response {
+    let mut resp = (status, body).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// The request of a `POST /whatif` body (SPEC 5.9): `cell` (a call), `asof`, `overrides` (each `{cell,
+/// value}`, the value a typed `{"type", "value"}` or a plain literal) and `solve`.
+fn whatif_request(bytes: &[u8]) -> Result<WhatifArgs, Error> {
+    let bad = |m: &str| Error::Request(format!("whatif body: {m}"));
+    let v = json::parse(bytes).map_err(|e| bad(&e.to_string()))?;
+    let text = |x: Option<&Value>| x.and_then(Value::as_str).map(str::to_string);
+    // A typed scalar's lexical form, or a plain literal as it is.
+    let literal = |x: &Value| -> Option<Value> {
+        match x {
+            Value::Object(_) => x.get("value").and_then(Value::as_str).map(|s| Value::String(s.to_string())),
+            Value::String(s) => Some(Value::String(s.clone())),
+            Value::Bool(b) => Some(Value::String(b.to_string())),
+            other => other.as_number_text().map(|n| Value::String(n.to_string())),
+        }
+    };
+    let request = text(v.get("cell")).ok_or_else(|| bad("cell: a call"))?;
+    let asof = match v.get("asof") {
+        None => None,
+        Some(Value::String(a)) => Some(a.clone()),
+        Some(_) => return Err(bad("asof: an instant")),
+    };
+    let mut overrides = Vec::new();
+    match v.get("overrides") {
+        None => {}
+        Some(Value::Array(items)) => {
+            for o in items {
+                let cell = text(o.get("cell")).ok_or_else(|| bad("overrides: each has a cell"))?;
+                let value = o.get("value").and_then(literal).ok_or_else(|| bad("overrides: each has a value"))?;
+                overrides.push(OverrideArg::Value { cell, value });
+            }
+        }
+        Some(_) => return Err(bad("overrides: an array")),
+    }
+    let solve = match v.get("solve") {
+        None => None,
+        Some(sv) => {
+            let need = |k: &str| sv.get(k).and_then(literal).ok_or_else(|| bad(&format!("solve.{k}")));
+            Some(SolveArg {
+                vary: text(sv.get("vary")).ok_or_else(|| bad("solve.vary: a call"))?,
+                target: text(sv.get("target")).ok_or_else(|| bad("solve.target: a call"))?,
+                equals: need("equals")?,
+                lo: need("lo")?,
+                hi: need("hi")?,
+            })
+        }
+    };
+    Ok(WhatifArgs { request, overrides, asof, solve })
 }
 
 /// The answer's `poll` and `next` members that name this machine's host, rewritten onto the

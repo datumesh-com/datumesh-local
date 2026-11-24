@@ -324,7 +324,19 @@ impl Resolver {
             )
         });
         let engine = self.mesh().engine().clone();
-        let answer = engine.whatif(&target.reference, asof, &overrides, solve.as_ref()).map_err(engine_error)?;
+        // The slices a read needs are fetched and kept first (item 12), as an evaluation does.
+        let (answer, ctx) =
+            match self.shared.evaluating(|| engine.whatif(&target.reference, asof, &overrides, solve.as_ref())) {
+                Ok(answered) => answered,
+                Err(stop) => return Err(stop.into_error()),
+            };
+        if let Some(why) = ctx.unavailable {
+            return Err(Error::ForeignUnavailable(why));
+        }
+        let answer = answer.map_err(engine_error)?;
+        for c in &ctx.added {
+            self.mesh().stored_version_added(c);
+        }
         let mut sc = Scenario::new(answer.cell.clone(), answer.value.clone(), &answer.asof, &core_overrides(ovs)?)
             .map_err(|e| Error::Client { code: "E_ENVELOPE".into(), detail: e.to_string() })?;
         if let Some((vary, value)) = &answer.solved {

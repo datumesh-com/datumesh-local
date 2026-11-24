@@ -62,7 +62,22 @@ struct Spec {
     call: datumesh_formula::call::Call,
     asof: String,
     inputs: Vec<(String, Scalar)>,
+    /// A slice input's members (datumesh-local 0.5.2, item 14): the slice's call, and each member's
+    /// call with its value.
+    slices: Vec<(String, Vec<(String, Scalar)>)>,
     expect: Expect,
+}
+
+/// A slice input's members, when the input is `{"members": {<call>: <value>, ...}}` and nothing else
+/// (datumesh-local 0.5.2, item 14): the map, else `None`.
+fn members_of(v: &Value) -> Option<&Vec<(String, Value)>> {
+    match v {
+        Value::Object(m) if m.len() == 1 && m[0].0 == "members" => match &m[0].1 {
+            Value::Object(members) => Some(members),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// `text` as a plain literal: a JSON string, number or boolean, as its text.
@@ -301,6 +316,40 @@ impl Resolver {
                     let kcall = self.call_of(key, None)?;
                     let iname = format!("{}/{}", kcall.cell.ns, kcall.cell.fn_name);
                     let ty = self.returns_of(&iname)?;
+                    if kcall.cell.args.values().any(|a| matches!(a, Arg::Slice)) {
+                        // A slice (item 14): its members, each a cell of it with a plain literal value.
+                        let members = members_of(v).ok_or_else(|| {
+                            Error::Request(format!(
+                                "{p}.inputs: {key} is a slice, given as {{\"members\": {{<cell call>: <value>, ...}}}}"
+                            ))
+                        })?;
+                        let mut kept = Vec::new();
+                        for (mk, mv) in members {
+                            let mcall = self.call_of(mk, None).map_err(|_| {
+                                Error::Request(format!("{p}.inputs: member {mk} is not a cell of {key}"))
+                            })?;
+                            let same = mcall.cell.ns == kcall.cell.ns
+                                && mcall.cell.fn_name == kcall.cell.fn_name
+                                && mcall.cell.args.keys().eq(kcall.cell.args.keys())
+                                && kcall.cell.args.iter().all(|(k, a)| match a {
+                                    Arg::Value(x) => mcall.cell.args.get(k) == Some(&Arg::Value(x.clone())),
+                                    Arg::Slice => matches!(mcall.cell.args.get(k), Some(Arg::Value(_))),
+                                });
+                            if !same {
+                                return Err(Error::Request(format!("{p}.inputs: member {mk} is not a cell of {key}")));
+                            }
+                            let text = literal_text(mv)
+                                .ok_or_else(|| Error::Request(format!("{p}.inputs: member {mk} is a plain literal")))?;
+                            let scalar = Scalar::from_lexical(ty, &text)
+                                .map_err(|e| Error::Request(format!("{p}.inputs: {e}")))?;
+                            kept.push((aliases.expand_prefix(mk), scalar.to_value()));
+                        }
+                        typed.push((
+                            aliases.expand_prefix(key),
+                            Value::Object(vec![("members".into(), Value::Object(kept))]),
+                        ));
+                        continue;
+                    }
                     let text = literal_text(v)
                         .ok_or_else(|| Error::Request(format!("{p}.inputs: {key} is a plain literal")))?;
                     let scalar =
@@ -390,6 +439,16 @@ impl Resolver {
                 let cell = call.cell.resolve(&fn_hash).map_err(|e| Error::Request(e.to_string()))?;
                 let receipt = input_receipt(&cell, value, &spec.asof);
                 world.add_receipt(&receipt).map_err(|e| Error::Define(e.to_string()))?;
+            }
+            for (_, members) in &spec.slices {
+                for (text, value) in members {
+                    let call = self.call_of(text, None)?;
+                    let fname = format!("{}/{}", call.cell.ns, call.cell.fn_name);
+                    let fn_hash = self.binding_hash(&fname)?;
+                    let cell = call.cell.resolve(&fn_hash).map_err(|e| Error::Request(e.to_string()))?;
+                    let receipt = input_receipt(&cell, value, &spec.asof);
+                    world.add_receipt(&receipt).map_err(|e| Error::Define(e.to_string()))?;
+                }
             }
             let mut probe = Probe {
                 world,
@@ -505,8 +564,24 @@ impl Resolver {
             None => self.shared.now(),
         };
         let mut inputs = Vec::new();
+        let mut slices = Vec::new();
         if let Some(Value::Object(given)) = t.get("inputs") {
             for (k, typed) in given {
+                if let Some(members) = members_of(typed) {
+                    let mut kept = Vec::new();
+                    for (mk, mv) in members {
+                        let mc = self.call_of(mk, None)?;
+                        let ty = self.returns_of(&format!("{}/{}", mc.cell.ns, mc.cell.fn_name))?;
+                        let text =
+                            literal_text(mv).ok_or_else(|| Error::Store("a kept slice member is typed".into()))?;
+                        kept.push((
+                            mk.clone(),
+                            Scalar::from_lexical(ty, &text).map_err(|e| Error::Store(e.to_string()))?,
+                        ));
+                    }
+                    slices.push((k.clone(), kept));
+                    continue;
+                }
                 let ty = typed.get("type").and_then(Value::as_str).and_then(Type::from_name);
                 let text = typed.get("value").and_then(literal_text);
                 let (Some(ty), Some(text)) = (ty, text) else {
@@ -517,7 +592,7 @@ impl Resolver {
             }
         }
         let expect = expect_of(t.get("expect").ok_or_else(|| Error::Store("a kept test without an expect".into()))?)?;
-        Ok(Spec { call, asof, inputs, expect })
+        Ok(Spec { call, asof, inputs, slices, expect })
     }
 }
 

@@ -62,6 +62,10 @@ pub struct Config {
     pub peers: BTreeMap<String, String>,
     /// The time limit of one request to a mesh.
     pub timeout: Duration,
+    /// The most members one evaluation fetches from the mesh for the slices it reads and does not
+    /// hold, summed over them (datumesh-local 0.5.2, item 12). Past it the evaluation is refused
+    /// with `E_SLICE_FETCH_LIMIT`, and nothing it fetched is kept. Default 50,000.
+    pub slice_fetch_max: u64,
 }
 
 /// Whether `host` is a machine's host: a name under `.invalid` (RFC 2606), lowercase labels of
@@ -202,6 +206,7 @@ impl Config {
             licence: "CC-BY-4.0".into(),
             peers: BTreeMap::new(),
             timeout: Duration::from_secs(10),
+            slice_fetch_max: 50_000,
         };
         let m = v.as_object().ok_or_else(|| Error::Config(format!("{}: not an object", path.display())))?;
         let path_of = |x: &Value, k: &str| -> Result<Option<PathBuf>, Error> {
@@ -273,6 +278,12 @@ impl Config {
                     if let Some(p) = path_of(x, k)? {
                         c.aliases_file = p;
                     }
+                }
+                "slice_fetch_max" => {
+                    c.slice_fetch_max = x
+                        .as_number_text()
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .ok_or_else(|| Error::Config("slice_fetch_max: not a whole number".into()))?;
                 }
                 other => return Err(Error::Config(format!("{}: unknown member {other}", path.display()))),
             }

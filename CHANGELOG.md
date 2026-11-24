@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.2
+
+Protocol round, Part 1 (CONTRACT-next-patch, items 12, 13, 14 and 18; datumesh-local 0.5.2 with datumesh-engine 0.6.1).
+
+- **Slices fetched on demand (item 12).** A local evaluation that reads a slice of a foreign function the store does not hold
+  fetches the members it reads, held as `prefetch` holds them. A whole slice comes in JSON pages, following `next` (production's
+  `https://datumesh.com/slice/...` links; the client follows only `https://<host>/` links). A lookup narrowed by its bound
+  (`last_before(f(*), x, b)` reads `[x - b..x]`) fetches that range through production's `/x/interval?from&to`, since production
+  refuses a ranged `/slice` with `E_PARSE_URI`. Every member is verified. A second evaluation over a whole slice held this way
+  fetches nothing.
+- **The bound (item 12).** `slice_fetch_max` in `config.json`, default 50,000 members per evaluation, summed over the slices it
+  fetches; a new home's file states it. Past it the evaluation answers `E_SLICE_FETCH_LIMIT`, naming the slice, its size so far and
+  the bound, with `prefetch` as the way to hold it first. Nothing it fetched is kept, and nothing is computed. Stated in
+  `datumesh --help`, the README and the configuration.
+- **`datumesh whatif` (item 13).** `whatif <request> --set '<cell>=<value>' [--set ...] [--asof <instant>] [--json]`, printing as the
+  MCP tool does (`Scenario (not a fact): ...`, then one `with <cell> = <value>` line per override); `--json` prints the structured
+  answer. Exit 0 for a scenario, 3 otherwise, with the tool's code on stderr. The value is typed by the overridden cell's type.
+- **`POST /whatif` on `datumesh serve` (item 13).** The body of SPEC 5.9 (`cell`, `asof`, `overrides`, `solve`) is answered as the MCP
+  tool answers it: `{"outcome": "scenario", "scenario": {...}}`, or the refusal with its code in `error` (503
+  `E_EVAL_UNAVAILABLE` before this version, for a local function over production's inputs).
+- **`define --tests` takes slice inputs (item 14).** A case's `inputs` may give a slice as `{"<slice call>": {"members": {}}}` (empty)
+  or with a members map of cell calls to plain literals, typed by the function's return type. A plain literal given for a slice,
+  a member that is not a cell of it, or any other shape is refused at define, and nothing is defined. `root --export` carries the
+  inputs unchanged.
+- **The agent tool surface (item 18).** `datumesh mcp --profile small|full` (`full`, the default, is unchanged). `small` lists
+  `find`, `get`, `calc` and `interval` with one- or two-sentence descriptions and minimal schemas, and instructions of two sentences
+  and the mesh's held sentence: about 380 tokens on the approximation. `tools/mcp_tokens.py` counts each definition's tokens (with
+  `ANTHROPIC_API_KEY`, through the count_tokens endpoint; without it, approximately, the method named), and `docs/mcp-tokens.md`
+  is its report for both profiles.
+- **Prefetch and calc of a short name (fixed).** A home whose `aliases.json` predates `boe/` (made before 0.5.1, when the defaults
+  gained it) failed `prefetch 'boe/bank_rate(*)'` with `E_FOREIGN_UNAVAILABLE: not allowed: boe is not in the allowlist`, because
+  `boe` was read as a host. The defaults' short names the file lacks are now taken from the defaults in memory; the file is not
+  rewritten, and a short name the file has is its own.
+- **Fixed.** A `calc` over a slice read named its slice's call (`bank_rate(*)`) where a function's name belongs, and asked production
+  for a binding of that name. The client's slice rest is the canonical URI form, as `prefetch` holds it.
+- **Fixed.** Replacing the mesh (`reload_aliases`, the endpoint's base URL) gave the new engine no licences in force until they
+  changed, so a restricted input a `serve` answer read was refused as not accepted. The new mesh is given them at once.
+
 ## 0.5.1
 
 Protocol round, Part 1 (CONTRACT-protocol-part1, datumesh-local 0.5.1; with datumesh-engine 0.6.1's local acceptance, E1).

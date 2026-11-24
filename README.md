@@ -42,18 +42,20 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 |---|---|
 | `get <request>...` | the envelope (SPEC 5.5) of each, on stdout; a line per answer on stderr (outcome, source, signer, label). A slice of more than 100 members gives a summary, its first 100 members and the `calc` call that aggregates it |
 | `calc <formula> [--asof <instant>] [--remote]` | a formula over cells, answered in one call with its lineage, on stdout. Here, the result is kept as the local function `local/calc_<h>` (`<h>` the first 16 hex digits of the SHA-256 of the canonical formula), so the same calculation is not run twice; with `--remote`, the forward mesh's `x_calc` evaluates it in a scope and nothing is kept |
-| `define <name> --formula <source> --signature <json>` | a formula function (also `--stored`, `--descriptor <file>`) |
+| `define <name> --formula <source> --signature <json> [--tests <json array>]` | a formula function (also `--stored`, `--descriptor <file>`). A test's `inputs` may give a slice as `{"<slice call>": {"members": {}}}` (empty) or with a members map of cell calls to plain literals (since 0.5.2) |
 | `define <name> --class <file>` | a class (16.1: keys, methods, order, steward), under `local/` only (owner `local.invalid`) |
 | `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format); class lines too |
 | `describe <id>` | a class name, a key encoding, an object id, a short id or a cell id (16.8): the answer on stdout, exit 0 for 200, 3 for anything else; a function's tests after it, read from its page `https://<host>/fn/<full name>?format=json` |
 | `licence accept <licence>`, `licence list`, `licence revoke <licence>` | accept a restricted licence on this machine (see [Licence acceptance](#licence-acceptance)); the register's clauses and licence hash are shown first |
 | `explain <request> [--depth n]` | the lineage, as nested envelopes |
 | `find <text> [--remote]` | names held here (and the forward mesh's) |
-| `prefetch <slice or function>... [--page n] [--blobs]` | pull a slice's pages (or a function's binding and descriptor), keys included |
+| `prefetch <slice or function>... [--page n] [--blobs]` | pull a slice's pages (or a function's binding and descriptor), keys included; a short name works (`prefetch 'boe/bank_rate(*)'`) |
+| `whatif <request> --set '<cell>=<value>' [--set ...] [--asof <instant>] [--json]` | a scenario (never a fact): the value a cell would have if some cells held other values, as the MCP tool `whatif` prints it (`Scenario (not a fact): ...`); `--json` prints the structured answer. Exit 0 for a scenario, 3 otherwise (the code on stderr) |
 | `refresh` | re-pull the latest versions of what is held (`/versions` where a host lists it) |
 | `export [--out file]`, `import <file> [--trust-key <key id>]` | move a working set between resolvers |
 | `verify <file or ->` | SPEC 10.1 with this machine's keys |
-| `serve [--listen 127.0.0.1:<port>]` | the localhost endpoint (127.0.0.1 only) |
+| `serve [--listen 127.0.0.1:<port>]` | the localhost endpoint (127.0.0.1 only), with `POST /whatif` (the MCP tool's answer, for a local function over production's inputs) |
+| `mcp [--profile small\|full]` | the MCP server over stdio; `full` (the default) is every tool, `small` is `find`, `get`, `calc` and `interval` with short descriptions, about 400 tokens (see [`docs/mcp-tokens.md`](docs/mcp-tokens.md)) |
 | `key` | the machine id and this machine's (public) key document |
 
 The MCP server (`datumesh mcp`) has the same reads and writes, and one tool more since 0.5.1:
@@ -148,6 +150,21 @@ already trusted host replaces the old one only if it still lists every key trust
 now: its earlier receipts still verify, later ones fail with `E_KEY_NOT_VALID`. `datumesh
 trust list` shows the trusted machines. A formula may read a trusted machine's cells; reading
 any other unrooted host is refused at define time (`Error::UntrustedInput`).
+
+## Slices a read fetches
+
+A local evaluation that reads a slice of a foreign function the local store does not hold completely
+fetches the members it reads, as a prefetch would hold them: the whole slice in JSON pages (following
+`next`, which production writes as `https://datumesh.com/slice/...`), or a lookup's range narrowed by its
+bound through production's `/x/interval` (a ranged `/slice` is refused by production, so the range comes
+from `/x/interval`). Every member is verified like any fetched cell, and nothing is kept if the evaluation
+refuses.
+
+The bound is `slice_fetch_max` in `config.json`: 50,000 members per evaluation, summed over the slices it
+fetches. The default covers Bank Rate's whole history (13,118 members) and one currency of the ECB
+references (about 7,000). Past the bound the evaluation answers `E_SLICE_FETCH_LIMIT`, naming the slice,
+its size so far and the bound, and nothing is computed or stored; `prefetch` the slice to hold it first.
+A second evaluation over a whole slice held this way fetches nothing.
 
 ## The localhost endpoint
 
@@ -262,14 +279,17 @@ the data directory (`$XDG_DATA_HOME/datumesh` on Linux). Members: `allowlist` (d
 `datumesh.com` and the test mesh `mesh-test.datumesh.com`), `forward_mesh` (default `datumesh.com`;
 a home made before 0.5.1 keeps its `mesh-test.datumesh.com`, and is told on every command), `offline`,
 `licence` (the licence of receipts for cells without inputs), `peers`, `timeout_seconds`,
-`store`, `key_file`, `aliases_file`. `open_licences`, the open list of 0.1.0 and 0.1.1, is
+`store`, `key_file`, `aliases_file`, `slice_fetch_max` (the most members one evaluation fetches for the
+slices it reads and does not hold, default 50000; see [Slices a read fetches](#slices-a-read-fetches)).
+`open_licences`, the open list of 0.1.0 and 0.1.1, is
 deprecated: still accepted, ignored (the gate needs no configuration).
 
 The alias map (`aliases.json`) is a file, read at start and by `refresh`. Its default (0.5.1) is
 `local/` → `local.invalid/`, and production's short names: `ecb/` → `datumesh.com/relay/ecb.europa.eu/`,
 `treasury/` → `datumesh.com/relay/treasury.gov/`, `boe/` → `datumesh.com/relay/bankofengland.co.uk/`,
 `scripture/` → `datumesh.com/scripture/`, `earth/` → `datumesh.com/earth/`. An existing home's file is
-not rewritten.
+not rewritten; a short name its file lacks (`boe/` in a home made before 0.5.1, say) is taken from the
+defaults in memory, and a short name the file has is the file's.
 
 ### Alias map file
 

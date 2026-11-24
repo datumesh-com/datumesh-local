@@ -325,11 +325,13 @@ impl Resolver {
         loop {
             // The detail names the function: "<name> declares no order: ..." (a positional call), or
             // "<name> has no binding" (a function the formula reads, which the environment must hold now).
+            // The name is the function's: a slice's detail carries its call text (`bank_rate(*)`), cut here.
             let name = match e.code {
                 Code::Positional => e.detail.split(" declares no order").next().unwrap_or("").to_string(),
                 Code::Unresolved => e.detail.split(" has no binding").next().unwrap_or("").to_string(),
                 _ => return Err(formula_error(e)),
             };
+            let name = crate::fetch::name_of(&name).to_string();
             if name.is_empty() || env.functions.contains_key(&name) {
                 return Err(formula_error(e));
             }

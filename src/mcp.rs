@@ -79,6 +79,38 @@ pub enum Transport {
     },
 }
 
+/// The tool surface a server gives (datumesh-local 0.5.2, item 18): `full`, the default, is every
+/// tool; `small` is `find`, `get`, `calc` and `interval`, with short descriptions and minimal schemas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Profile {
+    /// Every tool (the default).
+    Full,
+    /// The four tools an agent needs for lookups and calculations, within a small token budget.
+    Small,
+}
+
+impl Profile {
+    /// The profile named `name` (`full` or `small`); `None` for any other name.
+    pub fn named(name: &str) -> Option<Profile> {
+        match name {
+            "full" => Some(Profile::Full),
+            "small" => Some(Profile::Small),
+            _ => None,
+        }
+    }
+}
+
+/// The instructions of the small profile: two sentences; the mesh's held sentence follows them.
+const SMALL_INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find to discover names, then get for a cell or calc to compute one.";
+
+/// The tools of the small profile, in `tools/list` order (`find`, `get`, `calc`, `interval`).
+const SMALL_TOOLS: &str = r#"[
+{"name":"find","description":"Names held here that contain the query, case-insensitively. With remote, or when none are held, also the find meshes.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
+{"name":"get","description":"The signed answer to a call such as name(arg: value), or to a cell:// URI.","inputSchema":{"type":"object","properties":{"request":{"type":"string"}},"required":["request"]}},
+{"name":"calc","description":"Calculates a formula beside the data and returns the result with its lineage.","inputSchema":{"type":"object","properties":{"formula":{"type":"string"}},"required":["formula"]}},
+{"name":"interval","description":"The members of a function over a range of keys, each with its receipt.","inputSchema":{"type":"object","properties":{"function":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["function","from","to"]}}
+]"#;
+
 /// The MCP server over a resolver: [`McpServer::handle`] answers one message.
 pub struct McpServer {
     resolver: Arc<Resolver>,
@@ -89,6 +121,8 @@ pub struct McpServer {
     /// The tools, as `tools/list` gives them: the static descriptions, or those the catalogue
     /// summary extends.
     tools: Value,
+    /// The tool surface this server gives.
+    profile: Profile,
 }
 
 /// A JSON-RPC error: its code, message and optional data.
@@ -173,7 +207,26 @@ impl McpServer {
     /// fetched now, and the instructions and the descriptions of `find` and `get` are written from
     /// it (CONTRACT-build2-part2-read R4); when it cannot be had, the static text of 0.3.3 is used.
     pub fn new(resolver: Arc<Resolver>) -> McpServer {
+        McpServer::with_profile(resolver, Profile::Full)
+    }
+
+    /// A server over `resolver` giving the tool surface of `profile` (item 18): the full surface is
+    /// [`McpServer::new`]'s; the small one is four tools, its instructions the held sentence after two.
+    pub fn with_profile(resolver: Arc<Resolver>, profile: Profile) -> McpServer {
         let catalogue = resolver.find_json("summary=1").ok().and_then(|v| Catalogue::of(&v));
+        if profile == Profile::Small {
+            let instructions = match catalogue {
+                Some(c) => format!("{SMALL_INSTRUCTIONS} {}", c.held),
+                None => SMALL_INSTRUCTIONS.to_string(),
+            };
+            return McpServer {
+                resolver,
+                legacy: AtomicBool::new(false),
+                instructions,
+                tools: json_const(SMALL_TOOLS),
+                profile,
+            };
+        }
         let mut tools = json_const(TOOLS);
         let instructions = match catalogue {
             Some(c) => {
@@ -190,7 +243,7 @@ impl McpServer {
             }
             None => INSTRUCTIONS.to_string(),
         };
-        McpServer { resolver, legacy: AtomicBool::new(false), instructions, tools }
+        McpServer { resolver, legacy: AtomicBool::new(false), instructions, tools, profile }
     }
 
     /// Answers one message (a JSON-RPC line) received on `transport`: the response as one line
@@ -262,7 +315,7 @@ impl McpServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| Rpc::new(-32602, "tools/call needs the tool's name"))?;
-        if !TOOL_NAMES.contains(&name) {
+        if !TOOL_NAMES.contains(&name) || (self.profile == Profile::Small && !SMALL_NAMES.contains(&name)) {
             return Err(Rpc::new(-32602, format!("Unknown tool: {name}")));
         }
         // Writes need the token over HTTP (`define`, `publish` and `publish_public`).
@@ -916,6 +969,9 @@ impl McpServer {
 }
 
 /// The tool names, in `tools/list` order.
+/// The tools of the small profile.
+const SMALL_NAMES: [&str; 4] = ["find", "get", "calc", "interval"];
+
 const TOOL_NAMES: [&str; 12] = [
     "find",
     "get",
@@ -1010,6 +1066,12 @@ fn content_members(texts: Vec<String>, structured: Value, is_error: bool) -> Vec
 }
 
 /// A failed tool call's result: its text (`<code>: <detail>`) and `{error, detail}`, with `isError`.
+/// The code the MCP tools give an error: its spec code, else `error` (what `whatif` answers the CLI and
+/// `serve` with too).
+pub(crate) fn tool_code_of(e: Error) -> String {
+    ToolError::from(e).code.unwrap_or_else(|| "error".to_string())
+}
+
 fn tool_failure(e: ToolError) -> Vec<(String, Value)> {
     let text = match &e.code {
         Some(c) if !e.detail.starts_with(c.as_str()) => format!("{c}: {}", e.detail),
@@ -1321,7 +1383,7 @@ fn override_arg(v: &Value) -> Result<OverrideArg, ToolError> {
 }
 
 /// The text of a scenario's answer: its first line is the label (E6).
-fn scenario_text(v: &Value) -> String {
+pub(crate) fn scenario_text(v: &Value) -> String {
     let mut lines = vec![format!(
         "Scenario (not a fact): {} = {} as of {}.",
         member_of(v, "call"),
@@ -1392,8 +1454,18 @@ fn json_text(v: &Value) -> String {
 
 /// Serves MCP over stdio: each line of `input` is a message, its response one line of
 /// `output`; returns at end of input. Only MCP messages go to `output`.
-pub fn serve_stdio<R: BufRead, W: Write>(resolver: Arc<Resolver>, input: R, mut output: W) -> Result<(), Error> {
-    let server = McpServer::new(resolver);
+pub fn serve_stdio<R: BufRead, W: Write>(resolver: Arc<Resolver>, input: R, output: W) -> Result<(), Error> {
+    serve_stdio_with(resolver, Profile::Full, input, output)
+}
+
+/// [`serve_stdio`] with the tool surface of `profile`.
+pub fn serve_stdio_with<R: BufRead, W: Write>(
+    resolver: Arc<Resolver>,
+    profile: Profile,
+    input: R,
+    mut output: W,
+) -> Result<(), Error> {
+    let server = McpServer::with_profile(resolver, profile);
     for line in input.lines() {
         let line = line.map_err(|e| Error::Request(format!("stdin: {e}")))?;
         if line.trim().is_empty() {
@@ -1510,6 +1582,11 @@ impl Drop for HttpServer {
 /// If `[::1]` cannot be bound, the server goes on with 127.0.0.1 alone and writes one line to
 /// stderr. The token is read from (or made in) the token file of the configuration directory.
 pub fn serve_http(resolver: Arc<Resolver>, port: u16) -> Result<HttpServer, Error> {
+    serve_http_with(resolver, Profile::Full, port)
+}
+
+/// [`serve_http`] with the tool surface of `profile`.
+pub fn serve_http_with(resolver: Arc<Resolver>, profile: Profile, port: u16) -> Result<HttpServer, Error> {
     let token_path = resolver.config().config_dir.join(TOKEN_FILE);
     let token = Token::load_or_create(&token_path)?;
     let v4 = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
@@ -1521,7 +1598,7 @@ pub fn serve_http(resolver: Arc<Resolver>, port: u16) -> Result<HttpServer, Erro
         Err(e) => eprintln!("datumesh mcp: [::1]:{port} is not bound ({e}); serving 127.0.0.1 only"),
     }
     let addrs: Vec<SocketAddr> = listeners.iter().filter_map(|l| l.local_addr().ok()).collect();
-    let router = http_router(Arc::new(McpServer::new(resolver)), token);
+    let router = http_router(Arc::new(McpServer::with_profile(resolver, profile)), token);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     std::thread::Builder::new()
         .name("datumesh-mcp-http".into())

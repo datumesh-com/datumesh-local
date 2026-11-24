@@ -122,10 +122,26 @@ impl AliasMap {
         self
     }
 
-    /// The map in the file at `path`.
+    /// The map in the file at `path`, with the default entries the file lacks (see
+    /// [`AliasMap::with_defaults`]).
     pub fn load(path: &std::path::Path) -> Result<AliasMap, Error> {
         let bytes = std::fs::read(path).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-        AliasMap::from_json(&bytes)
+        Ok(AliasMap::from_json(&bytes)?.with_defaults())
+    }
+
+    /// The map with the default entries of the file installed at first run (datumesh-local 0.5.2): each
+    /// default short name the map has no entry for is added. A home installed by an older version keeps its
+    /// file, which does not gain the newer defaults (`boe/` came in 0.5.1); this map does, in memory. A
+    /// short name the file has, with its own full name, is the file's.
+    pub fn with_defaults(mut self) -> AliasMap {
+        if let Ok(defaults) = AliasMap::from_json(crate::config::DEFAULT_ALIASES.as_bytes()) {
+            for e in defaults.entries {
+                if !self.entries.iter().any(|x| x.short == e.short) {
+                    self.entries.push(e);
+                }
+            }
+        }
+        self
     }
 
     /// The entries, every one as the file gives it.

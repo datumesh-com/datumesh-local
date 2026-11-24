@@ -4,17 +4,18 @@
 //! and every input receipt shown to the licence gate before its value is used.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use datumesh_core::json::Value;
+use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, LicenceReason, Receipt, Reference, Scalar, Type,
-    Withdrawal,
+    Arg, Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, KeyDocument, Keys, LicenceReason, Receipt,
+    Reference, Scalar, Type, Withdrawal,
 };
-use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern};
-use datumesh_http::client::{Client, ClientError, Fetched};
+use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Pattern, Runtime, SlicePattern};
+use datumesh_http::client::{pct, Client, ClientError, Fetched};
 use datumesh_store::Store;
 
 use crate::acceptance::{accept_hint, is_restricted, Acceptance};
@@ -157,6 +158,87 @@ pub(crate) struct Ctx {
     /// The restricted licences of the inputs the evaluation read (L4: the engine's acceptance rule
     /// needs every one of them accepted).
     pub(crate) restricted: Vec<String>,
+    /// Members of foreign slices fetched for this evaluation and not yet kept (datumesh-local 0.5.2,
+    /// item 12): read from memory by the run that fetched them, kept before the evaluation runs for good.
+    pub(crate) pending: Vec<PendingSlice>,
+    /// The members fetched for slices so far in this evaluation, summed (the bound's count).
+    pub(crate) count: u64,
+    /// The slices kept already by this evaluation (their keys): read from the store.
+    pub(crate) satisfied: Vec<String>,
+    /// A slice the run reads and has not fetched: the run stops, and this is fetched before it runs again.
+    pub(crate) needed: Option<Need>,
+    /// The run read a pending slice from memory: its answer is not kept (see [`Gated::evaluate`]).
+    pub(crate) served: bool,
+}
+
+/// A foreign slice a run reads and has not fetched (item 12).
+#[derive(Debug, Clone)]
+pub(crate) struct Need {
+    /// The function (full name).
+    pub(crate) fn_name: String,
+    /// The read's pattern.
+    pub(crate) pattern: SlicePattern,
+    /// The read's key (the range's ends for a range, else the whole slice's rest).
+    pub(crate) key: String,
+    /// The whole slice's rest.
+    pub(crate) whole: String,
+    /// Fetched as a range (`/x/interval`) rather than the whole slice's pages.
+    pub(crate) interval: bool,
+}
+
+/// Why an evaluation with slices stops short of an answer (item 12).
+#[derive(Debug)]
+pub(crate) enum Stop {
+    /// The bound: why (`E_SLICE_FETCH_LIMIT`).
+    Limit(String),
+    /// No answer from the network: why.
+    Unavailable(String),
+    /// Another mesh's answer failed, or failed its check, or the store refused a kept member.
+    Remote(ClientError),
+}
+
+impl Stop {
+    /// The reply an endpoint or the tool gives for this stop: the limit's refusal (`E_SLICE_FETCH_LIMIT`, 422),
+    /// the network's (`E_FOREIGN_UNAVAILABLE`), or another mesh's failure with its code.
+    pub(crate) fn into_reply(self) -> crate::resolver::Reply {
+        match self {
+            Stop::Limit(why) => {
+                let mut r = crate::resolver::Reply::new(
+                    422,
+                    br#"{"error":"E_SLICE_FETCH_LIMIT","outcome":"error"}"#.to_vec(),
+                    crate::resolver::Source::Local,
+                );
+                r.detail = Some(why);
+                r
+            }
+            Stop::Unavailable(why) => crate::resolver::Reply::unavailable(why),
+            Stop::Remote(e) => crate::resolver::Reply::error(e.code, crate::resolver::rejection_detail(&e)),
+        }
+    }
+
+    /// The error a tool or the CLI reports for this stop.
+    pub(crate) fn into_error(self) -> crate::Error {
+        match self {
+            Stop::Limit(why) => crate::Error::Client { code: "E_SLICE_FETCH_LIMIT".into(), detail: why },
+            Stop::Unavailable(why) => crate::Error::ForeignUnavailable(why),
+            Stop::Remote(e) => crate::Error::Client { code: e.code.as_str().to_string(), detail: e.detail },
+        }
+    }
+}
+
+/// The members one read of a foreign slice fetched, not yet kept.
+#[derive(Debug)]
+pub(crate) struct PendingSlice {
+    /// The fetch's key: the slice's rest as it was asked (`name(*)` for a whole slice).
+    pub(crate) key: String,
+    /// The publisher's host.
+    pub(crate) host: String,
+    /// The function (full name).
+    pub(crate) fn_name: String,
+    /// Kept as a prefetched slice (`hold_slice`) when the whole slice was fetched.
+    pub(crate) whole: Option<String>,
+    /// The members, each verified.
+    pub(crate) members: Vec<Receipt>,
 }
 
 thread_local! {
@@ -165,7 +247,12 @@ thread_local! {
 
 /// Runs `f` with a fresh context, returning what it noted.
 pub(crate) fn with_ctx<T>(f: impl FnOnce() -> T) -> (T, Ctx) {
-    let saved = CTX.with(|c| c.borrow_mut().replace(Ctx::default()));
+    with_ctx_from(Ctx::default(), f)
+}
+
+/// Runs `f` with the context `init`, returning what it noted.
+fn with_ctx_from<T>(init: Ctx, f: impl FnOnce() -> T) -> (T, Ctx) {
+    let saved = CTX.with(|c| c.borrow_mut().replace(init));
     let out = f();
     let ctx = CTX.with(|c| std::mem::replace(&mut *c.borrow_mut(), saved)).unwrap_or_default();
     (out, ctx)
@@ -177,6 +264,11 @@ fn note(f: impl FnOnce(&mut Ctx)) {
             f(ctx)
         }
     })
+}
+
+/// What the evaluation in progress says, when one is in progress.
+fn noted<T>(f: impl FnOnce(&Ctx) -> T) -> Option<T> {
+    CTX.with(|c| c.borrow().as_ref().map(f))
 }
 
 /// The rest (without `cell://`) of a cell's URI, no pin, no asof.
@@ -393,6 +485,31 @@ impl Shared {
         }
         let Some(bytes) = self.store.receipt(receipt_hash) else { return Ok(()) };
         let Ok(r) = Receipt::from_json(&bytes) else { return Ok(()) };
+        self.gate_receipt(function, &r)
+    }
+
+    /// Keeps the members an evaluation fetched (datumesh-local 0.5.2, item 12), as a prefetch
+    /// holds them: each member's receipt and version, its blob where it has one, and the slice held
+    /// when the whole slice was fetched. Returns the cells whose versions were added.
+    pub(crate) fn keep_slices(&self, pending: &[PendingSlice]) -> Result<Vec<String>, ClientError> {
+        let (out, ctx) = with_ctx(|| -> Result<(), ClientError> {
+            for p in pending {
+                for r in &p.members {
+                    self.import_receipt(r, true, p.whole.as_deref())?;
+                    let _ = self.import_blob(&p.host, r);
+                }
+                if let Some(k) = &p.whole {
+                    self.index.hold_slice(k, &p.host, p.members.len(), &self.now()).map_err(store_err)?;
+                }
+            }
+            Ok(())
+        });
+        out?;
+        Ok(ctx.added)
+    }
+
+    /// The gate's decision on an input receipt (the receipt itself, held or not yet).
+    fn gate_receipt(&self, function: &str, r: &Receipt) -> Result<(), EvalError> {
         let publisher = host_of(function);
         let declarations = self
             .store
@@ -476,8 +593,14 @@ impl Runtime for Gated {
         budget: &mut Budget,
     ) -> Result<Scalar, EvalError> {
         let function = format!("{}/{}", cell.ns, cell.fn_name);
-        let mut through = Through { inner: inputs, shared: &self.shared, function };
-        self.inner.evaluate(descriptor, cell, &mut through, budget)
+        let mut through = Through { inner: inputs, shared: &self.shared, function, served: false };
+        let out = self.inner.evaluate(descriptor, cell, &mut through, budget);
+        // An answer that read fetched members from memory is not the engine's to keep: its stored
+        // inputs would omit them. The evaluation runs again once they are kept (item 12).
+        match out {
+            Ok(_) if through.served => Err(EvalError::Runtime("read fetched members not yet kept".into())),
+            other => other,
+        }
     }
 
     fn asof_dependent(&self, descriptor: &FunctionDescriptor) -> bool {
@@ -490,6 +613,8 @@ struct Through<'a> {
     shared: &'a Shared,
     /// The function evaluated (its full name): its publisher's declarations decide.
     function: String,
+    /// A read took members from the fetched, not yet kept (item 12).
+    served: bool,
 }
 
 fn unavailable(why: String) -> EvalError {
@@ -497,6 +622,364 @@ fn unavailable(why: String) -> EvalError {
         c.unavailable.get_or_insert(why.clone());
     });
     EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why))
+}
+
+/// Whether the arguments of a cell take the pattern (every argument of it, by name).
+fn matches_pattern(pattern: &SlicePattern, args: &Args) -> bool {
+    pattern.iter().all(|(k, p)| match (p, args.get(k)) {
+        (Pattern::Open, Some(Arg::Value(_))) => true,
+        (Pattern::Value(v), Some(Arg::Value(x))) => v == x,
+        (Pattern::Range { lo, hi }, Some(Arg::Value(x))) => {
+            scalar_cmp(lo, x) != std::cmp::Ordering::Greater && scalar_cmp(x, hi) != std::cmp::Ordering::Greater
+        }
+        _ => false,
+    })
+}
+
+/// The order of two scalars of one type: numbers by value, the rest by their lexical form (dates
+/// and instants sort as they read).
+fn scalar_cmp(a: &Scalar, b: &Scalar) -> std::cmp::Ordering {
+    match (a, b) {
+        (Scalar::Number(x), Scalar::Number(y)) => match (x.parse::<f64>(), y.parse::<f64>()) {
+            (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            _ => x.cmp(y),
+        },
+        _ => a.cmp(b),
+    }
+}
+
+/// The members' arguments in key order (their values in the order of their names).
+fn cmp_args(a: &Args, b: &Args) -> std::cmp::Ordering {
+    for ((_, x), (_, y)) in a.iter().zip(b.iter()) {
+        let o = match (x, y) {
+            (Arg::Value(x), Arg::Value(y)) => scalar_cmp(x, y),
+            _ => x.cmp(y),
+        };
+        if o != std::cmp::Ordering::Equal {
+            return o;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// A slice's rest as its fetch names it: the canonical URI form without `cell://` (core's
+/// `format_uri`, as prefetch holds it), each open argument `*` (a range's too: production has no
+/// URI for a ranged slice).
+fn slice_rest(fn_name: &str, pattern: &SlicePattern) -> String {
+    let (ns, f) = fn_name.rsplit_once('/').unwrap_or(("", fn_name));
+    let args: Args = pattern
+        .iter()
+        .map(|(k, p)| {
+            let a = match p {
+                Pattern::Value(v) => Arg::Value(v.clone()),
+                _ => Arg::Slice,
+            };
+            (k.clone(), a)
+        })
+        .collect();
+    let uri = datumesh_core::format_uri(&datumesh_core::CellRef {
+        ns: ns.to_string(),
+        fn_name: f.to_string(),
+        args,
+        asof: None,
+    });
+    uri["cell://".len()..].to_string()
+}
+
+/// The peer origin a `https://<host>/...` URL is reached at (the configured peer's, else as it is).
+fn reached_at(config: &Config, url: &str, host: &str) -> String {
+    match (url.strip_prefix(&format!("https://{host}")), config.peers.get(host)) {
+        (Some(rest), Some(origin)) => format!("{origin}{rest}"),
+        _ => url.to_string(),
+    }
+}
+
+/// The key of a read of a foreign slice (item 12): the range's key (its ends; no slice URI names a range)
+/// for one range, else the whole slice's rest, which every other read of it is held by. Returns
+/// (key, whole rest, whether it is a range).
+pub(crate) fn slice_key(fn_name: &str, pattern: &SlicePattern) -> (String, String, bool) {
+    let whole = slice_rest(fn_name, pattern);
+    let ends: Vec<String> = pattern
+        .values()
+        .filter_map(|p| match p {
+            Pattern::Range { lo, hi } => Some(format!("{}..{}", lo.lexical(), hi.lexical())),
+            _ => None,
+        })
+        .collect();
+    let interval = ends.len() == 1;
+    let key = if interval { format!("{whole} within {}", ends.join(",")) } else { whole.clone() };
+    (key, whole, interval)
+}
+
+impl Through<'_> {
+    /// A read of a stored foreign slice: when the members it takes are not in memory, nor kept, nor the
+    /// whole slice held, the run stops here (the slice is fetched, then the evaluation runs again). A read
+    /// of members in memory is served from them (the run's answer is then not kept).
+    fn reach_slice(&mut self, fn_name: &str, pattern: &SlicePattern) -> Result<(), EvalError> {
+        let (key, whole, interval) = slice_key(fn_name, pattern);
+        let (in_memory, kept) = noted(|c| {
+            let in_memory = c.pending.iter().any(|p| p.key == key || p.key == whole);
+            let kept = c.satisfied.contains(&key) || c.satisfied.contains(&whole);
+            (in_memory, kept)
+        })
+        .unwrap_or((false, false));
+        if in_memory {
+            self.served = true;
+            note(|c| c.served = true);
+            return Ok(());
+        }
+        if kept {
+            return Ok(());
+        }
+        if self.shared.index.slice_held(&whole).map_err(|e| unavailable(format!("index: {e}")))? {
+            return Ok(());
+        }
+        note(|c| {
+            if c.needed.is_none() {
+                c.needed = Some(Need {
+                    fn_name: fn_name.to_string(),
+                    pattern: pattern.clone(),
+                    key: key.clone(),
+                    whole: whole.clone(),
+                    interval,
+                });
+            }
+        });
+        Err(EvalError::InvalidInput(datumesh_core::Error::new(
+            ErrorCode::InputUnavailable,
+            "$",
+            format!("{key}: not held; fetched before it is read"),
+        )))
+    }
+}
+
+/// Why a slice's members were not fetched.
+enum FetchFail {
+    /// The bound: why, naming the slice, its size so far and the bound.
+    Limit(String),
+    /// No answer from the network: why.
+    Unavailable(String),
+    /// Another mesh's answer failed, or failed its check.
+    Remote(ClientError),
+}
+
+impl From<FetchFail> for Stop {
+    fn from(f: FetchFail) -> Stop {
+        match f {
+            FetchFail::Limit(why) => Stop::Limit(why),
+            FetchFail::Unavailable(why) => Stop::Unavailable(why),
+            FetchFail::Remote(e) => Stop::Remote(e),
+        }
+    }
+}
+
+impl Shared {
+    /// Checks `size` members (the evaluation's count, this fetch included) against the bound.
+    fn charge(&self, fn_name: &str, pattern: &SlicePattern, size: u64) -> Result<(), FetchFail> {
+        let max = self.config.slice_fetch_max;
+        if size > max {
+            let rest = slice_rest(fn_name, pattern);
+            return Err(FetchFail::Limit(format!(
+                "{rest}: {size} members so far, over slice_fetch_max {max} (config.json): prefetch '{rest}' to hold it first, or raise slice_fetch_max"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fetches the members one need asks for into the context `acc` (pending, not kept), counting them
+    /// against the bound. Nothing is kept here: a refusal later leaves the store as it was (item 12).
+    pub(crate) fn fetch_need(&self, need: &Need, acc: &mut Ctx) -> Result<(), Stop> {
+        let host = host_of(&need.fn_name).to_string();
+        self.may_fetch(&host).map_err(Stop::Unavailable)?;
+        let base = acc.count;
+        let members = if need.interval {
+            self.fetch_range(&host, &need.fn_name, &need.pattern, base)?
+        } else {
+            self.fetch_whole(&host, &need.whole, &need.pattern, base)?
+        };
+        acc.count += members.len() as u64;
+        acc.pending.push(PendingSlice {
+            key: if need.interval { need.key.clone() } else { need.whole.clone() },
+            host,
+            fn_name: need.fn_name.clone(),
+            whole: (!need.interval).then(|| need.whole.clone()),
+            members,
+        });
+        Ok(())
+    }
+
+    /// The evaluation `run` as an answer (item 12): a run that needs a slice fetches it and runs again; a run
+    /// that read fetched members is run again once they are kept, so the engine records the inputs it read from
+    /// the store; the last run's context is returned, with the cells kept on the way.
+    pub(crate) fn evaluating<T>(&self, run: impl Fn() -> T) -> Result<(T, Ctx), Stop> {
+        let mut pending: Vec<PendingSlice> = Vec::new();
+        let mut count = 0u64;
+        let mut satisfied: Vec<String> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
+        loop {
+            let init =
+                Ctx { pending: std::mem::take(&mut pending), count, satisfied: satisfied.clone(), ..Ctx::default() };
+            let (out, mut ctx) = with_ctx_from(init, &run);
+            pending = std::mem::take(&mut ctx.pending);
+            count = ctx.count;
+            if let Some(need) = ctx.needed.take() {
+                let mut acc = Ctx { pending, count, ..Ctx::default() };
+                self.fetch_need(&need, &mut acc)?;
+                pending = acc.pending;
+                count = acc.count;
+                continue;
+            }
+            if ctx.served && !pending.is_empty() {
+                added.extend(self.keep_slices(&pending).map_err(Stop::Remote)?);
+                for p in pending.drain(..) {
+                    satisfied.push(p.key.clone());
+                    if let Some(w) = p.whole {
+                        satisfied.push(w);
+                    }
+                }
+                continue;
+            }
+            ctx.added.extend(added);
+            return Ok((out, ctx));
+        }
+    }
+
+    /// Verifies a member's receipt against its signer's key document, as held (the store's key).
+    fn verify_member(&self, r: &Receipt) -> Result<(), FetchFail> {
+        let signer = r.signer_host().to_string();
+        self.ensure_namespace(&signer).map_err(FetchFail::Remote)?;
+        let doc = self
+            .store
+            .namespace(&signer)
+            .map_err(|e| FetchFail::Remote(store_err(e)))?
+            .and_then(|n| KeyDocument::from_json(&signer, &n.keydoc).ok())
+            .ok_or_else(|| {
+                FetchFail::Remote(ClientError {
+                    code: ErrorCode::KeyUnavailable,
+                    detail: format!("{signer}: no key document to check {} by", r.hash()),
+                })
+            })?;
+        let mut keys = Keys::new();
+        keys.insert_document(doc);
+        let v = datumesh_core::verify(&datumesh_http::publish::receipt_json(r), &keys, None, None);
+        if v.ok {
+            Ok(())
+        } else {
+            Err(FetchFail::Remote(ClientError {
+                code: ErrorCode::InputUnavailable,
+                detail: format!("member {} of {} does not verify: {}", r.hash(), r.cell().ns, v.detail),
+            }))
+        }
+    }
+
+    /// The members of a range, from production's `/x/interval` (`from`, `to` and the value arguments as
+    /// keys), each verified. `base` is the evaluation's count before this fetch.
+    fn fetch_range(&self, host: &str, fn_name: &str, pattern: &SlicePattern, base: u64) -> Result<Vec<Receipt>, Stop> {
+        let mut query = Vec::new();
+        let (mut from, mut to) = (String::new(), String::new());
+        for (k, p) in pattern {
+            match p {
+                Pattern::Range { lo, hi } => {
+                    from = lo.lexical().to_string();
+                    to = hi.lexical().to_string();
+                }
+                Pattern::Value(v) => query.push(format!("{}={}", pct(k), pct(v.lexical()))),
+                _ => {}
+            }
+        }
+        query.push(format!("from={}", pct(&from)));
+        query.push(format!("to={}", pct(&to)));
+        let url = reached_at(&self.config, &format!("https://{host}/x/interval/{fn_name}?{}", query.join("&")), host);
+        let (status, bytes) = crate::net::get(&url, self.config.timeout).map_err(Stop::Unavailable)?;
+        let v = json::parse(&bytes)
+            .map_err(|e| Stop::Remote(ClientError { code: ErrorCode::Envelope, detail: format!("{url}: {e}") }))?;
+        if status != 200 {
+            return Err(Stop::Remote(ClientError {
+                code: ErrorCode::InputUnavailable,
+                detail: format!("{url}: status {status}"),
+            }));
+        }
+        let Some(Value::Array(members)) = v.get("members") else {
+            return Err(Stop::Remote(ClientError { code: ErrorCode::Envelope, detail: format!("{url}: no members") }));
+        };
+        self.charge(fn_name, pattern, base + members.len() as u64)?;
+        let mut out = Vec::new();
+        for m in members {
+            let r = m.get("receipt").and_then(|x| Receipt::from_value(x).ok()).ok_or_else(|| {
+                Stop::Remote(ClientError {
+                    code: ErrorCode::Envelope,
+                    detail: format!("{url}: a member has no receipt"),
+                })
+            })?;
+            self.verify_member(&r)?;
+            out.push(r);
+        }
+        Ok(out)
+    }
+
+    /// The members of a whole slice, from the slice's pages (`next` followed, every page checked by the
+    /// client), counted page by page against the bound. `base` is the evaluation's count before this fetch.
+    fn fetch_whole(&self, host: &str, rest: &str, pattern: &SlicePattern, base: u64) -> Result<Vec<Receipt>, Stop> {
+        let fn_name = rest.split('?').next().unwrap_or(rest).to_string();
+        let open: Vec<String> = pattern
+            .iter()
+            .filter(|(_, p)| matches!(p, Pattern::Open | Pattern::Range { .. }))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let doc = self.patient(|| self.client.resolve(host)).map_err(|e| Stop::from(remote_or_unavailable(&e)))?;
+        let first = doc.url("slice", &[("cell", rest)]).ok_or_else(|| {
+            Stop::Remote(ClientError { code: ErrorCode::MeshDoc, detail: format!("{host} has no slice endpoint") })
+        })?;
+        let mut url = Some(first);
+        let mut after: Option<BTreeMap<String, Scalar>> = None;
+        let mut out: Vec<Receipt> = Vec::new();
+        while let Some(u) = url.take() {
+            let f = self
+                .patient(|| {
+                    let f = self.client.slice_page(host, rest, Some(&u), after.clone())?;
+                    if f.status == 429 {
+                        return Err(ClientError { code: ErrorCode::InputUnavailable, detail: "status 429".into() });
+                    }
+                    Ok(f)
+                })
+                .map_err(|e| Stop::from(remote_or_unavailable(&e)))?;
+            let Some(p) = f.answer.page.as_ref() else {
+                return Err(Stop::Remote(ClientError {
+                    code: f.answer.error.unwrap_or(ErrorCode::InputUnavailable),
+                    detail: format!("{rest}: {}", f.answer.outcome.as_str()),
+                }));
+            };
+            for m in &p.members {
+                if let Some(r) = m.receipt.as_ref() {
+                    out.push(r.clone());
+                }
+            }
+            self.charge(&fn_name, pattern, base + out.len() as u64)?;
+            match (&p.next, p.members.last().and_then(|m| m.receipt.as_ref())) {
+                (Some(next), Some(last)) => {
+                    after = Some(
+                        open.iter()
+                            .filter_map(|k| match last.cell().args.get(k) {
+                                Some(Arg::Value(v)) => Some((k.clone(), v.clone())),
+                                _ => None,
+                            })
+                            .collect(),
+                    );
+                    url = Some(next.clone());
+                }
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A client failure as a fetch's: the network's (unavailable), else another mesh's (remote).
+fn remote_or_unavailable(e: &ClientError) -> FetchFail {
+    match network_failure(e) {
+        Some(w) => FetchFail::Unavailable(w),
+        None => FetchFail::Remote(e.clone()),
+    }
 }
 
 impl Through<'_> {
@@ -588,10 +1071,41 @@ impl Inputs for Through<'_> {
 
     fn read_slice(&mut self, fn_name: &str, pattern: &SlicePattern) -> Result<Vec<Member>, EvalError> {
         self.name(fn_name)?;
-        let members = self.inner.read_slice(fn_name, pattern)?;
+        // A stored foreign slice is read only once it is held (datumesh-local 0.5.2, item 12): fetched first.
+        if !is_unrooted(host_of(fn_name)) {
+            if let Some(b) = self.inner.binding_peek(fn_name, None)? {
+                if b.descriptor.lang == "stored" {
+                    self.reach_slice(fn_name, pattern)?;
+                }
+            }
+        }
+        let mut members = self.inner.read_slice(fn_name, pattern)?;
         for m in &members {
             self.shared.gate_check(&self.function, &m.input.receipt_hash)?;
         }
+        // The fetched members the pattern takes (not held: the store's are read above).
+        let fetched: Vec<Receipt> = noted(|c| {
+            c.pending
+                .iter()
+                .filter(|p| p.fn_name == fn_name)
+                .flat_map(|p| p.members.iter())
+                .filter(|r| matches_pattern(pattern, &r.cell().args))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+        if !fetched.is_empty() {
+            self.served = true;
+        }
+        for r in fetched {
+            if members.iter().any(|m| m.args == r.cell().args) {
+                continue;
+            }
+            self.shared.gate_receipt(&self.function, &r)?;
+            let input = Input::new(r.value().clone(), r.hash(), r.tx(), r.asof());
+            members.push(Member::new(r.cell().args.clone(), input));
+        }
+        members.sort_by(|a, b| cmp_args(&a.args, &b.args));
         Ok(members)
     }
 

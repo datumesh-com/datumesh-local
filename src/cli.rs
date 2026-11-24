@@ -12,12 +12,14 @@
 //!   explain <request> [--depth <n>]    the lineage, as nested envelopes
 //!   find <text> [--remote]             names held (and, with --remote, the forward mesh's)
 //!   prefetch <slice or function>... [--page <n>] [--blobs]
+//!   whatif <request> --set '<cell>=<value>' [--set ...] [--asof <instant>] [--json]
+//!                                      a scenario (never a fact): exit 0 for one, 3 otherwise
 //!   refresh                            re-pull the latest versions of what is held
 //!   export [--out <file>]              the working set as a bundle (stdout by default)
 //!   import <file> [--trust-key <key id>]...
 //!   verify <file or ->                 SPEC 10.1 with this machine's keys
 //!   serve [--listen 127.0.0.1:<port>]  the localhost endpoint (127.0.0.1 only; default port 7733)
-//!   mcp                                MCP over stdio (stdout carries only MCP messages)
+//!   mcp [--profile small|full]         MCP over stdio (stdout carries only MCP messages); small is four tools
 //!   mcp --http [--port <n>] [--listen <addr>]  MCP over Streamable HTTP on loopback (default port 7734)
 //!   key                                the machine id and this machine's key document (public)
 //!   licence accept <licence>           accept a restricted licence here (the register's clauses shown first)
@@ -47,6 +49,8 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 
+use crate::calculus::{OverrideArg, WhatifArgs};
+use crate::mcp::scenario_text;
 use crate::{Config, Error, PublicPlan, Resolver, RootPlan, Source};
 
 /// The test mesh: the forward mesh of a home made before 0.5.1 (its configuration is not rewritten).
@@ -62,16 +66,19 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|calc|define
   explain <request> [--depth <n>]
   find <text> [--remote]
   prefetch <slice or function>... [--page <n>] [--blobs]
+  whatif <request> --set '<cell>=<value>' [--set ...] [--asof <instant>] [--json]
   refresh
   export [--out <file>]
   import <file> [--trust-key <key id>]...
   verify <file or ->
   serve [--listen 127.0.0.1:<port>]
-  mcp [--http] [--port <n>] [--listen <addr>]
+  mcp [--profile small|full] [--http] [--port <n>] [--listen <addr>]
   key [rotate]
   licence <accept <licence>|list|revoke <licence>>
   trust <add <file>|revoke <host>|list>
-  root --namespace <ns> --key <file> [--export <file>] <name>...";
+  root --namespace <ns> --key <file> [--export <file>] <name>...
+  (a read fetches the foreign slices it needs, up to slice_fetch_max members per evaluation in config.json,
+   default 50000; past it E_SLICE_FETCH_LIMIT, and prefetch holds a slice first)";
 
 /// Runs the command line (without the program name) with these streams; the exit status.
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -462,6 +469,45 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             }
             Ok(0)
         }
+        "whatif" => {
+            let a = Args::parse(rest, &["--set", "--asof"], &["--json"])?;
+            let [request] = a.positional.as_slice() else {
+                return Err(Failure::Usage("whatif: one request".into()));
+            };
+            let sets = a.values("--set");
+            if sets.is_empty() {
+                return Err(Failure::Usage("whatif: at least one --set '<cell>=<value>'".into()));
+            }
+            let mut overrides = Vec::new();
+            for t in &sets {
+                let (cell, value) = match t.rsplit_once('=') {
+                    Some((c, v)) if !c.trim().is_empty() && !v.is_empty() => (c.trim(), v),
+                    _ => return Err(Failure::Usage(format!("--set {t}: a cell and a value, '<cell>=<value>'"))),
+                };
+                overrides.push(OverrideArg::Value { cell: cell.to_string(), value: s(value) });
+            }
+            let req = WhatifArgs {
+                request: request.clone(),
+                overrides,
+                asof: a.value("--asof").map(str::to_string),
+                solve: None,
+            };
+            match r.whatif(&req) {
+                Ok(v) if a.has("--json") => {
+                    jline(out, v)?;
+                    Ok(0)
+                }
+                Ok(v) => {
+                    writeln!(out, "{}", scenario_text(&v)).map_err(io)?;
+                    Ok(0)
+                }
+                Err(e) => {
+                    let text = e.to_string();
+                    writeln!(err, "datumesh: {}: {text}", crate::mcp::tool_code_of(e)).map_err(io)?;
+                    Ok(3)
+                }
+            }
+        }
         "refresh" => {
             Args::parse(rest, &[], &[])?;
             let f = r.refresh()?;
@@ -569,14 +615,19 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
             Ok(0)
         }
         "mcp" => {
-            let a = Args::parse(rest, &["--port", "--listen"], &["--http"])?;
+            let a = Args::parse(rest, &["--port", "--listen", "--profile"], &["--http"])?;
+            let profile = match a.value("--profile") {
+                None => crate::mcp::Profile::Full,
+                Some(p) => crate::mcp::Profile::named(p)
+                    .ok_or_else(|| Failure::Usage(format!("--profile {p}: small or full")))?,
+            };
             if !a.has("--http") {
                 if a.has("--port") || a.has("--listen") {
                     return Err(Failure::Usage("--port and --listen go with --http".into()));
                 }
                 // Stdout carries the MCP messages and nothing else.
                 let stdin = std::io::stdin();
-                crate::mcp::serve_stdio(Arc::new(r), stdin.lock(), &mut *out)?;
+                crate::mcp::serve_stdio_with(Arc::new(r), profile, stdin.lock(), &mut *out)?;
                 return Ok(0);
             }
             let mut port: u16 = match a.value("--port") {
@@ -596,7 +647,7 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                 }
                 port = at.unwrap_or(port);
             }
-            let server = crate::mcp::serve_http(Arc::new(r), port)?;
+            let server = crate::mcp::serve_http_with(Arc::new(r), profile, port)?;
             for addr in server.local_addrs() {
                 writeln!(err, "datumesh mcp: http://{addr}/mcp").map_err(io)?;
             }

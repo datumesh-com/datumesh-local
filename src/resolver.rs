@@ -79,7 +79,7 @@ impl Reply {
         }
     }
 
-    fn error(code: ErrorCode, detail: String) -> Reply {
+    pub(crate) fn error(code: ErrorCode, detail: String) -> Reply {
         let r = if code == ErrorCode::NameUnbound {
             datumesh_http::envelope::name_unbound_reply(0)
         } else {
@@ -520,6 +520,8 @@ impl Resolver {
         let mesh = build_mesh(&self.shared, &m.at(&self.shared.now()), base)?;
         *self.aliases.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(m);
         *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        *self.applied.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.sync_acceptance();
         Ok(())
     }
 
@@ -534,6 +536,9 @@ impl Resolver {
         let mesh = build_mesh(&self.shared, &self.aliases_at(None), base.clone())?;
         *self.base_url.write().unwrap_or_else(|p| p.into_inner()) = base;
         *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        // A new mesh has a new engine: it is given the licences in force again (L4), whatever the last one got.
+        *self.applied.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.sync_acceptance();
         Ok(())
     }
 
@@ -893,8 +898,12 @@ impl Resolver {
             let source = if fetched.get() { Source::Fetched } else { Source::Local };
             return Ok(self.mesh_reply(mesh.cell(&rest, None), source));
         }
-        // Evaluated here (or a local stored cell): foreign inputs fetched, inputs gated.
-        let (reply, ctx) = fetch::with_ctx(|| mesh.cell(&rest, None));
+        // Evaluated here (or a local stored cell): foreign inputs fetched, inputs gated, and the slices a
+        // read needs fetched first and kept when the evaluation answers (item 12).
+        let (reply, ctx) = match s.evaluating(|| mesh.cell(&rest, None)) {
+            Ok(answered) => answered,
+            Err(stop) => return Ok(stop.into_reply()),
+        };
         for c in &ctx.added {
             mesh.stored_version_added(c);
         }
