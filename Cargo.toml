@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-local"
-version = "0.5.0"
+version = "0.5.1"
 description = "The Datumesh local resolver: the mesh's engine over a local SQLite store, the unrooted local.invalid namespace, explicit fetches, prefetch, a licence gate, export and import, and a localhost endpoint."
 edition = "2021"
 rust-version = "1.97"
@@ -46,7 +46,7 @@ datumesh-formula = { version = "0.6.0", default-features = false }
 # SQLite explicitly (the store's `sqlite` feature), not through the store's defaults; the
 # PostgreSQL backend (a postgres:// store URL) is always in datumesh-store 0.4.0.
 datumesh-store = { version = "0.6.0", default-features = false, features = ["sqlite"], optional = true }
-datumesh-engine = { version = "0.6.0", default-features = false, optional = true }
+datumesh-engine = { version = "0.6.1", default-features = false, optional = true }
 datumesh-http = { version = "0.5.0", optional = true }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
 tower = { version = "0.5.3", features = ["util"], optional = true }

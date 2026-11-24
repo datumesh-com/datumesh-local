@@ -19,8 +19,9 @@
   // binds computation, not delivery. The open_licences list of 0.1.0 and 0.1.1 is no longer
   // used; a file that has it still loads (deprecated, ignored).
 
-  // The mesh that answers what the gate forwards (declared restricted inputs).
-  "forward_mesh": "mesh-test.datumesh.com",
+  // The mesh that answers what the gate forwards (declared restricted inputs), and the mesh a
+  // remote calc and the licence register are read from (datumesh-local 0.5.1: production).
+  "forward_mesh": "datumesh.com",
 
   // The meshes `find` asks when the local names give no answer, and always with --remote (one
   // request each, its answer kept 24 hours). A host must also be in the allowlist to be asked.

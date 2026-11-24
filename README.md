@@ -19,7 +19,8 @@ publish to. The `datumesh` command is in the crate [`datumesh`](https://crates.i
   here over open and local inputs (the result carrying the inherited licence); over a
   restricted input its publisher declared, the request goes to the configured mesh and its
   answer (its signature) is returned, since a restricted licence is never signed by this
-  machine's key; over an undeclared one the answer is `unlicensed`, here.
+  machine's key; over an undeclared one the answer is `unlicensed`, here, unless the licence is
+  accepted at the command line (below).
 
 ## Use
 
@@ -27,7 +28,7 @@ publish to. The `datumesh` command is in the crate [`datumesh`](https://crates.i
 $ cargo install datumesh
 $ datumesh get 'ecb/fx_rate(base: "EUR", quote: "USD", date: 2026-10-30)'
 {"fn_hash":"f041cf…","outcome":"ok","receipt":{…},"trust":"primary"}
-ok (fetched); signer mesh-test.datumesh.com#5ef994cc05faf506
+ok (fetched); signer datumesh.com#eddd0c12fedb022e
 $ datumesh prefetch 'scripture/verse_text(corpus: "quran", book: *, chapter: *, verse: *, edition: "uthmani")'
 $ datumesh --offline get 'scripture/verse_text(corpus: "quran", book: "2", chapter: 1, verse: 255, edition: "uthmani")'
 $ datumesh define local/closed --formula 'mesh-test.datumesh.com/ecb/holiday(calendar: "TARGET", date: date)' \
@@ -44,7 +45,8 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 | `define <name> --formula <source> --signature <json>` | a formula function (also `--stored`, `--descriptor <file>`) |
 | `define <name> --class <file>` | a class (16.1: keys, methods, order, steward), under `local/` only (owner `local.invalid`) |
 | `publish <file.jsonl>` | `define` plus `put_version` for stored cells, under `local/` only (the `publish-stored` format); class lines too |
-| `describe <id>` | a class name, a key encoding, an object id, a short id or a cell id (16.8): the answer on stdout, exit 0 for 200, 3 for anything else |
+| `describe <id>` | a class name, a key encoding, an object id, a short id or a cell id (16.8): the answer on stdout, exit 0 for 200, 3 for anything else; a function's tests after it, read from its page `https://<host>/fn/<full name>?format=json` |
+| `licence accept <licence>`, `licence list`, `licence revoke <licence>` | accept a restricted licence on this machine (see [Licence acceptance](#licence-acceptance)); the register's clauses and licence hash are shown first |
 | `explain <request> [--depth n]` | the lineage, as nested envelopes |
 | `find <text> [--remote]` | names held here (and the forward mesh's) |
 | `prefetch <slice or function>... [--page n] [--blobs]` | pull a slice's pages (or a function's binding and descriptor), keys included |
@@ -53,6 +55,12 @@ $ datumesh serve        # http://127.0.0.1:7733, the mesh's endpoints over the l
 | `verify <file or ->` | SPEC 10.1 with this machine's keys |
 | `serve [--listen 127.0.0.1:<port>]` | the localhost endpoint (127.0.0.1 only) |
 | `key` | the machine id and this machine's (public) key document |
+
+The MCP server (`datumesh mcp`) has the same reads and writes, and one tool more since 0.5.1:
+`interval`, `{function, keys?, from, to}`, the forward mesh's members of a function over a range of
+keys, each with its receipt (aliases resolved; over 100 members, a summary, the first 100 and the
+call for the rest; the mesh's errors, such as `E_RANGE_TOO_LARGE`, passed through). No MCP tool
+accepts a licence.
 
 A request is a call, `name(arg: value, ...)` (positional by the function's order, an
 `@alias`, a pin `name@<hash>(...)`, `?asof=<instant>`), or a cell URI. Since 0.2.1 a call may
@@ -166,11 +174,45 @@ only here. So, for each input an evaluation reads:
   receipt returned (for example `ecb/fx_cross` over the EUR/NOK test cell, and
   `scripture/strip_niqqud` over the UXLC, whose licence URL is restricted under 8.5);
 - restricted and not declared: `unlicensed` (403) here, without a round trip.
+- restricted and accepted here (below): computed here, the result carrying the accepted licence,
+  or `LicenseRef-datumesh-local-derivation` over two or more.
 
 The gate decides computation only. Restricted cells the mesh delivers are held like any other
 (fetched, prefetched, exported): delivery is allowed, and the licence binds computation. When
 per-principal delivery arrives (plan 3.4), a cell the mesh answers `unlicensed` never
 arrives, so there is nothing to hold.
+
+### Licence acceptance
+
+Since 0.5.1 an operator can accept a restricted licence on this machine, at the command line:
+
+```text
+$ datumesh licence accept 'https://www.law.cornell.edu/uscode/text/17/105'
+https://www.law.cornell.edu/uscode/text/17/105
+register dataset treasury.gov/par_yield_curve
+  licence hash e0f4…
+  clauses:
+    …
+recorded: https://www.law.cornell.edu/uscode/text/17/105 accepted at 2026-11-24T10:00:00.000000Z
+```
+
+The register is read from the forward mesh's `register/dataset` class: every dataset whose licence
+page is the licence is shown, with its quoted clauses and licence hash. A licence the register does
+not hold is said so, and the acceptance is recorded anyway. The record is in `licences.json` in the
+configuration directory: `{licence, accepted_at}`, with the register's `register_licence_hash` when
+there is one. `licence list` shows the licences in force, `licence revoke <licence>` removes one and
+keeps its history. A non-interactive run records without a prompt.
+
+With the licence accepted, a calculation or a local function over that licence's inputs is computed
+here. One restricted licence gives the result that licence; two or more give
+`LicenseRef-datumesh-local-derivation`. The acceptance covers the licence from every publisher. The
+result is signed by this machine's key, and it is **never published or exported**: `export`,
+`root`, `publish --to`, `publish_public`, bundle export and the MCP `publish` refuse it with
+`E_LICENCE_NOT_PUBLISHABLE`, naming the licence. `serve` and `mcp --http` stay on loopback.
+
+No MCP tool accepts a licence. An agent that meets the refusal is told the user must accept the
+licence at the command line. A running `mcp` or `serve` picks up an acceptance or revocation made
+by another process.
 
 ## Export and import
 
@@ -217,13 +259,17 @@ anywhere except the key document request.
 `~/Library/Application Support/datumesh`, `%APPDATA%\datumesh`), installed with comments at
 first run, beside the machine key and the alias map; the store and the resolver's index in
 the data directory (`$XDG_DATA_HOME/datumesh` on Linux). Members: `allowlist` (default
-`datumesh.com` and the test mesh `mesh-test.datumesh.com`), `forward_mesh`, `offline`,
+`datumesh.com` and the test mesh `mesh-test.datumesh.com`), `forward_mesh` (default `datumesh.com`;
+a home made before 0.5.1 keeps its `mesh-test.datumesh.com`, and is told on every command), `offline`,
 `licence` (the licence of receipts for cells without inputs), `peers`, `timeout_seconds`,
 `store`, `key_file`, `aliases_file`. `open_licences`, the open list of 0.1.0 and 0.1.1, is
 deprecated: still accepted, ignored (the gate needs no configuration).
 
-The alias map (`aliases.json`) is a file, read at start and by `refresh`. Its default is
-`local/` → `local.invalid/`, `ecb/` and `scripture/` → the test mesh's.
+The alias map (`aliases.json`) is a file, read at start and by `refresh`. Its default (0.5.1) is
+`local/` → `local.invalid/`, and production's short names: `ecb/` → `datumesh.com/relay/ecb.europa.eu/`,
+`treasury/` → `datumesh.com/relay/treasury.gov/`, `boe/` → `datumesh.com/relay/bankofengland.co.uk/`,
+`scripture/` → `datumesh.com/scripture/`, `earth/` → `datumesh.com/earth/`. An existing home's file is
+not rewritten.
 
 ### Alias map file
 

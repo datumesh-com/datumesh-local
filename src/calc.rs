@@ -260,8 +260,9 @@ impl Resolver {
     /// The local calculation (C2, D28, D30).
     fn calc_here(&self, formula: &str, asof: Option<&str>) -> Result<Value, Error> {
         let s = &self.shared;
-        let expanded = expand_local(formula);
-        let canonical = datumesh_formula::canonical_ast(&expanded, None).map_err(formula_error)?.print();
+        // The prefix aliases (`@boe/bank_rate`) are expanded first, as a definition's source is (L6).
+        let expanded = self.aliases_at(None).expand_source(&expand_local(formula));
+        let canonical = self.canonical_of(&expanded)?;
         let h = datumesh_core::sha256_hex(canonical.as_bytes())[..16].to_string();
         let name = format!("local.invalid/calc_{h}");
         let now = s.now();
@@ -296,6 +297,51 @@ impl Resolver {
         members.push(("lineage", Value::Array(self.calc_lineage(&receipt)?)));
         members.push(("name", if constant { Value::Null } else { js(format!("local/calc_{h}")) }));
         Ok(obj(members))
+    }
+
+    /// The canonical form of a formula (L6). A positional call takes its function's argument order
+    /// from the function's descriptor (its `signature.order`, fetched by hash from its host when it
+    /// is not held): the formula is canonicalised with each such function in its environment, found
+    /// one at a time from the formula's own `E_FORMULA_POSITIONAL` answer. A formula with labelled
+    /// calls only is canonicalised as before.
+    fn canonical_of(&self, source: &str) -> Result<String, Error> {
+        let first = match datumesh_formula::canonical_ast(source, None) {
+            Ok(ast) => return Ok(ast.print()),
+            Err(e) => e,
+        };
+        if first.code != Code::Positional {
+            return Err(formula_error(first));
+        }
+        let s = &self.shared;
+        let now = s.now();
+        let callees = Callees::new(s);
+        let probe = Signature::from_value(
+            &json::parse(br#"{"args": {}, "order": [], "returns": "number"}"#).unwrap_or(Value::Null),
+        )
+        .map_err(|e| Error::Request(e.to_string()))?;
+        let mut env = Env::new("local.invalid/calc", probe);
+        env.aliases = self.aliases_at(None).bare();
+        let mut e = first;
+        loop {
+            // The detail names the function: "<name> declares no order: ..." (a positional call), or
+            // "<name> has no binding" (a function the formula reads, which the environment must hold now).
+            let name = match e.code {
+                Code::Positional => e.detail.split(" declares no order").next().unwrap_or("").to_string(),
+                Code::Unresolved => e.detail.split(" has no binding").next().unwrap_or("").to_string(),
+                _ => return Err(formula_error(e)),
+            };
+            if name.is_empty() || env.functions.contains_key(&name) {
+                return Err(formula_error(e));
+            }
+            let Some(found) = FormulaCallees::callee(&callees, &name, &now).map_err(Error::Store)? else {
+                return Err(formula_error(e));
+            };
+            env.add_function(&name, &found.descriptor).map_err(|x| Error::Request(x.to_string()))?;
+            match datumesh_formula::canonical_ast(source, Some(&env)) {
+                Ok(ast) => return Ok(ast.print()),
+                Err(next) => e = next,
+            }
+        }
     }
 
     /// The definition of `name` (a formula with no arguments), its return type and unit inferred:

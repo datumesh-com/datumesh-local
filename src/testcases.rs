@@ -668,11 +668,11 @@ impl Resolver {
         let s = &self.shared;
         let name = name_of(full);
         let host = host_of(name);
-        let rest = name[host.len()..].trim_start_matches('/');
+        // The page is asked by the full name, with its host (datumesh-local 0.5.1, L2).
         if let Err(why) = s.may_fetch(host) {
             return TestsListing::unread(why);
         }
-        let url = format!("https://{host}/fn/{rest}?format=json");
+        let url = format!("https://{host}/fn/{name}?format=json");
         let body = match s.client.get(&url, PAGE_MAX) {
             Ok((200, body)) => body,
             Ok((status, _)) => return TestsListing::unread(format!("{url}: status {status}")),

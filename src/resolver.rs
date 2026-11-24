@@ -1,10 +1,10 @@
 //! The resolver: answers, definitions, prefetch and refresh, verification.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{Arg, ErrorCode, FunctionDescriptor, Receipt, Request, Scalar, Type};
@@ -12,6 +12,7 @@ use datumesh_http::client::{Client, ClientConfig, ClientError};
 use datumesh_http::{Config as MeshConfig, Mesh};
 use datumesh_store::{SqliteStore, Store};
 
+use crate::acceptance::Acceptance;
 use crate::alias::{request_asof, request_head, AliasMap};
 use crate::classes::{with_resolved, Parse};
 use crate::config::Config;
@@ -316,6 +317,8 @@ pub struct Resolver {
     aliases: RwLock<Arc<AliasMap>>,
     mesh: RwLock<Mesh>,
     base_url: RwLock<Option<String>>,
+    /// The licences the mesh's engine was last given (L4), to give it again only when they change.
+    applied: Mutex<Option<BTreeSet<String>>>,
 }
 
 impl std::fmt::Debug for Resolver {
@@ -386,6 +389,7 @@ impl Resolver {
         cc.timeout = config.timeout;
         let client = Client::new(cc);
         let gate = LicenceGate::new();
+        let acceptance = Acceptance::new(&config.config_dir);
         let offline = AtomicBool::new(config.offline);
         let shared = Arc::new(Shared {
             config,
@@ -395,6 +399,7 @@ impl Resolver {
             client,
             index,
             gate,
+            acceptance,
             offline,
         });
         publish_key_document(&shared)?;
@@ -403,7 +408,9 @@ impl Resolver {
             shared,
             aliases: RwLock::new(Arc::new(aliases)),
             base_url: RwLock::new(None),
+            applied: Mutex::new(None),
         };
+        r.sync_acceptance();
         Ok(r)
     }
 
@@ -459,7 +466,24 @@ impl Resolver {
         let base = self.base_url.read().unwrap_or_else(|p| p.into_inner()).clone();
         let mesh = build_mesh(&self.shared, &self.aliases_at(None), base)?;
         *self.mesh.write().unwrap_or_else(|p| p.into_inner()) = mesh;
+        *self.applied.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.sync_acceptance();
         Ok(())
+    }
+
+    /// Gives the mesh's engine the licences in force (L4, engine 0.6.1 E1) when they changed since
+    /// it was last given. A `licences.json` that cannot be read gives none (refused, not guessed).
+    fn sync_acceptance(&self) {
+        let set = match self.shared.acceptance.engine_set() {
+            Ok(set) => set,
+            Err(_) => BTreeSet::from([datumesh_engine::LOCAL_DERIVATION_LICENCE.to_string()]),
+        };
+        let mut applied = self.applied.lock().unwrap_or_else(|p| p.into_inner());
+        if applied.as_ref() != Some(&set) {
+            let mesh = self.mesh.read().unwrap_or_else(|p| p.into_inner()).clone();
+            mesh.engine().set_accepted_licences(set.clone());
+            *applied = Some(set);
+        }
     }
 
     /// The configuration.
@@ -474,6 +498,7 @@ impl Resolver {
 
     /// The mesh (the handlers over the local store).
     pub fn mesh(&self) -> Mesh {
+        self.sync_acceptance();
         self.mesh.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
@@ -1145,6 +1170,12 @@ impl Resolver {
                 }
             }
             let v = Value::Object(m);
+            // L5: a cell this machine would sign under a restricted licence is not published.
+            if let Some(l) = v.get("licence").and_then(Value::as_str) {
+                if crate::acceptance::is_restricted(l) {
+                    return Err(crate::acceptance::not_publishable(l));
+                }
+            }
             if let Some(name) = formula {
                 // Rule A (CONTRACT-1.8b H1, L): a start left out is now, and an earlier one is refused
                 // before anything is written.
@@ -1393,8 +1424,13 @@ impl Resolver {
     /// resolver. The result as JSON (`ok`, `level`, `code`, `hash`, ...).
     pub fn verify(&self, receipt: &[u8]) -> Value {
         // A withdrawal has no value to recompute (SPEC 10.1): its level is `signed`.
-        let withdrawal = json::parse(receipt).is_ok_and(|v| v.get("withdrawn").is_some());
-        let v = self.mesh().verify(receipt, withdrawal, None);
+        // L3 (datumesh-local 0.5.1): a stored or relayed receipt (no inputs) is checked by its signature
+        // only, which is `signed`; the value is recomputed (step 7) only for a computed one.
+        let parsed = json::parse(receipt).ok();
+        let withdrawal = parsed.as_ref().is_some_and(|v| v.get("withdrawn").is_some());
+        let no_inputs =
+            parsed.as_ref().and_then(|v| v.get("inputs")).is_none_or(|i| matches!(i, Value::Array(a) if a.is_empty()));
+        let v = self.mesh().verify(receipt, withdrawal || no_inputs, None);
         json::parse(&v.body).unwrap_or(Value::Null)
     }
 

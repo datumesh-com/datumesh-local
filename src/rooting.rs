@@ -454,6 +454,9 @@ impl Resolver {
             if entry.kind != RootKind::Stored || entry.from_hash != old.cell().fn_hash {
                 continue;
             }
+            if old.signer_host() == s.config.host && crate::acceptance::is_restricted(old.licence()) {
+                return Err(crate::acceptance::not_publishable(old.licence()));
+            }
             let to = to_of(&fname);
             let rooted_cell = Cell {
                 ns: ns.to_string(),
@@ -498,6 +501,10 @@ impl Resolver {
             let Some(entry) = done.get(&fname) else { continue };
             if entry.kind != RootKind::Formula || entry.from_hash != r.cell().fn_hash {
                 continue;
+            }
+            // L5: a result this machine computed under a restricted licence is never published.
+            if r.signer_host() == s.config.host && crate::acceptance::is_restricted(r.licence()) {
+                return Err(crate::acceptance::not_publishable(r.licence()));
             }
             let rooted_cell = Cell {
                 ns: ns.to_string(),

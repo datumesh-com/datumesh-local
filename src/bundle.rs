@@ -199,6 +199,16 @@ impl Resolver {
                 }
             }
         }
+        // L5: a result this machine signed under a restricted licence (or the local derivation) is
+        // never exported, and nothing that holds one is (its lineage is in the bundle too).
+        for h in &receipts {
+            let Some(bytes) = store.receipt(h) else { continue };
+            if let Ok(r) = Receipt::from_json(&bytes) {
+                if r.signer_host() == s.config.host && crate::acceptance::is_restricted(r.licence()) {
+                    return Err(crate::acceptance::not_publishable(r.licence()));
+                }
+            }
+        }
         let mut hosts = BTreeSet::from([s.config.host.clone()]);
         let mut receipt_values = Vec::new();
         let mut blobs = Vec::new();

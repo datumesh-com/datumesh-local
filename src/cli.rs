@@ -20,6 +20,9 @@
 //!   mcp                                MCP over stdio (stdout carries only MCP messages)
 //!   mcp --http [--port <n>] [--listen <addr>]  MCP over Streamable HTTP on loopback (default port 7734)
 //!   key                                the machine id and this machine's key document (public)
+//!   licence accept <licence>           accept a restricted licence here (the register's clauses shown first)
+//!   licence list                       the licences in force, with their times
+//!   licence revoke <licence>           revoke one (its history is kept)
 //!   key rotate                         a new key from now; the old one retired (CONTRACT-1.8b L4)
 //!   trust add <key document file>      trust another machine's key document (its host)
 //!   trust revoke <host>                revoke trust from now
@@ -46,6 +49,9 @@ use datumesh_core::json::{self, Value};
 
 use crate::{Config, Error, PublicPlan, Resolver, RootPlan, Source};
 
+/// The test mesh: the forward mesh of a home made before 0.5.1 (its configuration is not rewritten).
+const TEST_MESH: &str = "mesh-test.datumesh.com";
+
 const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|calc|define|publish|describe|explain|find|prefetch|refresh|export|import|verify|serve|key> ...
   get <request>...
   calc <formula> [--asof <instant>] [--remote]
@@ -63,6 +69,7 @@ const USAGE: &str = "usage: datumesh [--home <dir>] [--offline] <get|calc|define
   serve [--listen 127.0.0.1:<port>]
   mcp [--http] [--port <n>] [--listen <addr>]
   key [rotate]
+  licence <accept <licence>|list|revoke <licence>>
   trust <add <file>|revoke <host>|list>
   root --namespace <ns> --key <file> [--export <file>] <name>...";
 
@@ -191,6 +198,17 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
     };
     if offline {
         config.offline = true;
+    }
+    // datumesh-local 0.5.1 (L1): an existing home keeps its files; one that still names the test
+    // mesh as its forward mesh is told, on every command, how the default moved.
+    if config.forward_mesh.as_deref() == Some(TEST_MESH) {
+        let path = config.config_dir.join("config.json");
+        writeln!(
+            err,
+            "the default forward mesh is now datumesh.com; your config names {TEST_MESH} (edit {} to change)",
+            path.display()
+        )
+        .map_err(io)?;
     }
     let r = Resolver::open(config)?;
     match cmd.as_str() {
@@ -611,6 +629,52 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                     )?
                 }
                 _ => return Err(Failure::Usage("key: no argument, or rotate".into())),
+            }
+            Ok(0)
+        }
+        "licence" => {
+            let a = Args::parse(rest, &[], &[])?;
+            match a.positional.as_slice() {
+                [c, licence] if c == "accept" => {
+                    // The licence first, then what the register says of it (D4.4), then what is recorded.
+                    writeln!(out, "{licence}").map_err(io)?;
+                    let acc = r.accept_licence(licence)?;
+                    if let Some(note) = &acc.register_note {
+                        writeln!(out, "{note}").map_err(io)?;
+                    }
+                    if acc.datasets.is_empty() && acc.register_note.is_none() {
+                        writeln!(out, "no register dataset has {licence} as its licence page (no register entry)")
+                            .map_err(io)?;
+                    }
+                    for d in &acc.datasets {
+                        writeln!(out, "register dataset {}/{}", d.source, d.code).map_err(io)?;
+                        if let Some(h) = &d.licence_hash {
+                            writeln!(out, "  licence hash {h}").map_err(io)?;
+                        }
+                        if let Some(text) = &d.clauses {
+                            writeln!(out, "  clauses:").map_err(io)?;
+                            for line in text.lines() {
+                                writeln!(out, "    {line}").map_err(io)?;
+                            }
+                        }
+                    }
+                    writeln!(out, "recorded: {licence} accepted at {}", acc.accepted_at).map_err(io)?;
+                    writeln!(out, "in {}", r.config().config_dir.join(crate::acceptance::LICENCES_FILE).display())
+                        .map_err(io)?;
+                }
+                [c] if c == "list" => {
+                    for l in r.licences_in_force()? {
+                        writeln!(out, "{}\taccepted {}", l.licence, l.accepted_at).map_err(io)?;
+                    }
+                }
+                [c, licence] if c == "revoke" => {
+                    if r.revoke_licence(licence)? {
+                        writeln!(out, "revoked: {licence}").map_err(io)?;
+                    } else {
+                        writeln!(out, "not accepted: {licence}").map_err(io)?;
+                    }
+                }
+                _ => return Err(Failure::Usage("licence: accept <licence>, list, or revoke <licence>".into())),
             }
             Ok(0)
         }

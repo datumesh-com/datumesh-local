@@ -1,4 +1,46 @@
 pub mod datumesh_local
+pub mod datumesh_local::acceptance
+pub use datumesh_local::acceptance::LOCAL_DERIVATION_LICENCE
+#[non_exhaustive] pub struct datumesh_local::acceptance::Accepted
+pub datumesh_local::acceptance::Accepted::accepted_at: alloc::string::String
+pub datumesh_local::acceptance::Accepted::datasets: alloc::vec::Vec<datumesh_local::acceptance::RegisteredDataset>
+pub datumesh_local::acceptance::Accepted::licence: alloc::string::String
+pub datumesh_local::acceptance::Accepted::register_note: core::option::Option<alloc::string::String>
+impl core::clone::Clone for datumesh_local::acceptance::Accepted
+pub fn datumesh_local::acceptance::Accepted::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::acceptance::Accepted
+impl core::cmp::PartialEq for datumesh_local::acceptance::Accepted
+pub fn datumesh_local::acceptance::Accepted::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::acceptance::Accepted
+pub fn datumesh_local::acceptance::Accepted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::acceptance::Accepted
+#[non_exhaustive] pub struct datumesh_local::acceptance::AcceptedLicence
+pub datumesh_local::acceptance::AcceptedLicence::accepted_at: alloc::string::String
+pub datumesh_local::acceptance::AcceptedLicence::licence: alloc::string::String
+impl core::clone::Clone for datumesh_local::acceptance::AcceptedLicence
+pub fn datumesh_local::acceptance::AcceptedLicence::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::acceptance::AcceptedLicence
+impl core::cmp::PartialEq for datumesh_local::acceptance::AcceptedLicence
+pub fn datumesh_local::acceptance::AcceptedLicence::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::acceptance::AcceptedLicence
+pub fn datumesh_local::acceptance::AcceptedLicence::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::acceptance::AcceptedLicence
+#[non_exhaustive] pub struct datumesh_local::acceptance::RegisteredDataset
+pub datumesh_local::acceptance::RegisteredDataset::clauses: core::option::Option<alloc::string::String>
+pub datumesh_local::acceptance::RegisteredDataset::code: alloc::string::String
+pub datumesh_local::acceptance::RegisteredDataset::licence_hash: core::option::Option<alloc::string::String>
+pub datumesh_local::acceptance::RegisteredDataset::source: alloc::string::String
+impl core::clone::Clone for datumesh_local::acceptance::RegisteredDataset
+pub fn datumesh_local::acceptance::RegisteredDataset::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_local::acceptance::RegisteredDataset
+impl core::cmp::PartialEq for datumesh_local::acceptance::RegisteredDataset
+pub fn datumesh_local::acceptance::RegisteredDataset::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_local::acceptance::RegisteredDataset
+pub fn datumesh_local::acceptance::RegisteredDataset::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_local::acceptance::RegisteredDataset
+pub const datumesh_local::acceptance::LICENCES_FILE: &str
+pub const datumesh_local::acceptance::NOT_PUBLISHABLE: &str
+pub fn datumesh_local::acceptance::is_restricted(&str) -> bool
 pub mod datumesh_local::alias
 pub struct datumesh_local::alias::AliasMap
 impl datumesh_local::alias::AliasMap
@@ -576,6 +618,10 @@ pub fn datumesh_local::Reply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl core::marker::StructuralPartialEq for datumesh_local::Reply
 pub struct datumesh_local::Resolver
 impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::accept_licence(&self, &str) -> core::result::Result<datumesh_local::acceptance::Accepted, datumesh_local::Error>
+pub fn datumesh_local::Resolver::licences_in_force(&self) -> core::result::Result<alloc::vec::Vec<datumesh_local::acceptance::AcceptedLicence>, datumesh_local::Error>
+pub fn datumesh_local::Resolver::revoke_licence(&self, &str) -> core::result::Result<bool, datumesh_local::Error>
+impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::aliases(&self) -> alloc::rcs::arc::Arc<datumesh_local::alias::AliasMap>
 pub fn datumesh_local::Resolver::blob_of(&self, &datumesh_local::Reply) -> core::result::Result<core::option::Option<datumesh_local::BlobAnswer>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::config(&self) -> &datumesh_local::config::Config
@@ -610,6 +656,8 @@ pub fn datumesh_local::Resolver::describe_unbound(&self, &str, u16) -> core::opt
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::export(&self) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) -> core::result::Result<datumesh_local::bundle::Imported, datumesh_local::Error>
+impl datumesh_local::Resolver
+pub fn datumesh_local::Resolver::interval(&self, &str, &[(alloc::string::String, alloc::string::String)], &str, &str) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::publish_public(&self, &datumesh_local::PublicPlan) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
 impl datumesh_local::Resolver

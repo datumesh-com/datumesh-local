@@ -460,7 +460,14 @@ impl Resolver {
                 .and_then(|b| FunctionDescriptor::from_json(&b).ok())
                 .into_iter()
                 .collect();
-            check_describe_with(answer, &BTreeMap::new(), &held_fn)
+            // datumesh-http 0.5.3 (H1) adds `order` to a function's describe, outside the descriptor:
+            // core's check rejects a member it does not know, so the check is of the answer without it
+            // (L6: the order of a positional call comes from the descriptor's signature).
+            let checked = match &v {
+                Value::Object(m) => Value::Object(m.iter().filter(|(k, _)| k != "order").cloned().collect()).to_jcs(),
+                _ => answer.to_vec(),
+            };
+            check_describe_with(&checked, &BTreeMap::new(), &held_fn)
                 .map_err(|e| Error::Client { code: e.code_str().into(), detail: e.to_string() })?;
             return Ok(());
         }

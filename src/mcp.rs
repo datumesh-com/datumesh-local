@@ -55,6 +55,7 @@ const TOOLS: &str = r#"[
 {"name":"subscribe","description":"Not implemented in this version.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"whatif","description":"The spreadsheet what-if (also called a diddle or a tweak, for those who know SecDB-style systems): the value a cell would have if some cells held other values, or the value of one cell that makes another equal a number (solve). The answer is a labelled scenario, never signed or stored, and never a fact: it has no receipt and is not verified. Nothing else changes.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"overrides":{"type":"array","items":{"type":"object"}},"asof":{"type":"string"},"solve":{"type":"object","properties":{"vary":{"type":"string"},"target":{"type":"string"},"equals":{},"lo":{},"hi":{}},"required":["vary","target","equals","lo","hi"],"additionalProperties":false}},"required":["request"],"additionalProperties":false}},
 {"name":"calc","description":"Calculate here, not in code: the formula runs beside the data and returns only the result, with its lineage (the cells it read). Try find for an existing function first. The result is memoised on this machine, so the same calculation is not run twice; with remote it is scoped on the forward mesh and nothing is kept.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"formula":{"type":"string"},"asof":{"type":"string"},"remote":{"type":"boolean"}},"required":["formula"],"additionalProperties":false}},
+{"name":"interval","description":"The forward mesh's members of a function over a range of keys (x_interval), each with its receipt, resolving aliases. Keys may be omitted for an unkeyed series. Over 100 members it answers a summary (count, first and last keys, min, max and mean for numbers), the first 100 members, and the interval call for the rest.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"function":{"type":"string"},"keys":{"type":"object"},"from":{"type":"string"},"to":{"type":"string"}},"required":["function","from","to"],"additionalProperties":false}},
 {"name":"publish_public","description":"Publishes a rooted namespace of this machine's names to a public mesh (the bundle, with its tests). Each formula needs tests that cover its derived cases and every branch (E_TESTS_MISSING lists what is missing); the mesh checks the rest and refuses with its code.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"to":{"type":"string"},"namespace":{"type":"string"},"key":{"type":"string"},"names":{"type":"array","items":{"type":"string"}},"export":{"type":"string"}},"required":["to","namespace","key","names"],"additionalProperties":false}}
 ]"#;
 /// The resource templates of `resources/templates/list`.
@@ -297,6 +298,7 @@ impl McpServer {
             "publish" => self.publish(&args),
             "publish_public" => self.publish_public(&args),
             "calc" => self.calc(&args),
+            "interval" => self.interval(&args),
             _ => {
                 let structured = obj(vec![("error", s("not_implemented")), ("tool", s("subscribe"))]);
                 return Ok(tool_members(&json_text(&structured), structured, true));
@@ -650,6 +652,32 @@ impl McpServer {
 
     /// `calc` (Build 2 Part 3 addition, C1 to C3): a formula over cells, here or through the forward
     /// mesh (`remote`). Its arguments are `formula`, `asof` and `remote` only.
+    /// `interval` (L7, D8): the forward mesh's members of a function over keys and a range.
+    fn interval(&self, args: &Value) -> ToolResult {
+        if let Value::Object(members) = args {
+            if let Some((k, _)) =
+                members.iter().find(|(k, _)| !matches!(k.as_str(), "function" | "keys" | "from" | "to"))
+            {
+                return Err(ToolError::arg(format!("{k}: not an argument of interval")));
+            }
+        }
+        let function = str_arg(args, "function")?;
+        let from = str_arg(args, "from")?;
+        let to = str_arg(args, "to")?;
+        let keys = match args.get("keys") {
+            None => Vec::new(),
+            Some(Value::Object(m)) => m
+                .iter()
+                .map(|(k, v)| match v {
+                    Value::String(x) => Ok((k.clone(), x.clone())),
+                    _ => Err(ToolError::arg(format!("keys.{k}: a string"))),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => return Err(ToolError::arg("keys: an object of key values")),
+        };
+        Ok(self.resolver.interval(function, &keys, from, to)?)
+    }
+
     fn calc(&self, args: &Value) -> ToolResult {
         if let Value::Object(members) = args {
             if let Some((k, _)) = members.iter().find(|(k, _)| !matches!(k.as_str(), "formula" | "asof" | "remote")) {
@@ -888,7 +916,7 @@ impl McpServer {
 }
 
 /// The tool names, in `tools/list` order.
-const TOOL_NAMES: [&str; 11] = [
+const TOOL_NAMES: [&str; 12] = [
     "find",
     "get",
     "explain",
@@ -899,6 +927,7 @@ const TOOL_NAMES: [&str; 11] = [
     "subscribe",
     "whatif",
     "calc",
+    "interval",
     "publish_public",
 ];
 

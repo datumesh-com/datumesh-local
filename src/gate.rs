@@ -24,6 +24,11 @@
 //! binds computation. When per-principal delivery arrives (plan 3.4), a cell the mesh answers
 //! `unlicensed` never arrives, so there is nothing to hold.
 //!
+//! The licences this machine accepted (datumesh-local 0.5.1, L4: `datumesh licence accept`) are
+//! applied by the resolver after this gate: a restricted input whose licence is accepted is
+//! computed here, and a receipt this machine signed under a restricted licence that is not
+//! accepted is refused (see `fetch.rs`, `acceptance.rs`).
+//!
 //! The open list of 0.1.0 and 0.1.1 (`open_licences` in the configuration) is no longer a
 //! computation gate and nothing uses it; it is still accepted in the configuration file, and
 //! ignored (deprecated).

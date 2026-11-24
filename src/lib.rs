@@ -76,6 +76,8 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "resolver")]
+pub mod acceptance;
+#[cfg(feature = "resolver")]
 pub mod alias;
 #[cfg(feature = "resolver")]
 pub mod bundle;
@@ -95,6 +97,8 @@ mod fetch;
 pub mod gate;
 #[cfg(feature = "resolver")]
 pub mod index;
+#[cfg(feature = "resolver")]
+mod interval;
 #[cfg(feature = "resolver")]
 pub mod key;
 #[cfg(feature = "resolver")]

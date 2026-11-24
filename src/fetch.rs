@@ -10,12 +10,14 @@ use std::time::Duration;
 
 use datumesh_core::json::Value;
 use datumesh_core::{
-    Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, Receipt, Reference, Scalar, Type, Withdrawal,
+    Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, LicenceReason, Receipt, Reference, Scalar, Type,
+    Withdrawal,
 };
 use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Runtime, SlicePattern};
 use datumesh_http::client::{Client, ClientError, Fetched};
 use datumesh_store::Store;
 
+use crate::acceptance::{is_restricted, Acceptance};
 use crate::config::Config;
 use crate::gate::{is_unrooted, GateDecision, LicenceGate};
 use crate::index::{HeldCell, Index};
@@ -37,6 +39,8 @@ pub(crate) struct Shared {
     pub(crate) client: Client,
     pub(crate) index: Index,
     pub(crate) gate: LicenceGate,
+    /// The licences this machine accepted (`licences.json`, L4).
+    pub(crate) acceptance: Acceptance,
     pub(crate) offline: AtomicBool,
 }
 
@@ -395,7 +399,21 @@ impl Shared {
             .and_then(|n| datumesh_core::KeyDocument::from_json(publisher, &n.keydoc).ok())
             .and_then(|d| d.declarations);
         let input = format!("the input {}/{} under {}", r.cell().ns, r.cell().fn_name, r.licence());
-        match self.gate.permits(function, r.licence(), r.signer_host(), declarations.as_ref(), &self.now()) {
+        // L4: the licences this machine accepted (`licences.json`) decide what the gate's rule refuses.
+        let accepted = self.acceptance.engine_set().map_err(|e| unavailable(e.to_string()))?;
+        let licence = r.licence();
+        let decision = match self.gate.permits(function, licence, r.signer_host(), declarations.as_ref(), &self.now()) {
+            // A receipt this machine signed: a restricted licence is computed over only when accepted.
+            GateDecision::Compute
+                if is_unrooted(r.signer_host()) && is_restricted(licence) && !accepted.contains(licence) =>
+            {
+                GateDecision::Refuse(LicenceReason::NotDeclared)
+            }
+            // A restricted licence the publisher does not declare: computed here when accepted.
+            GateDecision::Refuse(_) if accepted.contains(licence) => GateDecision::Compute,
+            other => other,
+        };
+        match decision {
             GateDecision::Compute => Ok(()),
             GateDecision::Forward => {
                 let why = format!(
@@ -407,7 +425,13 @@ impl Shared {
                 Err(EvalError::InvalidInput(datumesh_core::Error::new(ErrorCode::InputUnavailable, "$", why)))
             }
             GateDecision::Refuse(reason) => {
-                let why = format!("licence inheritance (SPEC 8.5) refuses {function}: {input}: {}", reason.as_str());
+                let mut why =
+                    format!("licence inheritance (SPEC 8.5) refuses {function}: {input}: {}", reason.as_str());
+                if is_restricted(licence) && !accepted.contains(licence) {
+                    why.push_str(&format!(
+                        "; the user must accept {licence} at the command line: datumesh licence accept '{licence}'"
+                    ));
+                }
                 note(|c| {
                     c.unlicensed.get_or_insert(why.clone());
                 });

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.1
+
+Protocol round, Part 1 (CONTRACT-protocol-part1, datumesh-local 0.5.1; with datumesh-engine 0.6.1's local acceptance, E1).
+
+- **Production defaults (L1).** A new home's `forward_mesh` is `datumesh.com`, and its aliases are `ecb/`, `treasury/`,
+  `boe/`, `scripture/` and `earth/` on production, `local/` unchanged. The test mesh stays on the allowlist, so full
+  `mesh-test.datumesh.com/...` names still work. An existing home's `config.json` and `aliases.json` are not rewritten; a home
+  whose `forward_mesh` is still the test mesh gets one line on stderr from every command, with the file to edit.
+- **`describe` (L2)** asks a function's tests at `https://<host>/fn/<full name>?format=json` (with the host), not the name
+  without it. A `describe` answer that carries an `order` member (datumesh-http 0.5.3) is checked without it.
+- **`verify` (L3)** reports `signed` for a stored or relayed receipt (no inputs), which is checked by its signature; it reports
+  `recomputed` only for a computed receipt, whose value step 7 recomputes.
+- **Licence acceptance (L4).** `datumesh licence accept <licence>` shows the licence, the register's datasets whose licence
+  page it is (their quoted clauses and licence hash, read from the forward mesh's `register/dataset`), and records
+  `{licence, accepted_at}` (and the register's `register_licence_hash`, when there is one) in `licences.json`;
+  `licence list` shows the licences in force; `licence revoke <licence>` appends a revocation and keeps the history. A
+  restricted input whose licence is in force is computed here; the result carries that licence, or
+  `LicenseRef-datumesh-local-derivation` over two or more. Without an acceptance the refusal stays `unlicensed`, and names
+  the command (`datumesh licence accept '<licence>'`); the MCP text says the user must accept it at the command line. No MCP
+  tool accepts a licence. A long-running `mcp` or `serve` picks up an acceptance or revocation made by another process
+  (`licences.json` is read again when its mtime changes). `whatif` over such inputs follows the same rule.
+- **Never published or exported (L5).** `export`, `root`, `publish --to`, `publish_public`, bundle export and the MCP
+  `publish` refuse a result this machine signed under a restricted licence (or the local derivation), with
+  `E_LICENCE_NOT_PUBLISHABLE`, naming the licence. Open-licence local results and fetched receipts still export.
+- **Positional formula calls (L6).** A positional call in a formula takes the argument order of the function's descriptor
+  (`signature.order`, fetched by hash), so `par_yield(10Y, 2026-11-20)` parses where `/cell` takes it.
+- **The MCP tool `interval` (L7, D8).** `{function, keys?, from, to}` asks the forward mesh's `x_interval`, resolving aliases,
+  and gives the members with their receipts. Over 100 members it gives a summary, the first 100 and the call for the rest.
+  The mesh's errors (`E_RANGE_TOO_LARGE`, `not_covered`) are passed through.
+- The engine is datumesh-engine 0.6.1 (`EngineBuilder::accepted_licences`, `Engine::set_accepted_licences`,
+  `LOCAL_DERIVATION_LICENCE`, `EngineError::NotAccepted`).
+
 ## 0.5.0
 
 CONTRACT-round-0.7 R1, R2, R8 (with core 0.3.13, formula 0.6.0, store 0.6.0, engine 0.6.0, http 0.5.0).
