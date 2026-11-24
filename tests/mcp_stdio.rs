@@ -303,7 +303,7 @@ fn legacy_initialize_then_requests_without_meta() {
         .handle(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#, Transport::Stdio)
         .expect("a response");
     let v = json::parse(out.as_bytes()).unwrap();
-    assert_eq!(array(result(&v), "tools").len(), 11);
+    assert_eq!(array(result(&v), "tools").len(), 12);
 }
 
 #[test]

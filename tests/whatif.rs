@@ -247,6 +247,7 @@ fn tools_list_has_whatif_and_it_is_described_as_the_spreadsheet_what_if() {
             "subscribe",
             "whatif",
             "calc",
+            "interval",
             "publish_public",
         ]
     );

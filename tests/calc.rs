@@ -215,7 +215,7 @@ fn tools_list_has_calc_with_the_c5_wording() {
     let earlier: Vec<&str> = names.iter().copied().filter(|n| *n != "calc").collect();
     assert_eq!(
         earlier,
-        ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe", "whatif", "publish_public"]
+        ["find", "get", "explain", "describe", "verify", "define", "publish", "subscribe", "whatif", "interval", "publish_public"]
     );
     let t = tools.iter().find(|t| s(t, "name") == "calc").unwrap();
     let d = s(t, "description").to_lowercase();
