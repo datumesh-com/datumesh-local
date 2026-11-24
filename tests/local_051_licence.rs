@@ -61,7 +61,10 @@ fn accept_prints_the_licence_the_registers_clauses_page_and_hash_and_records_the
     assert!(all.contains(TREASURY_LICENCE), "{all}");
     assert!(all.contains(TREASURY_CLAUSE), "the register's quoted clauses: {all}");
     assert!(all.contains(TREASURY_REGISTER_HASH), "the register's licence hash: {all}");
-    assert!(all.contains("US Treasury daily par yield curve rates") || all.contains("par_yield_curve"), "the dataset: {all}");
+    assert!(
+        all.contains("US Treasury daily par yield curve rates") || all.contains("par_yield_curve"),
+        "the dataset: {all}"
+    );
     // The licence is printed first, then what the register says of it.
     let stream = if out.contains(TREASURY_CLAUSE) { &out } else { &err };
     assert!(stream.find(TREASURY_LICENCE).unwrap() < stream.find(TREASURY_CLAUSE).unwrap(), "{stream}");
@@ -104,9 +107,19 @@ fn a_missing_register_entry_is_said_and_the_acceptance_still_records() {
     let lower = all.to_lowercase();
     assert!(lower.contains("register"), "the register is named: {all}");
     assert!(
-        ["no register", "not in the register", "no entry", "not found", "not listed", "no dataset", "has no", "holds no", "does not"]
-            .iter()
-            .any(|p| lower.contains(p)),
+        [
+            "no register",
+            "not in the register",
+            "no entry",
+            "not found",
+            "not listed",
+            "no dataset",
+            "has no",
+            "holds no",
+            "does not"
+        ]
+        .iter()
+        .any(|p| lower.contains(p)),
         "the missing entry is said plainly: {all}"
     );
     let v = licences_json(&dir);
@@ -115,7 +128,9 @@ fn a_missing_register_entry_is_said_and_the_acceptance_still_records() {
     assert!(rec[0].get("register_licence_hash").is_none_or(|h| matches!(h, Value::Null)), "no hash to record");
     // An https licence the register does not hold, too.
     let (_, err) = accept(&dir, "https://example.org/some/licence");
-    assert!(!err.is_empty() || records(&licences_json(&dir), "accepted_at", "https://example.org/some/licence").len() == 1);
+    assert!(
+        !err.is_empty() || records(&licences_json(&dir), "accepted_at", "https://example.org/some/licence").len() == 1
+    );
     assert_eq!(records(&licences_json(&dir), "accepted_at", "https://example.org/some/licence").len(), 1);
 }
 
@@ -161,7 +176,9 @@ fn without_an_acceptance_the_refusal_stays_unlicensed_and_names_the_command() {
     assert!(err.contains("unlicensed"), "{err}");
     assert!(err.contains(TREASURY_LICENCE), "the licence: {err}");
     assert!(err.contains(&format!("datumesh licence accept '{TREASURY_LICENCE}'")), "the command: {err}");
-    assert!(!dir.path().join("licences.json").exists() || !licences_json(&dir).to_jcs().windows(5).any(|w| w == b"https"));
+    assert!(
+        !dir.path().join("licences.json").exists() || !licences_json(&dir).to_jcs().windows(5).any(|w| w == b"https")
+    );
     assert!(prod.posts().is_empty());
 }
 
@@ -173,7 +190,10 @@ fn one_of_two_restricted_licences_accepted_refuses_naming_the_missing_one() {
     assert_eq!(code, 1, "{out}");
     assert!(err.contains("unlicensed"), "{err}");
     assert!(err.contains(&format!("datumesh licence accept '{ECB_LICENCE}'")), "the missing one: {err}");
-    assert!(!err.contains(&format!("datumesh licence accept '{TREASURY_LICENCE}'")), "the accepted one is not asked for again: {err}");
+    assert!(
+        !err.contains(&format!("datumesh licence accept '{TREASURY_LICENCE}'")),
+        "the accepted one is not asked for again: {err}"
+    );
     // Accepting the second computes it; two restricted licences make the derivation LicenseRef.
     accept(&dir, ECB_LICENCE);
     let (code, out, err) = cli(&dir, &["calc", TWO_RESTRICTED]);
@@ -199,7 +219,10 @@ fn revoking_puts_the_refusal_back() {
     assert_eq!(code, 0);
     let (code, _, err) = cli(&dir, &["calc", "datumesh.com/relay/treasury.gov/par_yield(10Y, 2026-11-20) - datumesh.com/relay/bankofengland.co.uk/bank_rate(2026-11-19)"]);
     assert_ne!(code, 0);
-    assert!(err.contains("unlicensed") && err.contains(&format!("datumesh licence accept '{TREASURY_LICENCE}'")), "{err}");
+    assert!(
+        err.contains("unlicensed") && err.contains(&format!("datumesh licence accept '{TREASURY_LICENCE}'")),
+        "{err}"
+    );
 }
 
 #[test]
@@ -251,7 +274,10 @@ fn the_agents_refusal_names_the_licence_and_says_the_user_must_accept_it() {
         "{all}"
     );
     // It is not a way round: calling `get` over a local function does not accept either.
-    assert!(!dir.path().join("licences.json").exists() || records(&licences_json(&dir), "accepted_at", TREASURY_LICENCE).is_empty());
+    assert!(
+        !dir.path().join("licences.json").exists()
+            || records(&licences_json(&dir), "accepted_at", TREASURY_LICENCE).is_empty()
+    );
 }
 
 #[test]
@@ -294,7 +320,14 @@ fn a_declared_restricted_input_is_still_forwarded_when_its_licence_is_accepted()
     let sig = r#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": {"of": "NOK", "per": "USD"}}}"#;
     let (code, _, err) = cli(
         &dir,
-        &["define", "local/nok_twice", "--formula", &format!(r#"mesh-test.datumesh.com/ecb/fx_cross(base: "USD", quote: "NOK", date: date) * 2"#), "--signature", sig],
+        &[
+            "define",
+            "local/nok_twice",
+            "--formula",
+            r#"mesh-test.datumesh.com/ecb/fx_cross(base: "USD", quote: "NOK", date: date) * 2"#,
+            "--signature",
+            sig,
+        ],
     );
     assert_eq!(code, 0, "{err}");
     let (code, out, err) = cli(&dir, &["get", "local/nok_twice(date: 2026-10-30)"]);

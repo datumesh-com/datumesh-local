@@ -58,8 +58,7 @@ fn world() -> W {
         ("local/y10", Y10_SRC, Y10_TESTS, "local/y10(date: 2026-11-20)"),
         ("local/br", BR_SRC, BR_TESTS, "local/br(date: 2026-11-20)"),
     ] {
-        let (code, _, err) =
-            cli(&dir, &["define", name, "--formula", src, "--signature", SIG, "--tests", tests]);
+        let (code, _, err) = cli(&dir, &["define", name, "--formula", src, "--signature", SIG, "--tests", tests]);
         assert_eq!(code, 0, "{err}\n{:?}", prod.unknown());
         let (code, out, err) = cli(&dir, &["get", call]);
         assert_eq!(code, 0, "{err}\n{:?}", prod.unknown());
@@ -131,7 +130,8 @@ fn root_refuses_a_function_whose_held_result_is_restricted_and_not_an_open_one()
     refused(code, &out, &err, TREASURY_LICENCE);
     // With an export file too; nothing is written.
     let f = w.dir.path().join("rooted.json");
-    let (code, out, err) = cli(&w.dir, &["root", "--namespace", NS, "--key", &key, "--export", f.to_str().unwrap(), "local/y10"]);
+    let (code, out, err) =
+        cli(&w.dir, &["root", "--namespace", NS, "--key", &key, "--export", f.to_str().unwrap(), "local/y10"]);
     refused(code, &out, &err, TREASURY_LICENCE);
     assert!(!f.exists());
     // The open one roots.

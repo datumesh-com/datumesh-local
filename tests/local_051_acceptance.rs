@@ -53,7 +53,10 @@ fn the_round_acceptance_test() {
     let prod = ProdMesh::start(true);
     // 1. A fresh home (production defaults).
     let dir = fresh_home(&[("datumesh.com", &prod.origin)]);
-    let (par_hash, br_hash) = (fixture_receipt_hash("par_yield?date=2026-11-20&tenor=10Y"), fixture_receipt_hash("bank_rate?date=2026-11-20"));
+    let (par_hash, br_hash) = (
+        fixture_receipt_hash("par_yield?date=2026-11-20&tenor=10Y"),
+        fixture_receipt_hash("bank_rate?date=2026-11-20"),
+    );
 
     // 2. The two acceptances.
     for l in [TREASURY_LICENCE, BANK_RATE_LICENCE] {
@@ -147,7 +150,9 @@ fn whatif_over_accepted_inputs_needs_the_acceptance() {
     );
     let all = agent_refusal(&v);
     assert!(
-        all.contains(&format!("the user must accept {TREASURY_LICENCE} at the command line: datumesh licence accept '{TREASURY_LICENCE}'")),
+        all.contains(&format!(
+            "the user must accept {TREASURY_LICENCE} at the command line: datumesh licence accept '{TREASURY_LICENCE}'"
+        )),
         "{all}"
     );
 }

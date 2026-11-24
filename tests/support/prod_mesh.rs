@@ -36,7 +36,8 @@ pub const TREASURY_REGISTER_HASH: &str = "e0f425493dd80314c4777e99d29a229f1e72ff
 /// The register's licence hash of the two ECB datasets (`policy_rates`, `reference_rates`).
 pub const ECB_REGISTER_HASH: &str = "5c467e3b05d8e84acda31b952c7db2ced96c18bad746119039cb03da96fbf6db";
 /// A sentence of the Treasury dataset's quoted clauses (the register's `licence_clauses` blob).
-pub const TREASURY_CLAUSE: &str = "Copyright protection under this title is not available for any work of the United States Government";
+pub const TREASURY_CLAUSE: &str =
+    "Copyright protection under this title is not available for any work of the United States Government";
 
 pub const PAR_YIELD: &str = "datumesh.com/relay/treasury.gov/par_yield";
 pub const BANK_RATE: &str = "datumesh.com/relay/bankofengland.co.uk/bank_rate";
@@ -68,6 +69,7 @@ pub struct ProdMesh {
     pub origin: String,
     log: Arc<Mutex<Vec<Req>>>,
     describe_order: Arc<AtomicBool>,
+    tamper: Arc<AtomicBool>,
 }
 
 fn decode(s: &str) -> String {
@@ -146,7 +148,9 @@ fn load() -> (BTreeMap<String, Route>, BTreeMap<String, Route>) {
                 for m in members {
                     let r = m.get("receipt").unwrap();
                     let c = r.get("cell").unwrap();
-                    let arg = |k: &str| c.get("args").unwrap().get(k).unwrap().get("value").and_then(Value::as_str).unwrap().to_string();
+                    let arg = |k: &str| {
+                        c.get("args").unwrap().get(k).unwrap().get("value").and_then(Value::as_str).unwrap().to_string()
+                    };
                     let f = c.get("fn").and_then(Value::as_str).unwrap();
                     let mut vals = [arg("source"), arg("code")];
                     vals.sort();
@@ -169,13 +173,43 @@ fn with_order(body: &[u8], order: &[&str]) -> Vec<u8> {
     Value::Object(m).to_jcs()
 }
 
+/// An interval answer whose second member's receipt signature is broken (one hex digit changed).
+fn break_second_member(body: &[u8]) -> Vec<u8> {
+    let Value::Object(mut m) = json::parse(body).unwrap() else { panic!("an object") };
+    for (k, v) in m.iter_mut() {
+        if k != "members" {
+            continue;
+        }
+        let Value::Array(ms) = v else { continue };
+        let Some(Value::Object(member)) = ms.get_mut(1) else { continue };
+        for (mk, mv) in member.iter_mut() {
+            let Value::Object(r) = mv else { continue };
+            if mk != "receipt" {
+                continue;
+            }
+            for (rk, rv) in r.iter_mut() {
+                if let (true, Value::String(sig)) = (rk == "sig", &mut *rv) {
+                    let flipped = if sig.starts_with('0') { '1' } else { '0' };
+                    sig.replace_range(0..1, &flipped.to_string());
+                }
+            }
+        }
+    }
+    Value::Object(m).to_jcs()
+}
+
 fn answer(
     routes: &BTreeMap<String, Route>,
     cells: &BTreeMap<String, Route>,
     describe_order: bool,
+    tamper: bool,
     target: &str,
 ) -> Route {
-    let not_found = Route { status: 404, ct: "application/json".into(), body: br#"{"error":"E_NAME_UNBOUND","outcome":"not_covered"}"#.to_vec() };
+    let not_found = Route {
+        status: 404,
+        ct: "application/json".into(),
+        body: br#"{"error":"E_NAME_UNBOUND","outcome":"not_covered"}"#.to_vec(),
+    };
     let c = canon(target);
     if let Some(rest) = target.strip_prefix("/cell/") {
         return cells.get(&cell_key(rest)).cloned().unwrap_or(not_found);
@@ -183,7 +217,10 @@ fn answer(
     // The register's slices, in whatever form of the slice call.
     if target.starts_with("/slice/") && c.contains("register/dataset") && c.contains('*') {
         for m in METHODS {
-            if c.contains(&format!("dataset/{m}")) || c.contains(&format!("dataset(source:*,code:*).{m}")) || c.contains(&format!(").{m}")) {
+            if c.contains(&format!("dataset/{m}"))
+                || c.contains(&format!("dataset(source:*,code:*).{m}"))
+                || c.contains(&format!(").{m}"))
+            {
                 let key = format!("/slice/datumesh.com/register/dataset/{m}(source:*,code:*)");
                 if let Some(r) = routes.get(&canon(&key)) {
                     return r.clone();
@@ -192,6 +229,9 @@ fn answer(
         }
     }
     let Some(r) = routes.get(&c) else { return not_found };
+    if tamper && target.starts_with("/x/interval/") && r.status == 200 {
+        return Route { status: r.status, ct: r.ct.clone(), body: break_second_member(&r.body) };
+    }
     if describe_order && target.starts_with("/describe/") && r.status == 200 {
         let order: &[&str] = if c.ends_with("/par_yield") {
             &["tenor", "date"]
@@ -207,7 +247,14 @@ fn answer(
     r.clone()
 }
 
-fn serve(mut s: TcpStream, routes: &BTreeMap<String, Route>, cells: &BTreeMap<String, Route>, log: &Mutex<Vec<Req>>, order: &AtomicBool) {
+fn serve(
+    mut s: TcpStream,
+    routes: &BTreeMap<String, Route>,
+    cells: &BTreeMap<String, Route>,
+    log: &Mutex<Vec<Req>>,
+    order: &AtomicBool,
+    tamper: &AtomicBool,
+) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -225,13 +272,23 @@ fn serve(mut s: TcpStream, routes: &BTreeMap<String, Route>, cells: &BTreeMap<St
     let mut parts = line.split(' ');
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
     let r = if method == "GET" {
-        answer(routes, cells, order.load(Ordering::SeqCst), &target)
+        answer(routes, cells, order.load(Ordering::SeqCst), tamper.load(Ordering::SeqCst), &target)
     } else {
-        Route { status: 405, ct: "application/json".into(), body: br#"{"error":"the fake production mesh answers GET only"}"#.to_vec() }
+        Route {
+            status: 405,
+            ct: "application/json".into(),
+            body: br#"{"error":"the fake production mesh answers GET only"}"#.to_vec(),
+        }
     };
     log.lock().unwrap().push(Req { method, target, answered: r.status });
     let reason = if r.status == 200 { "OK" } else { "Other" };
-    let _ = write!(s, "HTTP/1.1 {} {reason}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", r.status, r.ct, r.body.len());
+    let _ = write!(
+        s,
+        "HTTP/1.1 {} {reason}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        r.status,
+        r.ct,
+        r.body.len()
+    );
     let _ = s.write_all(&r.body);
 }
 
@@ -244,14 +301,21 @@ impl ProdMesh {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let log = Arc::new(Mutex::new(Vec::new()));
         let order = Arc::new(AtomicBool::new(describe_order));
-        let (l2, o2) = (log.clone(), order.clone());
+        let tamper = Arc::new(AtomicBool::new(false));
+        let (l2, o2, t2) = (log.clone(), order.clone(), tamper.clone());
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
-                let (routes, cells, log, order) = (routes.clone(), cells.clone(), l2.clone(), o2.clone());
-                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order));
+                let (routes, cells, log, order, tamper) =
+                    (routes.clone(), cells.clone(), l2.clone(), o2.clone(), t2.clone());
+                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order, &tamper));
             }
         });
-        ProdMesh { origin, log, describe_order: order }
+        ProdMesh { origin, log, describe_order: order, tamper }
+    }
+
+    /// Break the signature of the second member of every interval answer.
+    pub fn tamper_interval(&self, on: bool) {
+        self.tamper.store(on, Ordering::SeqCst);
     }
 
     pub fn set_describe_order(&self, on: bool) {
@@ -289,7 +353,10 @@ fn patch_peers(dir: &TempDir, peers: &[(&str, &str)]) {
     let path = dir.path().join("config.json");
     let text = std::fs::read_to_string(&path).unwrap();
     let list: Vec<String> = peers.iter().map(|(h, o)| format!("\"{h}\": \"{o}\"")).collect();
-    assert!(text.contains("\"peers\": {}"), "the installed config.json has a `\"peers\": {{}}` member to point at the fakes");
+    assert!(
+        text.contains("\"peers\": {}"),
+        "the installed config.json has a `\"peers\": {{}}` member to point at the fakes"
+    );
     std::fs::write(&path, text.replace("\"peers\": {}", &format!("\"peers\": {{{}}}", list.join(", ")))).unwrap();
 }
 
@@ -361,16 +428,31 @@ pub fn is_canonical_instant(t: &str) -> bool {
         && b[16] == b':'
         && b[19] == b'.'
         && b[26] == b'Z'
-        && t[..4].bytes().chain(t[5..7].bytes()).chain(t[8..10].bytes()).chain(t[11..13].bytes()).chain(t[14..16].bytes()).chain(t[17..19].bytes()).chain(t[20..26].bytes()).all(|c| c.is_ascii_digit())
+        && t[..4]
+            .bytes()
+            .chain(t[5..7].bytes())
+            .chain(t[8..10].bytes())
+            .chain(t[11..13].bytes())
+            .chain(t[14..16].bytes())
+            .chain(t[17..19].bytes())
+            .chain(t[20..26].bytes())
+            .all(|c| c.is_ascii_digit())
 }
 
 /// What an agent is told when a tool refuses: the text of a tool result with `isError`, or the
 /// message of a JSON-RPC error (either way is a refusal the agent reads).
 pub fn agent_refusal(v: &Value) -> String {
     if let Some(r) = v.get("result") {
-        assert_eq!(r.get("isError"), Some(&Value::Bool(true)), "a refusal, not an answer: {}", String::from_utf8_lossy(&v.to_jcs()));
+        assert_eq!(
+            r.get("isError"),
+            Some(&Value::Bool(true)),
+            "a refusal, not an answer: {}",
+            String::from_utf8_lossy(&v.to_jcs())
+        );
         return String::from_utf8_lossy(&v.to_jcs()).into_owned();
     }
-    let e = v.get("error").unwrap_or_else(|| panic!("neither a result nor an error: {}", String::from_utf8_lossy(&v.to_jcs())));
+    let e = v
+        .get("error")
+        .unwrap_or_else(|| panic!("neither a result nor an error: {}", String::from_utf8_lossy(&v.to_jcs())));
     String::from_utf8_lossy(&e.to_jcs()).into_owned()
 }

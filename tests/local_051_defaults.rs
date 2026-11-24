@@ -75,10 +75,7 @@ fn l1_an_alias_resolves_to_the_production_name_from_a_canned_fetch() {
     let env = parse(&out);
     assert_eq!(s(&env, "outcome"), "ok");
     assert_eq!(s(env.get("receipt").unwrap(), "value"), "1.099");
-    assert_eq!(
-        s(env.get("receipt").unwrap().get("cell").unwrap(), "ns"),
-        "datumesh.com/relay/ecb.europa.eu"
-    );
+    assert_eq!(s(env.get("receipt").unwrap().get("cell").unwrap(), "ns"), "datumesh.com/relay/ecb.europa.eu");
     assert!(
         err.contains(r#"as datumesh.com/relay/ecb.europa.eu/fx_reference(currency: "USD", date: 2026-11-20)"#),
         "{err}"
@@ -112,9 +109,14 @@ fn l1_an_old_home_is_not_rewritten_and_every_command_prints_the_notice() {
     let (cfg0, al0) = (std::fs::read(&cfg_path).unwrap(), std::fs::read(dir.path().join("aliases.json")).unwrap());
     let cfg_text = String::from_utf8(cfg0.clone()).unwrap();
     assert!(cfg_text.contains("\"forward_mesh\": \"mesh-test.datumesh.com\""));
-    for args in [&["--offline", "key"][..], &["--offline", "trust", "list"], &["--offline", "get", "local/nothing(date: 2026-01-01)"]] {
+    for args in [
+        &["--offline", "key"][..],
+        &["--offline", "trust", "list"],
+        &["--offline", "get", "local/nothing(date: 2026-01-01)"],
+    ] {
         let (_, _, err) = cli(&dir, args);
-        let notices: Vec<&str> = err.lines().filter(|l| l.contains("the default forward mesh is now datumesh.com")).collect();
+        let notices: Vec<&str> =
+            err.lines().filter(|l| l.contains("the default forward mesh is now datumesh.com")).collect();
         assert_eq!(notices.len(), 1, "one line for {args:?}: {err}");
         assert!(notices[0].contains(NOTICE), "{}", notices[0]);
         assert!(notices[0].contains(&*cfg_path.to_string_lossy()), "the path of config.json: {}", notices[0]);
@@ -138,7 +140,11 @@ fn l1_no_notice_for_a_fresh_home_or_a_home_that_already_names_production() {
     let old = old_home(&[]);
     let p = old.path().join("config.json");
     let text = std::fs::read_to_string(&p).unwrap();
-    std::fs::write(&p, text.replace("\"forward_mesh\": \"mesh-test.datumesh.com\"", "\"forward_mesh\": \"datumesh.com\"")).unwrap();
+    std::fs::write(
+        &p,
+        text.replace("\"forward_mesh\": \"mesh-test.datumesh.com\"", "\"forward_mesh\": \"datumesh.com\""),
+    )
+    .unwrap();
     let (_, _, err) = cli(&old, &["--offline", "key"]);
     assert!(!err.contains("default forward mesh"), "{err}");
 }
@@ -157,10 +163,7 @@ fn l2_describe_asks_the_fn_page_by_its_full_name_with_the_host() {
         targets.iter().any(|t| t == "/fn/datumesh.com/relay/treasury.gov/par_yield?format=json"),
         "the tests are asked at <host>/fn/<full name>?format=json: {targets:?}"
     );
-    assert!(
-        !targets.iter().any(|t| t.starts_with("/fn/relay/")),
-        "never the name without its host: {targets:?}"
-    );
+    assert!(!targets.iter().any(|t| t.starts_with("/fn/relay/")), "never the name without its host: {targets:?}");
     let all = format!("{out}\n{err}");
     assert!(!all.contains("tests: unavailable"), "the page is there: {all}");
 }
@@ -185,7 +188,11 @@ fn l2_describe_still_works_when_the_function_describe_carries_order() {
     let dir = fresh_home(&[("datumesh.com", &prod.origin)]);
     let (code, out, err) = cli(&dir, &["describe", "datumesh.com/relay/treasury.gov/par_yield"]);
     assert_eq!(code, 0, "{out}\n{err}");
-    assert!(prod.targets().iter().any(|t| t == "/fn/datumesh.com/relay/treasury.gov/par_yield?format=json"), "{:?}", prod.targets());
+    assert!(
+        prod.targets().iter().any(|t| t == "/fn/datumesh.com/relay/treasury.gov/par_yield?format=json"),
+        "{:?}",
+        prod.targets()
+    );
 }
 
 // ------------------------------------------------------------------------------------------ L3
@@ -220,8 +227,17 @@ fn l3_a_computed_receipt_verifies_at_recomputed() {
     let dir = fresh_home(&[("datumesh.com", &prod.origin)]);
     // Bank Rate is under an open licence (OGL-UK-3.0): computed here with no acceptance.
     let sig = r#"{"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": "percent"}}"#;
-    let (code, _, err) =
-        cli(&dir, &["define", "local/br2", "--formula", "datumesh.com/relay/bankofengland.co.uk/bank_rate(date: date) * 2", "--signature", sig]);
+    let (code, _, err) = cli(
+        &dir,
+        &[
+            "define",
+            "local/br2",
+            "--formula",
+            "datumesh.com/relay/bankofengland.co.uk/bank_rate(date: date) * 2",
+            "--signature",
+            sig,
+        ],
+    );
     assert_eq!(code, 0, "{err}\n{:?}", prod.unknown());
     let (code, env, err) = cli(&dir, &["get", "local/br2(date: 2026-11-20)"]);
     assert_eq!(code, 0, "{err}\n{:?}", prod.unknown());

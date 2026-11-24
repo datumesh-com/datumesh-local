@@ -138,4 +138,3 @@ fn the_cli_defines_with_tests() {
     assert_eq!(s(&v, "name"), "local.invalid/rate_x");
     assert_eq!(v.get("tests").and_then(Value::as_number_text), Some("2"), "{out}");
 }
-

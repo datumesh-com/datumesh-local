@@ -150,7 +150,9 @@ fn describe_of_a_public_function_lists_its_tests_from_the_function_page() {
     assert_eq!(s(&cases[2], "result"), "pass");
     // The tests were read from the mesh's function page JSON, once the describe answer named it.
     assert!(
-        stub.asked().iter().any(|r| r.starts_with("/fn/mesh-test.datumesh.com/ecb/fx_rate") && r.contains("format=json")),
+        stub.asked()
+            .iter()
+            .any(|r| r.starts_with("/fn/mesh-test.datumesh.com/ecb/fx_rate") && r.contains("format=json")),
         "{:?}",
         stub.asked()
     );

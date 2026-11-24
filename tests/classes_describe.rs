@@ -16,7 +16,7 @@ use common::*;
 use datumesh_core::json::{self, Value};
 use datumesh_core::{check_describe_with, DescribeKind};
 use datumesh_local::serve::Server;
-use datumesh_local::{Source};
+use datumesh_local::Source;
 
 fn encoding(class: &str, keys: &str) -> String {
     format!("{class}({keys})")

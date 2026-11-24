@@ -50,7 +50,7 @@ use std::sync::Arc;
 use common::*;
 use datumesh_core::json::{self, Value};
 use datumesh_local::mcp::{McpServer, Transport};
-use datumesh_local::{Resolver};
+use datumesh_local::Resolver;
 use tools::*;
 use whatif_stub::{DocMode, WhatifStub};
 
