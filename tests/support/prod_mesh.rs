@@ -71,6 +71,48 @@ pub struct ProdMesh {
     describe_order: Arc<AtomicBool>,
     tamper: Arc<AtomicBool>,
     bank: Arc<Bank>,
+    faults: Arc<Faults>,
+}
+
+/// What the fake can be made to fail (local 0.5.2, items 37 and 39), and the plain-words find.
+///
+/// * `/find?summary=1` answers as recorded, or 503 while `summary_down` is set.
+/// * `/find?q=<query>` (any other `/find` request) answers production's shape for no match,
+///   `{"query": <query>, "results": [], "vector": false}` (ITEM32-find-sources.md), or an empty error
+///   answer with `find_status` when it is not 0.
+#[derive(Default)]
+pub struct Faults {
+    summary_down: AtomicBool,
+    find_status: std::sync::atomic::AtomicU16,
+}
+
+impl Faults {
+    fn respond(&self, target: &str) -> Option<Route> {
+        let d = decode(target);
+        let (path, query) = d.split_once('?').unwrap_or((&d, ""));
+        if path != "/find" {
+            return None;
+        }
+        let error = |status: u16| Route {
+            status,
+            ct: "application/json".into(),
+            body: format!(r#"{{"error":"E_TEST_FAULT","outcome":"error","status":{status}}}"#).into_bytes(),
+        };
+        if query == "summary=1" {
+            return self.summary_down.load(Ordering::SeqCst).then(|| error(503));
+        }
+        let status = self.find_status.load(Ordering::SeqCst);
+        if status != 0 {
+            return Some(error(status));
+        }
+        let q = param(query, "q").unwrap_or_default();
+        let body = Value::Object(vec![
+            ("query".into(), Value::String(q)),
+            ("results".into(), Value::Array(Vec::new())),
+            ("vector".into(), Value::Bool(false)),
+        ]);
+        Some(Route { status: 200, ct: "application/json".into(), body: body.to_jcs() })
+    }
 }
 
 fn decode(s: &str) -> String {
@@ -409,6 +451,7 @@ impl Bank {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve(
     mut s: TcpStream,
     routes: &BTreeMap<String, Route>,
@@ -417,6 +460,7 @@ fn serve(
     order: &AtomicBool,
     tamper: &AtomicBool,
     bank: &Bank,
+    faults: &Faults,
 ) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -434,7 +478,7 @@ fn serve(
     let line = head.lines().next().unwrap_or("");
     let mut parts = line.split(' ');
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let banked = if method == "GET" { bank.respond(&target) } else { None };
+    let banked = if method == "GET" { faults.respond(&target).or_else(|| bank.respond(&target)) } else { None };
     let r = if let Some(r) = banked {
         r
     } else if method == "GET" {
@@ -473,15 +517,16 @@ impl ProdMesh {
             ranged: recorded(BANK_RANGED),
             served: std::sync::atomic::AtomicUsize::new(0),
         });
-        let (l2, o2, t2, b2) = (log.clone(), order.clone(), tamper.clone(), bank.clone());
+        let faults = Arc::new(Faults::default());
+        let (l2, o2, t2, b2, f2) = (log.clone(), order.clone(), tamper.clone(), bank.clone(), faults.clone());
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
-                let (routes, cells, log, order, tamper, bank) =
-                    (routes.clone(), cells.clone(), l2.clone(), o2.clone(), t2.clone(), b2.clone());
-                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order, &tamper, &bank));
+                let (routes, cells, log, order, tamper, bank, faults) =
+                    (routes.clone(), cells.clone(), l2.clone(), o2.clone(), t2.clone(), b2.clone(), f2.clone());
+                std::thread::spawn(move || serve(conn, &routes, &cells, &log, &order, &tamper, &bank, &faults));
             }
         });
-        ProdMesh { origin, log, describe_order: order, tamper, bank }
+        ProdMesh { origin, log, describe_order: order, tamper, bank, faults }
     }
 
     /// Bank Rate members served so far, by `/slice` pages and `/x/interval` answers.
@@ -498,6 +543,21 @@ impl ProdMesh {
     }
 
     /// Break the signature of the second member of every interval answer.
+    /// `/find?summary=1` answers 503 while `down` (item 37).
+    pub fn fail_summary(&self, down: bool) {
+        self.faults.summary_down.store(down, Ordering::SeqCst);
+    }
+
+    /// `/find?q=...` answers `status` (0: the empty answer of no match) (item 39).
+    pub fn set_find_status(&self, status: u16) {
+        self.faults.find_status.store(status, Ordering::SeqCst);
+    }
+
+    /// The `/find?summary=1` requests so far.
+    pub fn summary_requests(&self) -> usize {
+        self.targets().iter().filter(|t| t.as_str() == "/find?summary=1").count()
+    }
+
     pub fn tamper_interval(&self, on: bool) {
         self.tamper.store(on, Ordering::SeqCst);
     }
