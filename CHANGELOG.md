@@ -20,6 +20,12 @@ The guard patch's part A, agent answers (CONTRACT-guard-patch.md, A1 to A5; the 
   retry of the catalogue summary succeeds on stdio, the server sends the notification once, after the answer to the request that
   retried. The `find` description then carries the held sentence (and, in the small profile, the subjects' labels). A summary fetched
   at start changes nothing.
+- **Nested explain (item 14, 25 Nov).** `explain` cuts every nested `inputs` list to 20, at every depth up to 16, with
+  `inputs_total` and an `explain` pointer (`{request, page: 2, limit: 20}`) to the rest. Nested inputs are slim: an input
+  with inputs gives its call, value and receipt hash; a leaf gives its receipt hash alone (its call and value would not fit
+  the 64 KiB budget at limit 40 over the nested fixture). The full envelope is only at the top.
+- **Interval members (item 14).** A listed member carries its `call`, `value`, `receipt_hash`, `keys` and `asof`, not the
+  whole receipt; the receipt is still verified, and the answer still lists the first 100.
 - **`describe` of a catalogue root.** `describe <host>/catalog` (`kind: catalog`, spec-0.7.0 C7) is checked as a catalogue: its host
   and its domains. It was refused as an answer that names no class.
 - **The usage line (item 12).** `datumesh --help` lists every command the dispatcher takes: whatif, mcp, licence, trust, root and allow

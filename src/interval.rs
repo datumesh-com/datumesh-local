@@ -5,9 +5,10 @@
 //! gives the first [`LISTED`] and the call for the rest. The mesh's errors are passed through.
 
 use datumesh_core::json::{self, Value};
+use datumesh_core::Receipt;
 use datumesh_http::client::pct;
 
-use crate::resolver::client_error;
+use crate::resolver::{call_form, client_error};
 use crate::{Error, Resolver};
 
 /// The members listed in full; over this many the answer summarises and gives the call for the rest.
@@ -29,6 +30,21 @@ fn member(m: &Value) -> Value {
         }
     }
     Value::Object(pairs)
+}
+
+/// A listed member (datumesh-local 0.5.3, the coordinator's decision of 25 Nov): its `call`, `value` and
+/// `receipt_hash`, with its `keys` and `asof`, not the whole receipt (which was verified before). Over 100
+/// members a long answer stays within the 64 KiB budget.
+fn listed(m: &Value) -> Value {
+    let Some(r) = m.get("receipt").and_then(|x| Receipt::from_value(x).ok()) else { return member(m) };
+    let asof = m.get("asof").cloned().unwrap_or_else(|| Value::String(r.asof().to_string()));
+    Value::Object(vec![
+        ("call".into(), Value::String(call_form(r.cell()))),
+        ("value".into(), m.get("value").cloned().unwrap_or_else(|| Value::String(r.value().lexical().to_string()))),
+        ("receipt_hash".into(), Value::String(r.hash().to_string())),
+        ("keys".into(), keys_of(m)),
+        ("asof".into(), asof),
+    ])
 }
 
 fn keys_of(m: &Value) -> Value {
@@ -99,7 +115,7 @@ impl Resolver {
             ("from".to_string(), Value::String(from.to_string())),
             ("to".to_string(), Value::String(to.to_string())),
             ("count".to_string(), num(members.len())),
-            ("members".to_string(), Value::Array(members.iter().take(LISTED).map(member).collect())),
+            ("members".to_string(), Value::Array(members.iter().take(LISTED).map(listed).collect())),
         ];
         if members.len() > LISTED {
             out.push(("summary".to_string(), summary(members)));

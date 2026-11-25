@@ -47,6 +47,8 @@ const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find
 /// The inputs an explain answer gives a page of: the default and the most (datumesh-local 0.5.3, A3).
 const EXPLAIN_LIMIT: usize = 20;
 const EXPLAIN_MAX: usize = 40;
+/// The inputs an explain answer gives of each nested node: the first, with an `explain` pointer to the rest.
+const EXPLAIN_NESTED: usize = 20;
 /// The lineage a tool answer gives in full; the rest is the `explain` pointer's (A3).
 const LINEAGE_CUT: usize = 20;
 /// The results a find answer's text names (A2).
@@ -658,45 +660,70 @@ impl McpServer {
         let limit = page_arg(args, "limit", EXPLAIN_LIMIT, Some(EXPLAIN_MAX))?;
         let reply = self.resolver.explain(request, Some(depth))?;
         let node = json::parse(&reply.body).unwrap_or(Value::Null);
-        let block = self.explain_tree(num(u64::from(reply.status)), &node, reply.label.as_deref());
-        Ok(paged_inputs(block, page, limit))
+        Ok(self.explain_answer(num(u64::from(reply.status)), &node, reply.label.as_deref(), page, limit))
     }
 
-    /// An explain node as an answer block with its `inputs` (answer blocks, or the raw node when
-    /// it is not a cell: a slice).
-    fn explain_tree(&self, status: Value, node: &Value, label: Option<&str>) -> Value {
+    /// An explain node as the answer (A3): the node in full (its answer block), its inputs cut to the page
+    /// (from 1) of `limit`, with `inputs_total`, `page` and `limit` beside them. Each input is slim (`explain_input`).
+    /// The raw node, when it is not a cell (a slice), has no inputs to page.
+    fn explain_answer(&self, status: Value, node: &Value, label: Option<&str>, page: usize, limit: usize) -> Value {
         let (envelope, children) = match node.get("envelope") {
             Some(e) => (e, node.get("inputs")),
             None => (node, None),
         };
-        let inputs: Vec<Value> = match children {
-            Some(Value::Array(a)) => a.iter().map(|c| self.explain_child(c)).collect(),
-            _ => Vec::new(),
+        let all: &[Value] = match children {
+            Some(Value::Array(a)) => a,
+            _ => &[],
         };
+        let shown: Vec<Value> =
+            all.iter().skip((page - 1).saturating_mul(limit)).take(limit).map(|c| self.explain_input(c, 1)).collect();
         let mut block = answer_block(status, &envelope.to_jcs(), label);
         if let Value::Object(m) = &mut block {
-            m.push(("inputs".into(), Value::Array(inputs)));
+            m.push(("inputs".into(), Value::Array(shown)));
+            m.push(("inputs_total".into(), num(all.len() as u64)));
+            m.push(("page".into(), num(page as u64)));
+            m.push(("limit".into(), num(limit as u64)));
         }
         block
     }
 
-    fn explain_child(&self, node: &Value) -> Value {
-        match node.get("envelope") {
-            Some(_) => {
-                let envelope = node.get("envelope").cloned().unwrap_or(Value::Null);
-                let label = self.label_of(&envelope);
-                let status = if envelope.get("receipt").is_some() { num(200) } else { Value::Null };
-                self.explain_tree(status, node, label.as_deref())
-            }
-            None => node.clone(),
+    /// An input of an explain answer, slim (datumesh-local 0.5.3, A3). An input with inputs gives its call, value
+    /// and receipt hash, its own inputs cut to [`EXPLAIN_NESTED`] (with `inputs_total`), and, when cut, an
+    /// `explain` pointer to the rest. A leaf gives its call, value and hash at level 1 (the top's inputs), and its
+    /// receipt hash alone deeper, so a 16-deep answer stays within the 64 KiB budget. The full envelope is only at
+    /// the top.
+    fn explain_input(&self, node: &Value, level: usize) -> Value {
+        let Some(r) = node.get("envelope").and_then(|e| e.get("receipt")).and_then(|x| Receipt::from_value(x).ok())
+        else {
+            return node.clone();
+        };
+        let (call, value, hash) = (call_form(r.cell()), r.value().to_value(), r.hash());
+        let inputs: &[Value] = match node.get("inputs") {
+            Some(Value::Array(a)) => a,
+            _ => &[],
+        };
+        if inputs.is_empty() {
+            return if level == 1 {
+                obj(vec![("call", s(call)), ("value", value), ("receipt_hash", s(hash))])
+            } else {
+                obj(vec![("receipt_hash", s(hash))])
+            };
         }
-    }
-
-    /// The label of a receipt in an envelope: this machine's, or a trusted machine's (the
-    /// resolver's label rule, CONTRACT-1.8b L4).
-    fn label_of(&self, envelope: &Value) -> Option<String> {
-        let r = Receipt::from_value(envelope.get("receipt")?).ok()?;
-        self.resolver.signer_label(&r)
+        let mut out = vec![
+            ("call", s(call.clone())),
+            ("value", value),
+            ("receipt_hash", s(hash)),
+            (
+                "inputs",
+                Value::Array(inputs.iter().take(EXPLAIN_NESTED).map(|c| self.explain_input(c, level + 1)).collect()),
+            ),
+            ("inputs_total", num(inputs.len() as u64)),
+        ];
+        if inputs.len() > EXPLAIN_NESTED {
+            let pointer = obj(vec![("request", s(call)), ("page", num(2)), ("limit", num(EXPLAIN_NESTED as u64))]);
+            out.push(("explain", pointer));
+        }
+        obj(out)
     }
 
     /// `describe` (SPEC 16.8): the structured content, and the text items: the answer as JSON,
@@ -1623,27 +1650,6 @@ fn page_arg(args: &Value, key: &str, default: usize, max: Option<usize>) -> Resu
                 None => ToolError::arg(format!("{key}: an integer, at least 1")),
             }),
     }
-}
-
-/// An explain answer with its inputs cut to the page (from 1) of `limit`; the total, the page and the limit are
-/// named beside them (A3).
-fn paged_inputs(block: Value, page: usize, limit: usize) -> Value {
-    let Value::Object(members) = block else { return block };
-    let mut out = Vec::new();
-    for (k, v) in members {
-        match v {
-            Value::Array(all) if k == "inputs" => {
-                let total = all.len();
-                let shown: Vec<Value> = all.into_iter().skip((page - 1).saturating_mul(limit)).take(limit).collect();
-                out.push((k, Value::Array(shown)));
-                out.push(("inputs_total".into(), num(total as u64)));
-                out.push(("page".into(), num(page as u64)));
-                out.push(("limit".into(), num(limit as u64)));
-            }
-            v => out.push((k, v)),
-        }
-    }
-    Value::Object(out)
 }
 
 /// A tool answer's lineage cut to its first [`LINEAGE_CUT`] entries (A3): `lineage_total` counts them all, and
