@@ -12,10 +12,11 @@
 //! function label and its cell count, and the labels of every listed key value (the editions among them, when `distinct` <= 50).
 //! None of them carries a famous reference or any `<digits>:<digits>` reference shape.
 //!
-//! Amended by datumesh-local 0.5.2 (the user's item 36, CONTRACT-next-patch.md): what the
+//! Amended by datumesh-local 0.5.2 (the user's items 36 and 37, CONTRACT-next-patch.md): what the
 //! mesh holds is carried once, in the instructions only, no longer in the `find` and `get`
-//! descriptions as well (36). Summary fetched and failing (or no mesh to ask): the 0.3.3 static
-//! text, byte for byte the text a resolver with no find mesh gives.
+//! descriptions as well (36); and a summary that is fetched and fails is no longer replaced silently
+//! by the 0.3.3 static text: the instructions say "What this mesh holds could not be fetched
+//! (<reason>); find still works." (37). With no find mesh configured, that is the reason given.
 
 mod common;
 #[path = "support/read_stub.rs"]
@@ -157,19 +158,28 @@ fn a_summary_with_a_famous_label_still_gives_no_example_of_it() {
     }
 }
 
+/// Item 37's sentence, with the reason between its parentheses.
+const NOT_FETCHED: &str = "What this mesh holds could not be fetched (";
+const STILL_WORKS: &str = "); find still works.";
+
 #[test]
-fn a_failing_summary_falls_back_to_the_static_text() {
+fn a_failing_summary_is_said_and_not_replaced_silently() {
     let (plain, _s0, _u0, _d0) = server(None, &[]);
-    let static_ins = instructions(&plain);
     let static_desc = descriptions(&plain);
-    assert!(!static_ins.contains("Sample passages"));
+    assert!(!instructions(&plain).contains("Sample passages"));
     let (srv, stub, _up, _dir) = server(None, &[HOST]);
     assert!(stub.summary_requests() >= 1, "it tried");
-    assert_eq!(instructions(&srv), static_ins);
+    // Item 37 (0.5.2): the failure is said, with its reason, in one sentence; no silent fallback.
+    let ins = instructions(&srv);
+    let start =
+        ins.find(NOT_FETCHED).unwrap_or_else(|| panic!("says it could not be fetched: {ins}")) + NOT_FETCHED.len();
+    let end = ins[start..].find(STILL_WORKS).unwrap_or_else(|| panic!("says find still works: {ins}")) + start;
+    assert!(!ins[start..end].trim().is_empty(), "a reason: {ins}");
     assert_eq!(descriptions(&srv), static_desc);
     // And an unparseable summary is a failure too.
     let (bad, _s, _u, _d) = server(Some("not json"), &[HOST]);
-    assert_eq!(instructions(&bad), static_ins);
+    let ins = instructions(&bad);
+    assert!(ins.contains(NOT_FETCHED) && ins.contains(STILL_WORKS), "{ins}");
 }
 
 #[test]
