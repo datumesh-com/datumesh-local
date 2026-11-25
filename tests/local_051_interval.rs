@@ -2,6 +2,9 @@
 //! the forward mesh's `x_interval` (GET `<origin>/x/interval/<full function name>?<keys>&from&to`),
 //! resolving aliases; over 100 members it answers with a summary, the first 100 members and the
 //! call for the rest; each member carries its receipt; the mesh's errors are passed through.
+//! Since 0.5.3 (the guard patch's A3, the coordinator's decision of 25 Nov) a listed member carries
+//! its `call`, `value` and `receipt_hash` (with its `keys` and `asof`), not the whole receipt, so a
+//! 100-member answer stays within the 64 KiB tool budget; the receipts are still verified.
 //! The mesh is the fake of production responses (`tests/support/prod_mesh.rs`).
 
 mod common;
@@ -24,6 +27,15 @@ fn world() -> (ProdMesh, TempDir, McpServer) {
     let dir = fresh_home(&[("datumesh.com", &prod.origin)]);
     let srv = McpServer::new(Arc::new(Resolver::open(Config::in_dir(dir.path()).unwrap()).unwrap()));
     (prod, dir, srv)
+}
+
+/// A listed member (0.5.3): `call`, `value` and `receipt_hash` (64 hex), and no whole receipt.
+fn assert_listed_member(m: &Value) {
+    assert!(m.get("receipt").is_none(), "no whole receipt in a listed member: {}", jcs(m));
+    assert!(!s(m, "call").is_empty(), "its call: {}", jcs(m));
+    assert!(m.get("value").is_some(), "its value: {}", jcs(m));
+    let h = s(m, "receipt_hash");
+    assert!(h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()), "its receipt hash: {}", jcs(m));
 }
 
 fn interval_targets(prod: &ProdMesh) -> Vec<String> {
@@ -104,10 +116,12 @@ fn a_small_interval_answers_its_members_each_with_its_receipt() {
     assert_eq!(by_date[0], ("2026-11-16".to_string(), "5.12".to_string()));
     assert_eq!(by_date[4], ("2026-11-20".to_string(), "4.92".to_string()));
     for m in members {
-        let r = m.get("receipt").unwrap_or_else(|| panic!("a receipt: {}", jcs(m)));
-        assert_eq!(s(r, "value"), s(m, "value"));
-        assert!(!s(m, "receipt_hash").is_empty() || r.get("sig").is_some());
+        assert_listed_member(m);
     }
+    // The hash is the receipt's: 2026-11-20's is production's recorded /cell receipt.
+    let m20 = members.iter().find(|m| s(m.get("keys").unwrap(), "date") == "2026-11-20").unwrap();
+    assert_eq!(s(m20, "receipt_hash"), fixture_receipt_hash("par_yield?date=2026-11-20&tenor=10Y"), "{}", jcs(m20));
+    assert!(s(m20, "call").contains("par_yield") && s(m20, "call").contains("2026-11-20"), "{}", jcs(m20));
     // Under the hundred: no summary of the kind a long answer has, no call for the rest.
     assert!(sc.get("rest").is_none() && sc.get("next").is_none() && sc.get("summary").is_none(), "{}", jcs(sc));
 }
@@ -127,7 +141,7 @@ fn over_a_hundred_members_it_summarises_gives_the_first_hundred_and_the_call_for
     assert_eq!(members.len(), 100, "the first 100 of 126");
     assert!(!s(&members[0], "asof").is_empty());
     for m in members {
-        assert!(m.get("receipt").is_some(), "each member carries its receipt");
+        assert_listed_member(m);
     }
     // Members in key order: the first is the first business day of 2024.
     assert_eq!(s(members[0].get("keys").unwrap(), "date"), "2024-01-02");

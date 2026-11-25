@@ -21,6 +21,12 @@
 //!   `page` or `limit` of 0 is an argument error. Every tool answer of this file's fixtures, the
 //!   whole JSON-RPC response line, is at most `BUDGET` bytes (64 KiB: no budget is documented in the
 //!   code; 64 KiB is the text limit `get` already has).
+//! * A3, explain in depth (the coordinator's decision of 25 Nov): every node's `inputs` is cut the
+//!   same way, nested ones too: at most 20 (the `limit` at the top), with `inputs_total` and, when
+//!   cut, `explain` (`explain`'s arguments giving that node's next inputs). Explain at depth 2 and at
+//!   16 (the most the mesh's explain walks, datumesh-http `depth`, at most 16) over `nested_world`'s
+//!   calc (25 calcs of 25 cells each), and at `limit` 40 (the most the tool takes), stays within the
+//!   budget.
 //! * A3, a slice answered by `get` (the coordinator's decision of 25 Nov): within the budget, its
 //!   members (the first page, up to 100, as C4) carry `call`, `value` and `receipt_hash`, not whole
 //!   receipts; the total is `summary.count`; `next` is a pointer to page further (present while
@@ -62,6 +68,8 @@ const SLICE_F: &str = "mean(local.invalid/level(day: *))";
 const MIXED_F: &str = "mean(local.invalid/level(day: *)) + local.invalid/level(day: 2024-01-01)";
 /// The number of single cells `wide_formula` reads.
 const WIDE: usize = 45;
+/// The inner calcs of `nested_world`, and the cells each reads.
+const NESTED: usize = 25;
 
 // ------------------------------------------------------------------------------- the fixture
 
@@ -386,6 +394,103 @@ fn a3_a_large_slice_s_members_carry_call_value_and_receipt_hash_not_receipts() {
     assert!(jcs(next).contains("level"), "it names the slice: {}", jcs(next));
 }
 
+/// `level(day k) + ... + level(day k + 24)`: 25 cells.
+fn inner_formula(k: usize) -> String {
+    (k..k + NESTED).map(level_call).collect::<Vec<_>>().join(" + ")
+}
+
+/// The fixture's world with 25 inner calcs (each of 25 cells, `inner_formula`) and the outer calc
+/// that sums the 25 inner calc cells: the outer's request, and the inner formulas.
+fn nested_world() -> (W, String, Vec<String>) {
+    let w = world();
+    let inner: Vec<String> = (0..NESTED).map(inner_formula).collect();
+    for f in &inner {
+        let (v, _) = calc(&w.srv, f);
+        assert!(!is_error(&v), "{f}: {}", jcs(&v));
+    }
+    let outer = inner
+        .iter()
+        .map(|f| format!("{}()", calc_name(f).replacen("local/", "local.invalid/", 1)))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let (v, _) = calc(&w.srv, &outer);
+    assert!(!is_error(&v), "the outer calc: {}", jcs(&v));
+    assert_eq!(calc_receipt(&w.r, &outer).inputs().len(), NESTED, "the outer reads the 25 inner calcs");
+    let request = format!("{}()", calc_name(&outer));
+    (w, request, inner)
+}
+
+/// Every node under `node` (its inputs, recursively) that itself has `inputs`.
+fn nodes_with_inputs<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
+    if let Some(Value::Array(children)) = node.get("inputs") {
+        for c in children {
+            if c.get("inputs").is_some() {
+                out.push(c);
+            }
+            nodes_with_inputs(c, out);
+        }
+    }
+}
+
+fn assert_nested_cut(what: &str, w: &W, request: &str, depth: u64) {
+    let (v, bytes) = explain(&w.srv, &format!(r#"{{"request":{},"depth":{depth}}}"#, q(request)));
+    assert!(!is_error(&v), "{what}: {}", jcs(&v));
+    assert_within_budget(what, bytes);
+    let top = structured(&v);
+    assert_eq!(number_of(top.get("inputs_total")), NESTED as u64, "{what}: {}", jcs(top));
+    assert_eq!(arr(top, "inputs").len(), LINEAGE_CUT, "{what}: the top cut to 20");
+    let mut nested = Vec::new();
+    nodes_with_inputs(top, &mut nested);
+    assert!(!nested.is_empty(), "{what}: the inner calcs' inputs are walked at depth {depth}");
+    for n in &nested {
+        let inputs = arr(n, "inputs");
+        assert!(inputs.len() <= LINEAGE_CUT, "{what}: a nested list of {} inputs", inputs.len());
+        assert_eq!(number_of(n.get("inputs_total")), NESTED as u64, "{what}: a nested total: {}", s(n, "call"));
+        assert_eq!(inputs.len(), LINEAGE_CUT, "{what}: nested lists cut to the first 20");
+        let pointer = n.get("explain").unwrap_or_else(|| panic!("{what}: a nested pointer: {}", s(n, "call")));
+        assert!(pointer.get("request").and_then(Value::as_str).is_some(), "{what}: {}", jcs(pointer));
+    }
+    // A nested pointer gives that node's next inputs.
+    let n = nested[0];
+    let (e, _) = explain(&w.srv, &jcs(n.get("explain").unwrap()));
+    assert!(!is_error(&e), "{what}: the nested pointer is explain's arguments: {}", jcs(&e));
+    let next = input_ids(structured(&e));
+    assert_eq!(next.len(), NESTED - LINEAGE_CUT, "{what}: the 5 after the first 20");
+    let shown = input_ids(n);
+    assert!(next.iter().all(|h| !shown.contains(h)), "{what}: no repeat of the first 20");
+}
+
+#[test]
+fn a3_explain_at_depth_2_cuts_nested_lists_and_stays_within_the_budget() {
+    let (w, request, _) = nested_world();
+    assert_nested_cut("explain (depth 2)", &w, &request, 2);
+}
+
+#[test]
+fn a3_explain_at_the_most_depth_cuts_nested_lists_and_stays_within_the_budget() {
+    let (w, request, _) = nested_world();
+    assert_nested_cut("explain (depth 16)", &w, &request, 16);
+}
+
+#[test]
+fn a3_explain_at_limit_40_stays_within_the_budget() {
+    let w = world();
+    let wide = wide_formula();
+    assert!(!is_error(&calc(&w.srv, &wide).0));
+    let request = format!("{}()", calc_name(&wide));
+    let (v, bytes) = explain(&w.srv, &format!(r#"{{"request":{},"limit":40}}"#, q(&request)));
+    assert!(!is_error(&v), "{}", jcs(&v));
+    assert_within_budget("explain (limit 40)", bytes);
+    let node = structured(&v);
+    assert_eq!(input_ids(node), calc_receipt(&w.r, &wide).inputs()[..40].to_vec());
+    assert_eq!(number_of(node.get("inputs_total")), WIDE as u64);
+    // And over the nested fixture, at depth 2.
+    let (w, request, _) = nested_world();
+    let (v, bytes) = explain(&w.srv, &format!(r#"{{"request":{},"limit":40,"depth":2}}"#, q(&request)));
+    assert!(!is_error(&v), "{}", jcs(&v));
+    assert_within_budget("explain (limit 40, depth 2)", bytes);
+}
+
 /// The production fake's world: `find`, `interval` and `describe` against production's data.
 fn prod_world() -> (prod_mesh::ProdMesh, TempDir, McpServer) {
     let prod = prod_mesh::ProdMesh::start(true);
@@ -420,6 +525,16 @@ fn a2_find_interval_and_describe_texts_are_not_the_structured_content() {
     assert!(!is_error(&v), "{}", jcs(&v));
     assert_text_is_not_the_structured("interval (126 members)", &v);
     assert_within_budget("interval (126 members)", bytes);
+    // As a slice answer's (the coordinator's decision of 25 Nov): 100 listed members, each with its
+    // call, value and receipt hash, not its whole receipt.
+    let members = arr(structured(&v), "members");
+    assert_eq!(members.len(), 100, "still the first 100 of 126");
+    for m in members {
+        assert!(m.get("receipt").is_none(), "no whole receipt: {}", jcs(m));
+        for k in ["call", "value", "receipt_hash"] {
+            assert!(m.get(k).is_some(), "{k}: {}", jcs(m));
+        }
+    }
 
     let (v, bytes) = call(&srv, "describe", r#"{"id":"datumesh.com/catalog"}"#);
     assert!(!is_error(&v), "{}", jcs(&v));
