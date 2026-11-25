@@ -94,6 +94,20 @@ fn ascii(n: usize) -> Vec<u8> {
     (0..n).map(|i| b'a' + (i % 26) as u8).collect()
 }
 
+/// The short answer of the guard patch's A2 (local 0.5.3): the last text item, in place of the answer
+/// block's JCS (which the structured content still carries). It is short, it is not JSON of the
+/// block, and it names the receipt.
+fn assert_short_answer(text: &str, structured: &Value) {
+    assert!(text.len() < 1024, "the short answer, under 1 KiB: {text}");
+    assert_ne!(text.trim(), jcs(structured), "not the structured content's JCS");
+    assert!(
+        json::parse(text.trim().as_bytes()).ok().is_none_or(|v| v.get("envelope").is_none()),
+        "not the block: {text}"
+    );
+    let hash = structured.get("receipt_hash").and_then(Value::as_str).expect("receipt_hash");
+    assert!(text.contains(hash), "the receipt's id: {text}");
+}
+
 /// The answer block's call and receipt: it has the cell's receipt in its envelope.
 fn assert_answer_block(block: &Value, call: &str, sha: &str, length: usize, media: &str) {
     assert_eq!(block.get("status").and_then(Value::as_number_text), Some("200"), "{}", jcs(block));
@@ -127,15 +141,13 @@ fn get_of_a_text_blob_returns_the_checked_text() {
         c[1],
         format!(r#"{{"blob_checked":true,"length":{},"media_type":"text/plain","sha256":"{sha}"}}"#, TEXT.len())
     );
-    let block = parsed(&c[2]);
-    assert_answer_block(&block, &call, &sha, TEXT.len(), "text/plain");
     let s = structured(&v);
+    // The structured content is the answer block with `text` and `blob_checked` added; the last
+    // item is the short answer (A2), not the block again.
+    assert_answer_block(s, &call, &sha, TEXT.len(), "text/plain");
+    assert_short_answer(&c[2], s);
     assert_eq!(s.get("text").and_then(Value::as_str), Some(TEXT));
     assert_eq!(s.get("blob_checked"), Some(&Value::Bool(true)));
-    // The structured content is the answer block with `text` and `blob_checked` added.
-    for k in ["status", "call", "uri", "value", "receipt_hash", "envelope"] {
-        assert_eq!(s.get(k), block.get(k), "{k}");
-    }
 }
 
 // L-T2
@@ -237,8 +249,9 @@ fn assert_blob_only(v: &Value, call: &str, sha: &str, length: usize, media: &str
             r#"{{"blob":{{"length":{length},"media_type":"{media}","sha256":"{sha}","uri":"blob://{sha}","url":"https://{HOST}/blob/{sha}"}},"blob_checked":false}}"#
         )
     );
-    assert_answer_block(&parsed(&c[1]), call, sha, length, media);
     let s = structured(v);
+    assert_answer_block(s, call, sha, length, media);
+    assert_short_answer(&c[1], s);
     assert!(s.get("text").is_none(), "{}", jcs(s));
     assert_eq!(s.get("blob_checked"), Some(&Value::Bool(false)));
     let blob = s.get("blob").expect("blob");
@@ -308,8 +321,9 @@ fn a_text_blob_not_held_offline_is_unavailable_but_not_an_error() {
         first.get("blob").and_then(|b| b.get("uri")).and_then(Value::as_str),
         Some(format!("blob://{sha}").as_str())
     );
-    assert_answer_block(&parsed(&c[1]), &text_cell_call("t6"), &sha, TEXT.len(), "text/plain");
     let s = structured(&v);
+    assert_answer_block(s, &text_cell_call("t6"), &sha, TEXT.len(), "text/plain");
+    assert_short_answer(&c[1], s);
     assert!(s.get("text").is_none());
     assert!(s.get("blob_unavailable").and_then(Value::as_str).is_some());
     assert_eq!(s.get("blob_checked"), Some(&Value::Bool(false)));
@@ -326,12 +340,12 @@ fn a_number_value_keeps_the_0_3_2_shape() {
     assert!(!is_error(&v));
     let c = items(&v);
     assert_eq!(c.len(), 1, "{c:?}");
-    let block = parsed(&c[0]);
-    assert_eq!(jcs(block.get("value").unwrap()), r#"{"type":"number","value":"1.1617"}"#);
     let s = structured(&v);
+    assert_eq!(jcs(s.get("value").unwrap()), r#"{"type":"number","value":"1.1617"}"#);
+    assert_short_answer(&c[0], s);
+    assert!(c[0].contains("1.1617"), "the value: {}", c[0]);
     for k in ["text", "blob", "blob_checked", "blob_unavailable"] {
         assert!(s.get(k).is_none(), "{k}");
-        assert!(block.get(k).is_none(), "{k}");
     }
 }
 
