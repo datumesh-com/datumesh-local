@@ -21,6 +21,10 @@
 //!   `page` or `limit` of 0 is an argument error. Every tool answer of this file's fixtures, the
 //!   whole JSON-RPC response line, is at most `BUDGET` bytes (64 KiB: no budget is documented in the
 //!   code; 64 KiB is the text limit `get` already has).
+//! * A3, a slice answered by `get` (the coordinator's decision of 25 Nov): within the budget, its
+//!   members (the first page, up to 100, as C4) carry `call`, `value` and `receipt_hash`, not whole
+//!   receipts; the total is `summary.count`; `next` is a pointer to page further (present while
+//!   members remain past this page; its form is the implementer's, but it names the slice).
 //!
 //! The fixture is local: `local/level` (a stored function, unit percent) with `MEMBERS` (500)
 //! cells, `level(day)` for the days from 2024-01-01; the upstream is the test mesh of
@@ -350,6 +354,36 @@ fn a2_get_of_a_large_slice_text_is_not_the_structured_content() {
     assert!(text_of(&v).len() < 2 * SHORT, "a slice's text is its summary: {}", text_of(&v));
     // The summary is still in the structured content (C4).
     assert!(structured(&v).get("summary").is_some(), "{}", jcs(structured(&v)));
+}
+
+#[test]
+fn a3_a_large_slice_s_members_carry_call_value_and_receipt_hash_not_receipts() {
+    let w = world();
+    let (v, bytes) = get(&w.srv, SLICE_CALL);
+    assert!(!is_error(&v), "{}", jcs(&v));
+    assert_within_budget("get (the 500-member slice)", bytes);
+    let sc = structured(&v);
+    let total = sc.get("summary").and_then(|x| x.get("count"));
+    assert_eq!(number_of(total), MEMBERS as u64, "the total: {}", jcs(sc));
+    let members = arr(sc, "members");
+    assert!(!members.is_empty() && members.len() <= 100, "the first page: {}", members.len());
+    for (i, m) in members.iter().enumerate() {
+        assert!(m.get("receipt").is_none(), "member {i}: no whole receipt: {}", jcs(m));
+        for k in ["call", "value", "receipt_hash"] {
+            assert!(m.get(k).is_some(), "member {i}: {k}: {}", jcs(m));
+        }
+    }
+    // The first member is level(day 0): its call, its value, and the hash of its held receipt.
+    let first = &members[0];
+    assert_eq!(s(first, "call"), level_call(0), "{}", jcs(first));
+    assert!(jcs(first.get("value").unwrap()).contains(&level_value(0)), "{}", jcs(first));
+    let held = w.r.get(&level_call(0)).unwrap();
+    let hash = Receipt::from_value(&receipt(&held.body)).unwrap().hash().to_string();
+    assert_eq!(s(first, "receipt_hash"), hash, "{}", jcs(first));
+    // A pointer to page further.
+    let next = sc.get("next").unwrap_or_else(|| panic!("a pointer to the next page: {}", jcs(sc)));
+    assert!(!matches!(next, Value::Null), "{}", jcs(sc));
+    assert!(jcs(next).contains("level"), "it names the slice: {}", jcs(next));
 }
 
 /// The production fake's world: `find`, `interval` and `describe` against production's data.

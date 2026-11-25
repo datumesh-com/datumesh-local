@@ -9,9 +9,17 @@
 //!   notification line, `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` (no `id`),
 //!   on its output, exactly once. A retry that fails again sends none, nor does a server whose
 //!   summary was fetched at start, nor any later request.
-//! * The next `tools/list` carries the summary: its result (anywhere in it; `tools` itself stays
-//!   the full profile's snapshot, `local_052_mcp_profile.rs`) has the mesh's `held` sentence, and,
-//!   in the small profile, each catalogue subject's label.
+//! * Where the summary goes (the coordinator's decision of 25 Nov; the held sentence is carried
+//!   once, item 36):
+//!   - fetched at start: in the instructions only; `tools/list` is as today, with no held sentence
+//!     (its `find` description is the 0.5.2 snapshot's, `tests/data/mcp/full-profile-0.5.2.json`);
+//!   - not fetched at start: the instructions carry the "could not be fetched ... find still works"
+//!     sentence; after a retry succeeds, the `find` tool's description gains the held sentence (and,
+//!     in the small profile, each catalogue subject's label, the profile staying within its
+//!     5,000-character ceiling), and the next `tools/list` shows it. The held sentence is in no other
+//!     tool's description.
+//!   - Either way the `tools/list` result has today's members only (`tools`, `ttlMs`, `cacheScope`,
+//!     `resultType`, and `_meta` with only the server's info): nothing beside `tools`.
 //!
 //! The server is driven as `datumesh mcp` runs it on stdio: `serve_stdio_with` over a reader that
 //! yields one JSON-RPC line at a time and, before each line, moves the resolver's clock or the
@@ -159,6 +167,33 @@ fn result_text(lines: &[Value], id: u64) -> String {
     jcs(lines[response(lines, id)].get("result").unwrap_or_else(|| panic!("a result for {id}")))
 }
 
+/// The `tools/list` result of response `id`, checked to have today's members only, and its tools' JCS.
+fn listed_tools(lines: &[Value], id: u64) -> String {
+    let r = lines[response(lines, id)].get("result").unwrap_or_else(|| panic!("a result for {id}"));
+    let Value::Object(m) = r else { panic!("an object: {}", jcs(r)) };
+    let mut keys: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(keys, ["_meta", "cacheScope", "resultType", "tools", "ttlMs"], "nothing beside tools: {}", jcs(r));
+    let Some(Value::Object(meta)) = r.get("_meta") else { panic!("_meta: {}", jcs(r)) };
+    let meta_keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(meta_keys, ["io.modelcontextprotocol/serverInfo"], "_meta carries only the server's info: {}", jcs(r));
+    jcs(r.get("tools").unwrap())
+}
+
+/// The `find` tool's description in the `tools/list` response `id`.
+fn find_description(lines: &[Value], id: u64) -> String {
+    let r = lines[response(lines, id)].get("result").unwrap();
+    let Some(Value::Array(tools)) = r.get("tools") else { panic!("tools: {}", jcs(r)) };
+    tools.iter().find(|t| s(t, "name") == "find").map(|t| s(t, "description")).expect("a find tool")
+}
+
+/// The 0.5.2 snapshot's `find` description (the full profile, summary fetched at start).
+fn snapshot_find_description() -> String {
+    let v = json::parse(&std::fs::read(data("mcp/full-profile-0.5.2.json")).unwrap()).unwrap();
+    let Some(Value::Array(tools)) = v.get("tools") else { panic!("tools") };
+    tools.iter().find(|t| s(t, "name") == "find").map(|t| s(t, "description")).unwrap()
+}
+
 fn production_held() -> String {
     let text = std::fs::read_to_string(data("production/routes.jsonl")).unwrap();
     for line in text.lines() {
@@ -220,7 +255,7 @@ fn initialize_and_discover_advertise_tools_list_changed() {
 // ------------------------------------------------------------------------------- the notification
 
 #[test]
-fn a_retry_that_succeeds_sends_list_changed_once_and_the_next_tools_list_has_the_summary() {
+fn a_retry_that_succeeds_sends_list_changed_once_and_find_s_description_gains_the_held_sentence() {
     let held = production_held();
     let (prod, lines) = run(
         Profile::Full,
@@ -248,19 +283,18 @@ fn a_retry_that_succeeds_sends_list_changed_once_and_the_next_tools_list_has_the
     assert!(n[0] > response(&lines, 2), "not before the retry:\n{all}");
     assert!(n[0] < response(&lines, 4), "sent with the request that retried:\n{all}");
     assert!(prod.summary_requests() >= 2, "the summary was asked again");
-    // Before the retry, tools/list did not have the held sentence; the next one has it.
-    assert!(!result_text(&lines, 2).contains(&in_jcs(&held)), "not yet: {}", result_text(&lines, 2));
-    assert!(
-        result_text(&lines, 4).contains(&in_jcs(&held)),
-        "the next tools/list carries the summary: {}",
-        result_text(&lines, 4)
-    );
+    // Before the retry, tools/list did not have the held sentence; the next one has it, once, in
+    // find's description.
+    assert!(!listed_tools(&lines, 2).contains(&in_jcs(&held)), "not yet: {}", listed_tools(&lines, 2));
+    assert!(find_description(&lines, 4).contains(&held), "find's description: {}", find_description(&lines, 4));
+    assert_eq!(listed_tools(&lines, 4).matches(&in_jcs(&held)).count(), 1, "carried once: {}", listed_tools(&lines, 4));
+    assert_eq!(listed_tools(&lines, 5), listed_tools(&lines, 4), "and it stays");
     // The handshake's instructions said it could not be fetched.
     assert!(result_text(&lines, 1).contains("could not be fetched"), "{}", result_text(&lines, 1));
 }
 
 #[test]
-fn in_the_small_profile_the_next_tools_list_carries_the_subjects() {
+fn in_the_small_profile_find_s_description_gains_the_held_sentence_and_the_subjects() {
     let (_prod, lines) = run(
         Profile::Small,
         true,
@@ -273,13 +307,20 @@ fn in_the_small_profile_the_next_tools_list_carries_the_subjects() {
     );
     let all = lines.iter().map(jcs).collect::<Vec<_>>().join("\n");
     assert_eq!(notifications(&lines).len(), 1, "{all}");
-    let listed = result_text(&lines, 3);
-    assert!(listed.contains(&in_jcs(&production_held())), "{listed}");
+    let tools = listed_tools(&lines, 3);
+    let find = find_description(&lines, 3);
+    assert!(find.contains(&production_held()), "find's description: {find}");
+    assert_eq!(tools.matches(&in_jcs(&production_held())).count(), 1, "carried once: {tools}");
     let labels = subject_labels();
     assert!(!labels.is_empty());
     for label in labels {
-        assert!(listed.contains(&in_jcs(&label)), "the subject {label}: {listed}");
+        assert!(find.contains(&label), "the subject {label} in find's description: {find}");
     }
+    // Within the small profile's ceiling: its tools and the instructions the client holds (the
+    // handshake's).
+    let instructions = s(lines[response(&lines, 1)].get("result").unwrap(), "instructions");
+    let chars = tools.chars().count() + instructions.chars().count();
+    assert!(chars <= 5_000, "{chars} characters, over the small profile's ceiling of 5,000: {tools}\n{instructions}");
 }
 
 #[test]
@@ -300,7 +341,9 @@ fn find_and_get_retries_that_succeed_notify_too() {
         );
         let all = lines.iter().map(jcs).collect::<Vec<_>>().join("\n");
         assert_eq!(notifications(&lines).len(), 1, "{which}:\n{all}");
-        assert!(result_text(&lines, 3).contains(&in_jcs(&production_held())), "{which}: {}", result_text(&lines, 3));
+        let find = find_description(&lines, 3);
+        assert!(find.contains(&production_held()), "{which}: find's description: {find}");
+        listed_tools(&lines, 3);
     }
 }
 
@@ -320,6 +363,9 @@ fn a_retry_that_fails_sends_nothing() {
     let all = lines.iter().map(jcs).collect::<Vec<_>>().join("\n");
     assert!(prod.summary_requests() >= 3, "retried: {}", prod.summary_requests());
     assert!(notifications(&lines).is_empty(), "no notification after a failed retry:\n{all}");
+    for id in [2, 3] {
+        assert!(!listed_tools(&lines, id).contains(&in_jcs(&production_held())), "no held sentence: {id}");
+    }
 }
 
 #[test]
@@ -342,7 +388,7 @@ fn a_failed_retry_then_a_good_one_notifies_once() {
 }
 
 #[test]
-fn a_summary_fetched_at_start_never_notifies() {
+fn a_summary_fetched_at_start_never_notifies_and_tools_list_is_today_s() {
     let (_prod, lines) = run(
         Profile::Full,
         false,
@@ -355,5 +401,11 @@ fn a_summary_fetched_at_start_never_notifies() {
     );
     let all = lines.iter().map(jcs).collect::<Vec<_>>().join("\n");
     assert!(notifications(&lines).is_empty(), "{all}");
-    assert!(result_text(&lines, 2).contains(&in_jcs(&production_held())), "{}", result_text(&lines, 2));
+    // Fetched at start: the held sentence is in the instructions only; tools/list is as today.
+    assert!(result_text(&lines, 1).contains(&in_jcs(&production_held())), "{}", result_text(&lines, 1));
+    for id in [2, 3] {
+        let tools = listed_tools(&lines, id);
+        assert!(!tools.contains(&in_jcs(&production_held())), "not in tools/list: {tools}");
+        assert_eq!(find_description(&lines, id), snapshot_find_description(), "find's description is today's");
+    }
 }
