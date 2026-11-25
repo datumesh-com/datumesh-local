@@ -9,10 +9,13 @@
 //!
 //! Specified behaviour: `server/discover` and `initialize` give `instructions`, and `tools/list`
 //! gives each tool's `description`, built from the summary: the instructions name each class and
-//! function label and its cell count, and the labels of every listed key value (the editions among them, when `distinct` <= 50); the descriptions of `find` and `get`
-//! mention the mesh's classes by label. None of them carries a famous reference or any
-//! `<digits>:<digits>` reference shape. Summary fetched and failing (or no mesh to ask): the
-//! 0.3.3 static text, byte for byte the text a resolver with no find mesh gives.
+//! function label and its cell count, and the labels of every listed key value (the editions among them, when `distinct` <= 50).
+//! None of them carries a famous reference or any `<digits>:<digits>` reference shape.
+//!
+//! Amended by datumesh-local 0.5.2 (the user's item 36, CONTRACT-next-patch.md): what the
+//! mesh holds is carried once, in the instructions only, no longer in the `find` and `get`
+//! descriptions as well (36). Summary fetched and failing (or no mesh to ask): the 0.3.3 static
+//! text, byte for byte the text a resolver with no find mesh gives.
 
 mod common;
 #[path = "support/read_stub.rs"]
@@ -122,11 +125,14 @@ fn instructions_and_descriptions_are_built_from_the_summary() {
     )
     .unwrap();
     assert_eq!(s(init.get("result").unwrap(), "instructions"), ins);
+    // Item 36 (0.5.2): what the mesh holds is in the instructions only, not in find and get too.
     let d = descriptions(&srv);
     let find = d.iter().find(|(n, _)| n == "find").unwrap();
     let get = d.iter().find(|(n, _)| n == "get").unwrap();
-    assert!(find.1.contains("Sample passages"), "{}", find.1);
-    assert!(get.1.contains("Sample passages"), "{}", get.1);
+    assert!(!find.1.contains("Sample passages"), "{}", find.1);
+    assert!(!get.1.contains("Sample passages"), "{}", get.1);
+    let (plain, _s0, _u0, _d0) = server(None, &[]);
+    assert_eq!(d, descriptions(&plain), "the descriptions are the static ones");
     assert_eq!(d.len(), 12, "the same tools, calc (0.4.2) and interval (0.5.1)");
 }
 
