@@ -384,7 +384,7 @@ impl McpServer {
             ("protocolVersion".into(), s(version)),
             ("capabilities".into(), capabilities()),
             ("serverInfo".into(), server_info()),
-            ("instructions".into(), s(&self.instructions())),
+            ("instructions".into(), s(self.instructions())),
         ];
         respond(id, "result", result_object(members))
     }
@@ -1104,7 +1104,7 @@ impl McpServer {
         vec![
             ("supportedVersions".into(), Value::Array(vec![s(PROTOCOL)])),
             ("capabilities".into(), capabilities()),
-            ("instructions".into(), s(&self.instructions())),
+            ("instructions".into(), s(self.instructions())),
             ("ttlMs".into(), int(TTL_MS)),
             ("cacheScope".into(), s("private")),
         ]
