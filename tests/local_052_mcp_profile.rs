@@ -155,7 +155,14 @@ fn production_held() -> String {
     panic!("no recorded summary")
 }
 
+/// The full profile as 0.5.2 gives it over the production fake: 0.5.1's surface without the held
+/// sentence in the `find` and `get` descriptions (item 36: carried once, in the instructions).
 fn snapshot() -> Value {
+    json::parse(&std::fs::read(data("mcp/full-profile-0.5.2.json")).unwrap()).unwrap()
+}
+
+/// The full profile as 0.5.1 gave it (item 18's baseline).
+fn snapshot_051() -> Value {
     json::parse(&std::fs::read(data("mcp/full-profile-0.5.1.json")).unwrap()).unwrap()
 }
 
@@ -206,11 +213,37 @@ fn the_full_profile_is_today_s_surface_and_the_default() {
     let want = snapshot();
     let (code, lines, err) = mcp_cli(&dir, &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(jcs(&surface(&lines)), jcs(&want), "the default is 0.5.1's surface");
+    assert_eq!(jcs(&surface(&lines)), jcs(&want), "the default is 0.5.2's full surface");
     let (code, lines, err) = mcp_cli(&dir, &["--profile", "full"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(jcs(&surface(&lines)), jcs(&want), "--profile full is the default's surface");
     assert_eq!(tools_of(&want).len(), 12);
+}
+
+#[test]
+fn the_full_profile_is_0_5_1_s_but_for_the_held_sentence_in_find_and_get() {
+    // Item 18: the full profile is unchanged; item 36 then takes the held sentence out of the find
+    // and get descriptions. Everything else (names, order, schemas, other descriptions, the
+    // instructions) is 0.5.1's.
+    let (old, new) = (snapshot_051(), snapshot());
+    assert_eq!(s(&new, "instructions"), s(&old, "instructions"));
+    let held = production_held();
+    let (a, b) = (tools_of(&old), tools_of(&new));
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(b) {
+        let name = s(x, "name");
+        assert_eq!(name, s(y, "name"), "the same tools in the same order");
+        assert_eq!(jcs(x.get("inputSchema").unwrap()), jcs(y.get("inputSchema").unwrap()), "{name}: its schema");
+        let d = s(x, "description");
+        let want = if name == "find" || name == "get" {
+            assert!(d.contains(&held), "0.5.1 carried it in {name}");
+            d.replace(&format!(" {held}"), "")
+        } else {
+            d
+        };
+        assert_eq!(s(y, "description"), want, "{name}: its description, the held sentence removed");
+        assert!(!s(y, "description").contains(&held), "{name}");
+    }
 }
 
 #[test]
