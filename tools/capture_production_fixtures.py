@@ -28,7 +28,9 @@ paths += ["/x/interval/datumesh.com/relay/treasury.gov/par_yield?tenor=10Y&from=
           "/x/interval/datumesh.com/relay/bankofengland.co.uk/bank_rate?from=2026-09-01&to=2026-11-20",
           "/x/interval/datumesh.com/relay/nothing/here?from=2024-01-01&to=2024-01-02",
           # A ranged slice has no URI on production (SPEC 4.4): its refusal (local 0.5.2, item 12).
-          "/slice/datumesh.com/relay/bankofengland.co.uk/bank_rate(date:[2026-10-06..2026-11-05])"]
+          "/slice/datumesh.com/relay/bankofengland.co.uk/bank_rate(date:[2026-10-06..2026-11-05])",
+          # The catalogue root (SPEC 16.8, D122): its subjects and rank-1 sources (local 0.5.2, item 38).
+          "/describe/datumesh.com/catalog"]
 if len(sys.argv) > 1:
     paths = sys.argv[1:]
 seen = set()
