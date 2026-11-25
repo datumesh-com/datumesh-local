@@ -207,16 +207,66 @@ fn the_small_profile_stays_within_its_character_ceiling() {
     );
 }
 
+/// The surface with `explain`'s description and schema set aside (local 0.5.3, the guard patch's
+/// A3: `explain` pages, with `page` and `limit`), and that tool's own entry.
+fn without_explain(surface: &Value) -> (String, Value) {
+    let mut v = surface.clone();
+    let mut explain = Value::Null;
+    if let Value::Object(m) = &mut v {
+        for (k, tools) in m.iter_mut() {
+            if k != "tools" {
+                continue;
+            }
+            if let Value::Array(a) = tools {
+                for t in a.iter_mut() {
+                    if s(t, "name") == "explain" {
+                        explain = t.clone();
+                        *t = Value::String("explain".into());
+                    }
+                }
+            }
+        }
+    }
+    (jcs(&v), explain)
+}
+
+/// 0.5.3's `explain` is 0.5.2's with `page` and `limit` (integers, at least 1) in its schema.
+fn assert_paged_explain(got: &Value, was: &Value) {
+    let props = |t: &Value| match t.get("inputSchema").and_then(|x| x.get("properties")) {
+        Some(Value::Object(m)) => m.clone(),
+        other => panic!("properties: {other:?}"),
+    };
+    let (g, w) = (props(got), props(was));
+    for (k, v) in &w {
+        assert_eq!(g.iter().find(|(n, _)| n == k).map(|(_, x)| jcs(x)), Some(jcs(v)), "explain keeps {k}");
+    }
+    for k in ["page", "limit"] {
+        let p = g.iter().find(|(n, _)| n == k).map(|(_, x)| x.clone()).unwrap_or_else(|| panic!("explain's {k}"));
+        assert_eq!(s(&p, "type"), "integer", "{k}: {}", jcs(&p));
+        assert_eq!(p.get("minimum").and_then(Value::as_number_text), Some("1"), "{k}: {}", jcs(&p));
+    }
+    assert_eq!(g.len(), w.len() + 2, "page and limit only: {}", jcs(got));
+    let schema = got.get("inputSchema").unwrap();
+    assert_eq!(jcs(schema.get("required").unwrap()), jcs(was.get("inputSchema").unwrap().get("required").unwrap()));
+    assert_eq!(schema.get("additionalProperties"), Some(&Value::Bool(false)));
+    assert!(s(got, "description").contains("page"), "{}", s(got, "description"));
+}
+
 #[test]
 fn the_full_profile_is_today_s_surface_and_the_default() {
+    // 0.5.3: 0.5.2's surface but for explain, which pages (the guard patch's A3).
     let (_prod, dir) = world();
     let want = snapshot();
+    let (want_rest, want_explain) = without_explain(&want);
     let (code, lines, err) = mcp_cli(&dir, &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(jcs(&surface(&lines)), jcs(&want), "the default is 0.5.2's full surface");
+    let default = surface(&lines);
+    let (rest, explain) = without_explain(&default);
+    assert_eq!(rest, want_rest, "the default is 0.5.2's full surface but for explain");
+    assert_paged_explain(&explain, &want_explain);
     let (code, lines, err) = mcp_cli(&dir, &["--profile", "full"]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(jcs(&surface(&lines)), jcs(&want), "--profile full is the default's surface");
+    assert_eq!(jcs(&surface(&lines)), jcs(&default), "--profile full is the default's surface");
     assert_eq!(tools_of(&want).len(), 12);
 }
 
