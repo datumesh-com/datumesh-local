@@ -283,7 +283,7 @@ pub struct FindAnswer {
 
 impl FindAnswer {
     /// Whether nothing matches and every place searched answered (none unavailable): the definite answer
-    /// of item 39, [`NOTHING_MATCHES`].
+    /// of item 39, `NOTHING_MATCHES`.
     pub fn nothing_matches(&self) -> bool {
         self.results.is_empty() && self.searched.iter().all(|x| x.retry.is_none())
     }
