@@ -448,6 +448,8 @@ impl core::marker::StructuralPartialEq for datumesh_local::Defined
 #[non_exhaustive] pub struct datumesh_local::FindAnswer
 pub datumesh_local::FindAnswer::results: alloc::vec::Vec<datumesh_local::Found>
 pub datumesh_local::FindAnswer::searched: alloc::vec::Vec<datumesh_local::Searched>
+impl datumesh_local::FindAnswer
+pub fn datumesh_local::FindAnswer::nothing_matches(&self) -> bool
 impl core::clone::Clone for datumesh_local::FindAnswer
 pub fn datumesh_local::FindAnswer::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_local::FindAnswer
@@ -759,6 +761,7 @@ pub fn datumesh_local::Rotated::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 impl core::marker::StructuralPartialEq for datumesh_local::Rotated
 #[non_exhaustive] pub struct datumesh_local::Searched
 pub datumesh_local::Searched::place: alloc::string::String
+pub datumesh_local::Searched::retry: core::option::Option<bool>
 pub datumesh_local::Searched::status: core::option::Option<alloc::string::String>
 impl core::clone::Clone for datumesh_local::Searched
 pub fn datumesh_local::Searched::clone(&self) -> Self

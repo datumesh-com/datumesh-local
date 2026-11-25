@@ -13,7 +13,7 @@ use std::io::{BufRead, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -116,14 +116,29 @@ pub struct McpServer {
     resolver: Arc<Resolver>,
     /// Set by an `initialize` on stdio: the session is legacy from then on.
     legacy: AtomicBool,
-    /// The instructions: the static text, or the one the catalogue summary builds (R4).
-    instructions: String,
-    /// The tools, as `tools/list` gives them: the static descriptions, or those the catalogue
-    /// summary extends.
+    /// The tools, as `tools/list` gives them (static: the held sentence is in the instructions only, item 36).
     tools: Value,
     /// The tool surface this server gives.
     profile: Profile,
+    /// What the catalogue summary gave, or why it could not be had (items 36 to 38).
+    surface: Mutex<Surface>,
 }
+
+/// The catalogue state of a server (datumesh-local 0.5.2, items 37 and 38): the summary and the
+/// subjects once fetched; else the reason of the last failure and when it was tried.
+#[derive(Default)]
+struct Surface {
+    catalogue: Option<Catalogue>,
+    /// The catalogue's subjects: each label and the publisher of its rank-1 source.
+    subjects: Vec<(String, String)>,
+    /// Why the summary could not be fetched, the last time it was tried.
+    failure: Option<String>,
+    /// The resolver's instant of the last attempt.
+    tried: Option<String>,
+}
+
+/// A retry of the catalogue summary is made at most once in this many seconds (item 37).
+const RETRY_SECS: i64 = 60;
 
 /// A JSON-RPC error: its code, message and optional data.
 struct Rpc {
@@ -213,37 +228,99 @@ impl McpServer {
     /// A server over `resolver` giving the tool surface of `profile` (item 18): the full surface is
     /// [`McpServer::new`]'s; the small one is four tools, its instructions the held sentence after two.
     pub fn with_profile(resolver: Arc<Resolver>, profile: Profile) -> McpServer {
-        let catalogue = resolver.find_json("summary=1").ok().and_then(|v| Catalogue::of(&v));
-        if profile == Profile::Small {
-            let instructions = match catalogue {
-                Some(c) => format!("{SMALL_INSTRUCTIONS} {}", c.held),
-                None => SMALL_INSTRUCTIONS.to_string(),
-            };
-            return McpServer {
-                resolver,
-                legacy: AtomicBool::new(false),
-                instructions,
-                tools: json_const(SMALL_TOOLS),
-                profile,
-            };
+        let mut tools = json_const(if profile == Profile::Small { SMALL_TOOLS } else { TOOLS });
+        if profile == Profile::Full {
+            // The held sentence is carried once, in the instructions (item 36); the plain-reference sentence stays.
+            append_description(
+                &mut tools,
+                "get",
+                "A plain reference (a label and a reference, such as \"<label> <reference>\") is read through the mesh's find in the same call: an exact one gives its answer, an ambiguous one its candidates, a range is refused (E_RANGE_REFUSED), and a reference nothing resolves to gives suggestions.",
+            );
         }
-        let mut tools = json_const(TOOLS);
-        let instructions = match catalogue {
-            Some(c) => {
-                let held = c.held;
-                append_description(&mut tools, "find", &held);
-                append_description(
-                    &mut tools,
-                    "get",
-                    &format!(
-                        "{held} A plain reference (a label and a reference, such as \"<label> <reference>\") is read through the mesh's find in the same call: an exact one gives its answer, an ambiguous one its candidates, a range is refused (E_RANGE_REFUSED), and a reference nothing resolves to gives suggestions."
-                    ),
-                );
-                c.instructions
-            }
-            None => INSTRUCTIONS.to_string(),
+        let server = McpServer {
+            resolver,
+            legacy: AtomicBool::new(false),
+            tools,
+            profile,
+            surface: Mutex::new(Surface::default()),
         };
-        McpServer { resolver, legacy: AtomicBool::new(false), instructions, tools, profile }
+        server.refresh();
+        server
+    }
+
+    /// The catalogue summary and subjects, fetched when they are not held and the last attempt was at least a
+    /// minute ago on the resolver's clock (item 37): at most once a minute, and not at all once fetched.
+    fn refresh(&self) {
+        let now = self.resolver.clock_now();
+        {
+            let st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+            if st.catalogue.is_some() {
+                return;
+            }
+            if let (Some(a), Some(b)) =
+                (st.tried.as_deref().and_then(crate::resolver::epoch_secs), crate::resolver::epoch_secs(&now))
+            {
+                if b - a < RETRY_SECS {
+                    return;
+                }
+            }
+        }
+        let fetched = self.fetch_catalogue();
+        let mut st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+        st.tried = Some(now);
+        match fetched {
+            Ok((catalogue, subjects)) => {
+                st.catalogue = Some(catalogue);
+                st.subjects = subjects;
+                st.failure = None;
+            }
+            Err(why) => st.failure = Some(why),
+        }
+    }
+
+    /// The summary and the catalogue's subjects, or why one of them could not be had.
+    fn fetch_catalogue(&self) -> Result<(Catalogue, Vec<(String, String)>), String> {
+        let summary = self.resolver.find_json("summary=1").map_err(|e| e.to_string())?;
+        let catalogue = Catalogue::of(&summary).ok_or_else(|| "the summary has no held text".to_string())?;
+        // The subjects are the small profile's extra: without them the summary still stands (item 38).
+        let root = self.resolver.catalogue_subjects().unwrap_or(Value::Null);
+        let mut subjects = Vec::new();
+        if let Some(Value::Array(domains)) = root.get("domains") {
+            for d in domains {
+                if let Some(Value::Array(top)) = d.get("top") {
+                    for t in top {
+                        let source = s_of(t, "source");
+                        let publisher = source.rsplit_once('/').map_or(source.as_str(), |(p, _)| p).to_string();
+                        subjects.push((s_of(t, "label"), publisher));
+                    }
+                }
+            }
+        }
+        Ok((catalogue, subjects))
+    }
+
+    /// The instructions as the surface gives them now (items 36 to 38): the summary's text when fetched, else
+    /// the static text and the sentence that says the summary could not be fetched and why (item 37).
+    fn instructions(&self) -> String {
+        let st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+        let base = if self.profile == Profile::Small { SMALL_INSTRUCTIONS } else { INSTRUCTIONS };
+        match (&st.catalogue, self.profile) {
+            (Some(c), Profile::Full) => c.instructions.clone(),
+            (Some(c), Profile::Small) => {
+                let mut text = format!("{SMALL_INSTRUCTIONS} {}", c.held);
+                if !st.subjects.is_empty() {
+                    text.push_str("\nWhat the mesh holds, by subject and its publisher:");
+                    for (label, publisher) in &st.subjects {
+                        text.push_str(&format!("\n- {label}: {publisher}"));
+                    }
+                }
+                text
+            }
+            (None, _) => {
+                let why = st.failure.clone().unwrap_or_else(|| "not tried yet".into());
+                format!("{base} What this mesh holds could not be fetched ({why}); find still works.")
+            }
+        }
     }
 
     /// Answers one message (a JSON-RPC line) received on `transport`: the response as one line
@@ -270,6 +347,9 @@ impl McpServer {
             if let Err(e) = meta_check(&params) {
                 return Some(rpc_error(&id, &e));
             }
+        }
+        if matches!(method, "initialize" | "server/discover" | "tools/list") {
+            self.refresh();
         }
         let result = match method {
             "server/discover" => Ok(self.discover()),
@@ -304,7 +384,7 @@ impl McpServer {
             ("protocolVersion".into(), s(version)),
             ("capabilities".into(), capabilities()),
             ("serverInfo".into(), server_info()),
-            ("instructions".into(), s(&self.instructions)),
+            ("instructions".into(), s(&self.instructions())),
         ];
         respond(id, "result", result_object(members))
     }
@@ -325,6 +405,9 @@ impl McpServer {
             return Err(Rpc { code: -31001, message: "unauthorized".into(), data: None });
         }
         let args = params.get("arguments").cloned().unwrap_or_else(|| Value::Object(Vec::new()));
+        if matches!(name, "find" | "get") {
+            self.refresh();
+        }
         if name == "whatif" {
             return Ok(match self.whatif(&args) {
                 Ok(v) => content_members(vec![scenario_text(&v)], v, false),
@@ -410,10 +493,17 @@ impl McpServer {
                 if let Some(status) = &x.status {
                     m.push(("status", s(status)));
                 }
+                if let Some(retry) = x.retry {
+                    m.push(("retry", Value::Bool(retry)));
+                }
                 obj(m)
             })
             .collect();
-        Ok(obj(vec![("results", Value::Array(results)), ("searched", Value::Array(searched))]))
+        let mut members = vec![("results", Value::Array(results)), ("searched", Value::Array(searched))];
+        if answer.nothing_matches() {
+            members.push(("message", s(crate::resolver::NOTHING_MATCHES)));
+        }
+        Ok(obj(members))
     }
 
     /// `get` (R4): a call or a cell URI as before; a plain reference is read in this call when the
@@ -1014,7 +1104,7 @@ impl McpServer {
         vec![
             ("supportedVersions".into(), Value::Array(vec![s(PROTOCOL)])),
             ("capabilities".into(), capabilities()),
-            ("instructions".into(), s(&self.instructions)),
+            ("instructions".into(), s(&self.instructions())),
             ("ttlMs".into(), int(TTL_MS)),
             ("cacheScope".into(), s("private")),
         ]
@@ -1421,6 +1511,11 @@ fn member_of(v: &Value, k: &str) -> String {
         Some(other) => String::from_utf8_lossy(&other.to_jcs()).into_owned(),
         None => String::new(),
     }
+}
+
+/// A string member of a JSON object, or empty.
+fn s_of(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {

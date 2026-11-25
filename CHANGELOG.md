@@ -47,6 +47,20 @@ Protocol round, Part 1 (CONTRACT-next-patch, items 12, 13, 14 and 18; datumesh-l
   crate's.)
 - **The installed `config.json` says the forward mesh is asked too with `--remote` (item 32).** The comment above
   `find_meshes` (`Resolver::find_in` asks `forward_mesh` whenever `remote` is true).
+- **What the mesh holds is carried once (item 36).** The held sentence is in the instructions only, in both profiles; it is no
+  longer appended to the `find` and `get` descriptions.
+- **No silent fallback (item 37).** When the catalogue summary (`GET /find?summary=1`) cannot be fetched, the instructions say so in
+  one sentence with the reason: "What this mesh holds could not be fetched (<reason>); find still works." The summary is tried
+  again on the next `find`, `get`, `tools/list`, `server/discover` or `initialize` once a minute has passed on the resolver's
+  clock; after a success the real text is carried and no further summary request is made. (`notifications/tools/list_changed`
+  is not sent yet.)
+- **The small profile lists the mesh's subjects (item 38).** One line per catalogue subject in the instructions: its label and the
+  publisher of its rank-1 source, from the find mesh's `describe/datumesh.com/catalog`. Without that root the summary still
+  stands and the list is left out.
+- **`find` answers definitely (item 39).** When nothing is held for a query and every place searched answered, the answer says
+  "nothing on this mesh matches; look elsewhere" (CLI JSON `message`, MCP structured content `message`). Each unavailable
+  `searched` entry carries `retry`: `true` for a network failure, a timeout or a 5xx; `false` for not allowed, offline, a 4xx and
+  a TLS failure. With no match, a mesh that is unavailable means no "nothing matches" message.
 - **Fixed.** Replacing the mesh (`reload_aliases`, the endpoint's base URL) gave the new engine no licences in force until they
   changed, so a restricted input a `serve` answer read was refused as not accepted. The new mesh is given them at once.
 

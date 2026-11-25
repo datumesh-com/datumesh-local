@@ -510,17 +510,21 @@ fn run_inner(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Resul
                     if let Some(status) = &x.status {
                         m.push(("status".into(), s(status.clone())));
                     }
+                    if let Some(retry) = x.retry {
+                        m.push(("retry".into(), Value::Bool(retry)));
+                    }
                     Value::Object(m)
                 })
                 .collect();
-            jline(
-                out,
-                Value::Object(vec![
-                    ("query".into(), s(q.clone())),
-                    ("results".into(), Value::Array(results)),
-                    ("searched".into(), Value::Array(searched)),
-                ]),
-            )?;
+            let mut members = vec![
+                ("query".into(), s(q.clone())),
+                ("results".into(), Value::Array(results)),
+                ("searched".into(), Value::Array(searched)),
+            ];
+            if answer.nothing_matches() {
+                members.push(("message".into(), s(crate::resolver::NOTHING_MATCHES)));
+            }
+            jline(out, Value::Object(members))?;
             if answer.results.is_empty() {
                 let places: Vec<String> = answer
                     .searched

@@ -249,6 +249,26 @@ pub struct Searched {
     /// For a mesh: `ok`, `cached`, `not allowed`, `offline` or `<error code>: <detail>`; `None`
     /// for the local names.
     pub status: Option<String>,
+    /// For a mesh that is unavailable (datumesh-local 0.5.2, item 39): whether a retry is worth it. `true`
+    /// for a network failure, a timeout or a 5xx; `false` for not allowed, offline, a 4xx and a TLS
+    /// failure. `None` for a mesh that answered, and for the local names.
+    pub retry: Option<bool>,
+}
+
+/// What `find` says when nothing is held for a query and no mesh was unavailable (item 39).
+pub const NOTHING_MATCHES: &str = "nothing on this mesh matches; look elsewhere";
+
+/// Whether a failure's text is one a retry may cure (item 39): a network failure or a timeout, or a 5xx.
+/// A 4xx, not allowed, offline and a TLS failure are not.
+fn transport_retry(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    if t.contains("status 5") {
+        return true;
+    }
+    if t.contains("status 4") || t.contains("not allowed") || t.contains("offline") || t.contains("tls:") {
+        return false;
+    }
+    ["timeout", "timed out", "refused", "dns:", "network:", "io:", "reset", "unreachable"].iter().any(|w| t.contains(w))
 }
 
 /// What `find` gave: the names found and the places searched, in the order searched.
@@ -259,6 +279,14 @@ pub struct FindAnswer {
     pub results: Vec<Found>,
     /// `local` first, then each mesh asked or not asked.
     pub searched: Vec<Searched>,
+}
+
+impl FindAnswer {
+    /// Whether nothing matches and every place searched answered (none unavailable): the definite answer
+    /// of item 39, [`NOTHING_MATCHES`].
+    pub fn nothing_matches(&self) -> bool {
+        self.results.is_empty() && self.searched.iter().all(|x| x.retry.is_none())
+    }
 }
 
 /// An imported receipt kept aside: signed by another machine's local key, not trusted.
@@ -486,6 +514,11 @@ impl Resolver {
         }
     }
 
+    /// The resolver's clock now (a canonical instant).
+    pub(crate) fn clock_now(&self) -> String {
+        self.shared.now()
+    }
+
     /// The configuration.
     pub fn config(&self) -> &Config {
         &self.shared.config
@@ -686,6 +719,29 @@ impl Resolver {
         let doc = s.client.resolve(&mesh).map_err(|e| client_error(&e))?;
         let place = doc.url("find", &[]).unwrap_or_else(|| format!("https://{mesh}/find")).to_string();
         let url = format!("{place}?{query}");
+        let body = match s.client.get(&url, 16 << 20) {
+            Err(e) => return Err(unavailable(format!("{url}: {e}"))),
+            Ok((200, body)) => body,
+            Ok((status, _)) => return Err(unavailable(format!("{url}: status {status}"))),
+        };
+        json::parse(&body).map_err(|e| unavailable(format!("{url}: {e}")))
+    }
+
+    /// The catalogue root of the find mesh (`GET /describe/datumesh.com/catalog`, SPEC 16.8): its domains'
+    /// `top` subjects, each `{subject, label, source}` (datumesh-local 0.5.2, item 38).
+    pub(crate) fn catalogue_subjects(&self) -> Result<Value, Error> {
+        let s = &self.shared;
+        let unavailable = |detail: String| Error::Client { code: "E_INPUT_UNAVAILABLE".into(), detail };
+        let Some(mesh) = s.config.find_meshes.first().cloned() else {
+            return Err(unavailable("no find mesh is configured".into()));
+        };
+        if !s.client.allowed(&mesh) {
+            return Err(unavailable(format!("{mesh}: not allowed")));
+        }
+        if s.offline.load(Ordering::Acquire) {
+            return Err(unavailable(format!("{mesh}: offline")));
+        }
+        let url = format!("https://{mesh}/describe/datumesh.com/catalog");
         let body = match s.client.get(&url, 16 << 20) {
             Err(e) => return Err(unavailable(format!("{url}: {e}"))),
             Ok((200, body)) => body,
@@ -1376,7 +1432,7 @@ impl Resolver {
                 }
             }
         }
-        let mut searched = vec![Searched { place: "local".into(), status: None }];
+        let mut searched = vec![Searched { place: "local".into(), status: None, retry: None }];
         if results.is_empty() || remote {
             let mut meshes = s.config.find_meshes.clone();
             if let Some(f) = s.config.forward_mesh.as_ref().filter(|_| remote) {
@@ -1385,8 +1441,8 @@ impl Resolver {
                 }
             }
             for mesh in &meshes {
-                let (place, status, found) = self.ask_find(mesh, query, &q)?;
-                searched.push(Searched { place, status: Some(status) });
+                let (place, status, retry, found) = self.ask_find(mesh, query, &q)?;
+                searched.push(Searched { place, status: Some(status), retry });
                 for f in found {
                     if !results.iter().any(|r: &Found| r.name == f.name) {
                         results.push(f);
@@ -1412,42 +1468,57 @@ impl Resolver {
 
     /// Asks `mesh`'s find endpoint for `query` (`key`: the lowercased query, the cache's key):
     /// the place searched, its status, and the names it gave.
-    fn ask_find(&self, mesh: &str, query: &str, key: &str) -> Result<(String, String, Vec<Found>), Error> {
+    fn ask_find(
+        &self,
+        mesh: &str,
+        query: &str,
+        key: &str,
+    ) -> Result<(String, String, Option<bool>, Vec<Found>), Error> {
         let s = &self.shared;
         let fallback = format!("https://{mesh}/find");
         if !s.client.allowed(mesh) {
-            return Ok((fallback, "not allowed".into(), Vec::new()));
+            return Ok((fallback, "not allowed".into(), Some(false), Vec::new()));
         }
         if s.offline.load(Ordering::Acquire) {
-            return Ok((fallback, "offline".into(), Vec::new()));
+            return Ok((fallback, "offline".into(), Some(false), Vec::new()));
         }
         let now = s.now();
         if let Some(hit) = s.index.find_cached(mesh, key)? {
             if within_a_day(&hit.at, &now) {
                 if let Ok(found) = parse_find(&hit.body) {
-                    return Ok((hit.url, "cached".into(), found));
+                    return Ok((hit.url, "cached".into(), None, found));
                 }
             }
         }
         let doc = match s.client.resolve(mesh) {
             Ok(doc) => doc,
-            Err(e) => return Ok((fallback, rejection_detail(&e), Vec::new())),
+            Err(e) => {
+                let status = rejection_detail(&e);
+                let retry = transport_retry(&status);
+                return Ok((fallback, status, Some(retry), Vec::new()));
+            }
         };
         let place = doc.url("find", &[]).unwrap_or_else(|| fallback.clone()).to_string();
         let url = format!("{place}?q={}", datumesh_http::client::pct(query));
         let body = match s.client.get(&url, 16 << 20) {
-            Err(e) => return Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: {e}"), Vec::new())),
+            Err(e) => {
+                // The transport's text, without the URL (a query's words are not a failure's).
+                let status = format!("E_INPUT_UNAVAILABLE: {url}: {e}");
+                let retry = transport_retry(&e);
+                return Ok((place, status, Some(retry), Vec::new()));
+            }
             Ok((200, body)) => body,
             Ok((status, _)) => {
-                return Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: status {status}"), Vec::new()));
+                let text = format!("E_INPUT_UNAVAILABLE: {url}: status {status}");
+                return Ok((place, text, Some(transport_retry(&format!("status {status}"))), Vec::new()));
             }
         };
         match parse_find(&body) {
             Ok(found) => {
                 s.index.put_find(mesh, key, &place, &body, &now)?;
-                Ok((place, "ok".into(), found))
+                Ok((place, "ok".into(), None, found))
             }
-            Err(why) => Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: {why}"), Vec::new())),
+            Err(why) => Ok((place, format!("E_INPUT_UNAVAILABLE: {url}: {why}"), Some(false), Vec::new())),
         }
     }
 
@@ -1820,7 +1891,7 @@ fn within_a_day(at: &str, now: &str) -> bool {
 }
 
 /// The whole seconds since the epoch of an instant's date and time (its fraction ignored).
-fn epoch_secs(ts: &str) -> Option<i64> {
+pub(crate) fn epoch_secs(ts: &str) -> Option<i64> {
     let b = ts.get(..19)?;
     let n = |r: std::ops::Range<usize>| b.get(r)?.parse::<i64>().ok();
     let (y, mo, d, h, mi, se) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
