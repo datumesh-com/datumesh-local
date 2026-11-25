@@ -296,6 +296,9 @@ impl Resolver {
         members.push(("asof", js(asof.unwrap_or(&now))));
         members.push(("lineage", Value::Array(self.calc_lineage(&receipt)?)));
         members.push(("name", if constant { Value::Null } else { js(format!("local/calc_{h}")) }));
+        // The answer's own call and receipt: the short answer names the receipt, and `explain` takes the call (A2, A3).
+        members.push(("call", js(call_form(receipt.cell()))));
+        members.push(("receipt_hash", js(receipt.hash())));
         Ok(obj(members))
     }
 
@@ -388,29 +391,33 @@ impl Resolver {
         let store = &self.shared.store;
         let mut out = Vec::new();
         for input in receipt.inputs() {
-            // A slice input names its members (its manifest): each member is a cell the answer read.
-            let members = if input.starts_with("slice:") {
+            // A slice read is one entry (A1, datumesh-local 0.5.3): the slice, its member count and its
+            // members hash, as the mesh's receipt cites them. Its members are not listed.
+            if input.starts_with("slice:") {
                 let bytes = store
                     .manifest(input)
                     .map(|b| b.into_owned())
                     .ok_or_else(|| Error::Store(format!("the slice {input} is not held")))?;
-                Manifest::from_json(&bytes).map_err(|e| Error::Store(e.to_string()))?.members().to_vec()
-            } else {
-                vec![input.clone()]
-            };
-            for hash in members {
-                let bytes = store
-                    .receipt(&hash)
-                    .map(|b| b.into_owned())
-                    .ok_or_else(|| Error::Store(format!("the input receipt {hash} is not held")))?;
-                let r = Receipt::from_json(&bytes).map_err(|e| Error::Store(e.to_string()))?;
+                let m = Manifest::from_json(&bytes).map_err(|e| Error::Store(e.to_string()))?;
                 out.push(obj(vec![
-                    ("call", js(call_form(r.cell()))),
-                    ("receipt", js(hash)),
-                    ("publisher", js(host_of(&r.cell().ns))),
-                    ("trust", js(trust_of(&r))),
+                    ("entry", js(input)),
+                    ("slice", m.slice().to_value()),
+                    ("members", number_of(&m.members().len().to_string())),
+                    ("members_hash", js(m.members_hash())),
                 ]));
+                continue;
             }
+            let bytes = store
+                .receipt(input)
+                .map(|b| b.into_owned())
+                .ok_or_else(|| Error::Store(format!("the input receipt {input} is not held")))?;
+            let r = Receipt::from_json(&bytes).map_err(|e| Error::Store(e.to_string()))?;
+            out.push(obj(vec![
+                ("call", js(call_form(r.cell()))),
+                ("receipt", js(input)),
+                ("publisher", js(host_of(&r.cell().ns))),
+                ("trust", js(trust_of(&r))),
+            ]));
         }
         Ok(out)
     }
@@ -468,7 +475,9 @@ impl Resolver {
     pub(crate) fn slice_answer(&self, rest: &str) -> Result<Option<Reply>, Error> {
         let s = &self.shared;
         let mesh = self.mesh();
-        let Ok(t) = mesh.resolve(rest, true) else { return Ok(None) };
+        // A page past the first (`?page=<n>`, datumesh-local 0.5.3) is the same slice's, cut here.
+        let (base, page) = split_page(rest)?;
+        let Ok(t) = mesh.resolve(&base, true) else { return Ok(None) };
         if t.bound.descriptor.lang != "stored" {
             return Ok(None);
         }
@@ -496,16 +505,23 @@ impl Resolver {
         let numbers: Option<Vec<f64>> = (count > 0 && values.iter().all(|m| m.value.ty() == Type::Number))
             .then(|| values.iter().map(|m| m.value.lexical().parse::<f64>().ok()).collect::<Option<Vec<f64>>>())
             .flatten();
+        // A page of members (up to PAGE): each with its call, value and receipt hash, not the whole receipt
+        // (datumesh-local 0.5.3, A3). The total is `summary.count`.
+        let start = (page - 1).saturating_mul(PAGE);
         let mut members = Vec::new();
-        for m in values.iter().take(PAGE) {
+        for m in values.iter().skip(start).take(PAGE) {
             let bytes = s
                 .store
                 .receipt(&m.version.receipt_hash)
                 .map(|b| b.into_owned())
                 .ok_or_else(|| Error::Store(format!("the receipt {} is not held", m.version.receipt_hash)))?;
             let r = Receipt::from_json(&bytes).map_err(|e| Error::Store(e.to_string()))?;
-            let receipt = json::parse(&bytes).map_err(|e| Error::Store(e.to_string()))?;
-            members.push(obj(vec![("outcome", js("ok")), ("trust", js(trust_of(&r))), ("receipt", receipt)]));
+            members.push(obj(vec![
+                ("call", js(call_form(r.cell()))),
+                ("value", r.value().to_value()),
+                ("receipt_hash", js(r.hash())),
+                ("trust", js(trust_of(&r))),
+            ]));
         }
         let mut out = vec![("outcome", js(SLICE)), ("slice", js(&call)), ("asof", js(&asof))];
         if count > PAGE {
@@ -526,12 +542,46 @@ impl Resolver {
             out.push(("summary", obj(summary)));
             out.push(("members", Value::Array(members)));
             out.push(("calc", obj(vec![("formula", js(format!("{aggregate}({call})")))])));
+            if page * PAGE < count {
+                out.push((
+                    "next",
+                    obj(vec![
+                        ("request", js(format!("{call}?page={}", page + 1))),
+                        ("page", number_of(&(page + 1).to_string())),
+                        ("of", number_of(&count.div_ceil(PAGE).to_string())),
+                    ]),
+                ));
+            }
         } else {
             out.push(("members", Value::Array(members)));
         }
         let source = if fetched { Source::Fetched } else { Source::Local };
         Ok(Some(Reply::new(200, obj(out).to_jcs(), source)))
     }
+}
+
+/// A slice request's page: its `?page=<n>` (from 1) taken out of the query, which is otherwise kept. The
+/// `page` is the query's after the call's closing parenthesis, so an argument's own `?` is not one.
+fn split_page(rest: &str) -> Result<(String, usize), Error> {
+    let from = rest.rfind(')').unwrap_or(0);
+    let Some(q) = rest[from..].find('?').map(|i| i + from) else { return Ok((rest.to_string(), 1)) };
+    let (base, query) = (&rest[..q], &rest[q + 1..]);
+    let mut page = 1;
+    let mut kept = Vec::new();
+    for part in query.split('&') {
+        match part.strip_prefix("page=") {
+            Some(n) => {
+                page = n
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|p| *p >= 1)
+                    .ok_or_else(|| Error::Request(format!("page: an integer, at least 1, not {n}")))?;
+            }
+            None => kept.push(part),
+        }
+    }
+    let base = if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) };
+    Ok((base, page))
 }
 
 /// The order of two keys (SPEC 15.13): their scalars in turn, then by length.

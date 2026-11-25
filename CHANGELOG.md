@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+The guard patch's part A, agent answers (CONTRACT-guard-patch.md, A1 to A5; the user's items 12 to 14, 37 and the usage line).
+
+- **One lineage entry per slice read (item 12).** A calc's `lineage` gives a slice read one entry, `{entry, slice, members,
+  members_hash}`: the receipt's slice input, the slice as the mesh's explain gives it, the member count and the members hash. Its
+  members are no longer listed. A cell keeps `{call, receipt, publisher, trust}`. A calc's answer also names its own `call` and
+  `receipt_hash`.
+- **The short answer (item 13).** The text part of `get`, `calc`, `find`, `explain`, `whatif`, `interval`, `verify` and `describe` is a
+  short statement of the answer, never the JCS of the structured content. `get` and `calc` give the value and its unit, the as-of,
+  the signer (`get`) or the call and receipt's hash, in under 1 KiB. The structured content keeps the envelope. For `get`, the items
+  before the last (a reference's label and call, a text blob's checked text, a blob's note) are as they were.
+- **Budgets on tool answers (item 14).** A calc's lineage is cut to its first 20 entries, with `lineage_total` and an `explain` pointer
+  (`{request, page, limit}`) to the next page. `explain` pages its inputs with `page` (from 1) and `limit` (default 20, at most 40);
+  the node gives `inputs_total`, `page` and `limit`. A slice `get` gives 100 members at a time, each with its `call`, `value` and
+  `receipt_hash` (not the whole receipt), the total as `summary.count`, and a `next` pointer (`<slice>?page=<n>`, which `get` takes).
+- **`notifications/tools/list_changed` (item 37).** `initialize` and `server/discover` advertise `tools.listChanged: true`. When a
+  retry of the catalogue summary succeeds on stdio, the server sends the notification once, after the answer to the request that
+  retried. The `find` description then carries the held sentence (and, in the small profile, the subjects' labels). A summary fetched
+  at start changes nothing.
+- **`describe` of a catalogue root.** `describe <host>/catalog` (`kind: catalog`, spec-0.7.0 C7) is checked as a catalogue: its host
+  and its domains. It was refused as an answer that names no class.
+- **The usage line (item 12).** `datumesh --help` lists every command the dispatcher takes: whatif, mcp, licence, trust, root and allow
+  were missing.
+
 ## 0.5.2
 
 Protocol round, Part 1 (CONTRACT-next-patch, items 12, 13, 14 and 18; datumesh-local 0.5.2 with datumesh-engine 0.6.1).

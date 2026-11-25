@@ -471,6 +471,15 @@ impl Resolver {
                 .map_err(|e| Error::Client { code: e.code_str().into(), detail: e.to_string() })?;
             return Ok(());
         }
+        // The catalogue root (spec-0.7.0 C7, 16.8): the host's domains and its rule. It names no class and no
+        // function to check against; it is answered for the host asked, with its domains as a list.
+        if v.get("kind").and_then(Value::as_str) == Some("catalog") {
+            if v.get("host").and_then(Value::as_str) != Some(host) || !matches!(v.get("domains"), Some(Value::Array(_)))
+            {
+                return Err(bad(format!("the catalogue of {host} names its host and its domains")));
+            }
+            return Ok(());
+        }
         let class = match v.get("kind").and_then(Value::as_str) {
             Some("class") => v.get("class"),
             Some("object") => v.get("object").and_then(|o| o.get("class")),

@@ -44,10 +44,20 @@ const END: &str = "9999-12-31T23:59:59.999999Z";
 /// The text of `server/discover` and of the handshake's `instructions`.
 const INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Use find to discover names, describe for classes and objects, get for a cell (call syntax or a cell:// URI; for a text value, its text, checked), explain for its lineage, verify for a receipt. define and publish write under this machine's unrooted namespace.";
 /// The tools, in the order `tools/list` gives them, with their input schemas.
+/// The inputs an explain answer gives a page of: the default and the most (datumesh-local 0.5.3, A3).
+const EXPLAIN_LIMIT: usize = 20;
+const EXPLAIN_MAX: usize = 40;
+/// The lineage a tool answer gives in full; the rest is the `explain` pointer's (A3).
+const LINEAGE_CUT: usize = 20;
+/// The results a find answer's text names (A2).
+const FIND_LISTED: usize = 20;
+/// The notification that the tools' summary has changed (A4).
+const LIST_CHANGED: &str = "notifications/tools/list_changed";
+
 const TOOLS: &str = r#"[
 {"name":"find","description":"Names held here whose name contains the query (case-insensitive). When none are held, or with remote, also the configured find_meshes (and the forward mesh with remote); searched lists each place looked and its status. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
 {"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size. A slice of more than 100 members answers a summary (count, first and last key, and for numbers min, max and mean), its first 100 members and the calc call that aggregates the slice (mean for numbers, else count): run that calc to get the aggregate.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
-{"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0}},"required":["request"],"additionalProperties":false}},
+{"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth. Its inputs are paged: page (from 1) and limit (default 20, at most 40) choose the page, and inputs_total counts them all.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0},"page":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":40}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"},"call":{"type":"string"},"text":{"type":"string"}},"additionalProperties":false}},
 {"name":"define","description":"Defines a function under local/ (a formula with its signature, or a stored function with its signature) or a class (its descriptor). A formula may come with its tests, in the same call: each names the function as its call, with its expect (a plain literal typed by the return type, or {\"fault\": code}) and optionally asof and inputs. Tests are optional here, and a stored function takes none; a publish to a public mesh needs them (publish_public).","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"name":{"type":"string"},"formula":{"type":"string"},"signature":{"type":"object"},"stored":{"type":"boolean"},"class":{"type":"object"},"tests":{"type":"array","items":{"type":"object"}}},"required":["name"],"additionalProperties":false}},
@@ -135,6 +145,10 @@ struct Surface {
     failure: Option<String>,
     /// The resolver's instant of the last attempt.
     tried: Option<String>,
+    /// The summary was fetched by a retry, not at start: `find` carries the held sentence (datumesh-local 0.5.3, A4).
+    late: bool,
+    /// A retry has succeeded and the client is to be told once (A4).
+    notice: bool,
 }
 
 /// A retry of the catalogue summary is made at most once in this many seconds (item 37).
@@ -267,12 +281,18 @@ impl McpServer {
         }
         let fetched = self.fetch_catalogue();
         let mut st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+        // An attempt before this one failed: this one is a retry (A4).
+        let retried = st.tried.is_some();
         st.tried = Some(now);
         match fetched {
             Ok((catalogue, subjects)) => {
                 st.catalogue = Some(catalogue);
                 st.subjects = subjects;
                 st.failure = None;
+                if retried {
+                    st.late = true;
+                    st.notice = true;
+                }
             }
             Err(why) => st.failure = Some(why),
         }
@@ -323,6 +343,29 @@ impl McpServer {
         }
     }
 
+    /// The tools as `tools/list` gives them now. Once a retry has fetched the summary, `find` says what the mesh
+    /// holds (the held sentence, and in the small profile the subjects' labels), carried once (A4).
+    fn tools_now(&self) -> Value {
+        let st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tools = self.tools.clone();
+        if let (true, Some(c)) = (st.late, &st.catalogue) {
+            let mut extra = c.held.clone();
+            if self.profile == Profile::Small && !st.subjects.is_empty() {
+                let labels: Vec<&str> = st.subjects.iter().map(|(label, _)| label.as_str()).collect();
+                extra.push_str(&format!(" What the mesh holds, by subject: {}.", labels.join("; ")));
+            }
+            append_description(&mut tools, "find", &extra);
+        }
+        tools
+    }
+
+    /// Whether a retry has succeeded since this was last asked: the stdio loop then sends the
+    /// `tools/list_changed` notification once (A4).
+    fn take_notice(&self) -> bool {
+        let mut st = self.surface.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::take(&mut st.notice)
+    }
+
     /// Answers one message (a JSON-RPC line) received on `transport`: the response as one line
     /// of canonical JSON, or `None` for a notification (no response).
     pub fn handle(&self, line: &str, transport: Transport) -> Option<String> {
@@ -354,7 +397,7 @@ impl McpServer {
         let result = match method {
             "server/discover" => Ok(self.discover()),
             "tools/list" => Ok(vec![
-                ("tools".into(), self.tools.clone()),
+                ("tools".into(), self.tools_now()),
                 ("ttlMs".into(), int(TTL_MS)),
                 ("cacheScope".into(), s("private")),
             ]),
@@ -441,7 +484,7 @@ impl McpServer {
             }
         };
         Ok(match outcome {
-            Ok(v) => tool_members(&json_text(&v), v, false),
+            Ok(v) => content_members(vec![tool_text(name, &v)], v, false),
             Err(e) => tool_failure(e),
         })
     }
@@ -512,7 +555,7 @@ impl McpServer {
         let request = str_arg(args, "request")?;
         match self.resolver.get_request(request)? {
             Got::Reply(reply) => match slice_answer_of(&reply) {
-                Some(v) => Ok(content_members(vec![json_text(&v)], v, false)),
+                Some(v) => Ok(content_members(vec![slice_text(&v)], v, false)),
                 None => self.answer(&reply, None),
             },
             Got::Read { reply, label, call } => self.answer(&reply, Some((label, call))),
@@ -532,6 +575,8 @@ impl McpServer {
             return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None });
         }
         let mut block = answer_block(num(u64::from(reply.status)), &reply.body, reply.label.as_deref());
+        // The text part is the short answer, never the block's JCS (A2); the block is the structured content.
+        let short = self.short_answer(reply);
         let mut head = Vec::new();
         // A withdrawn cell, or a label through one, is not covered: the words say so, with the reason (CONTRACT-round-0.7 R1).
         if let Some(reason) = not_covered_reason(reply) {
@@ -542,7 +587,7 @@ impl McpServer {
             head.push(format!("{label}\n{call}"));
         }
         let Some(blob) = self.resolver.blob_of(reply)? else {
-            head.push(json_text(&block));
+            head.push(short);
             return Ok(content_members(head, block, false));
         };
         let mut info = vec![
@@ -564,7 +609,8 @@ impl McpServer {
                 ]);
                 let structured =
                     with_members(block.clone(), vec![("text", s(&text)), ("blob_checked", Value::Bool(true))]);
-                head.extend([text, json_text(&checked), json_text(&block)]);
+                head.extend([text, json_text(&checked)]);
+                head.push(short);
                 Ok(content_members(head, structured, false))
             }
             BlobContent::Mismatch(detail) => {
@@ -576,10 +622,27 @@ impl McpServer {
                     members.push(("blob_unavailable", s(why)));
                 }
                 let structured = with_members(block.clone(), members.clone());
-                head.extend([json_text(&obj(members)), json_text(&block)]);
+                head.extend([json_text(&obj(members)), short]);
                 Ok(content_members(head, structured, false))
             }
         }
+    }
+
+    /// The short answer of a get (A2): the value and its unit, the call, the as-of, the signer, and the receipt's
+    /// hash, in a few lines; the answer block is the structured content.
+    fn short_answer(&self, reply: &Reply) -> String {
+        let Some(r) = reply.receipt() else {
+            return format!("status {}: no receipt to answer with.", reply.status);
+        };
+        let unit = unit_of(&self.descriptor(&r.cell().fn_hash)).map(|u| format!(" {u}")).unwrap_or_default();
+        format!(
+            "{}{unit}\n{}, as of {}, signed by {}.\nreceipt {}",
+            r.value().lexical(),
+            call_form(r.cell()),
+            r.asof(),
+            r.computed_by(),
+            r.hash()
+        )
     }
 
     fn explain(&self, args: &Value) -> ToolResult {
@@ -591,9 +654,12 @@ impl McpServer {
                 .and_then(|t| t.parse::<usize>().ok())
                 .ok_or_else(|| ToolError::arg("depth: an integer, at least 0"))?,
         };
+        let page = page_arg(args, "page", 1, None)?;
+        let limit = page_arg(args, "limit", EXPLAIN_LIMIT, Some(EXPLAIN_MAX))?;
         let reply = self.resolver.explain(request, Some(depth))?;
         let node = json::parse(&reply.body).unwrap_or(Value::Null);
-        Ok(self.explain_tree(num(u64::from(reply.status)), &node, reply.label.as_deref()))
+        let block = self.explain_tree(num(u64::from(reply.status)), &node, reply.label.as_deref());
+        Ok(paged_inputs(block, page, limit))
     }
 
     /// An explain node as an answer block with its `inputs` (answer blocks, or the raw node when
@@ -654,7 +720,7 @@ impl McpServer {
             };
             members.push(("methods", Value::Array(methods)));
         }
-        let mut texts = vec![json_text(&obj(members.clone()))];
+        let mut texts = vec![describe_text(id, &answer)];
         if let Some(sentence) = unbound {
             texts.insert(0, sentence);
         }
@@ -838,7 +904,7 @@ impl McpServer {
             Some(Value::Bool(b)) => *b,
             Some(_) => return Err(ToolError::arg("remote: a boolean")),
         };
-        Ok(self.resolver.calc(formula, asof, remote)?)
+        Ok(cut_lineage(self.resolver.calc(formula, asof, remote)?))
     }
 
     /// `whatif` (E6): the scenario of the request, from the mesh that answers for the cell or from
@@ -1111,8 +1177,9 @@ impl McpServer {
     }
 }
 
+/// The capabilities: the tools' list changes when a retry fetches the summary (A4).
 fn capabilities() -> Value {
-    obj(vec![("tools", obj(vec![])), ("resources", obj(vec![]))])
+    obj(vec![("tools", obj(vec![("listChanged", Value::Bool(true))])), ("resources", obj(vec![]))])
 }
 
 fn server_info() -> Value {
@@ -1379,6 +1446,231 @@ fn append_description(tools: &mut Value, name: &str, extra: &str) {
     }
 }
 
+/// The unit a function's descriptor gives its number (`returns.unit`), when it has one.
+fn unit_of(descriptor: &Value) -> Option<String> {
+    let sig = descriptor.get("signature").unwrap_or(descriptor);
+    sig.get("returns")?.get("unit")?.as_str().map(str::to_string)
+}
+
+/// A value of a member as text: a string as it is, nothing for a missing or null one, else its JSON.
+fn scalar(v: Option<&Value>) -> String {
+    match v {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(t)) => t.clone(),
+        Some(other) => String::from_utf8_lossy(&other.to_jcs()).into_owned(),
+    }
+}
+
+/// A tool answer's text (A2): a short statement of the answer for the tools that have one, never the JCS of the
+/// structured content; the other tools keep their JSON.
+fn tool_text(name: &str, v: &Value) -> String {
+    match name {
+        "find" => find_text(v),
+        "explain" => explain_text(v),
+        "verify" => verify_text(v),
+        "calc" => calc_text(v),
+        "interval" => interval_text(v),
+        _ => json_text(v),
+    }
+}
+
+fn find_text(v: &Value) -> String {
+    let results: &[Value] = match v.get("results") {
+        Some(Value::Array(a)) => a,
+        _ => &[],
+    };
+    if results.is_empty() {
+        let message = scalar(v.get("message"));
+        return if message.is_empty() { "No results.".to_string() } else { message };
+    }
+    let mut lines = vec![format!("{} results:", results.len())];
+    for r in results.iter().take(FIND_LISTED) {
+        lines.push(format!("- {} ({}): {}", scalar(r.get("name")), scalar(r.get("kind")), scalar(r.get("call"))));
+    }
+    if results.len() > FIND_LISTED {
+        lines.push(format!("... and {} more in the structured content.", results.len() - FIND_LISTED));
+    }
+    lines.join("\n")
+}
+
+/// The explain answer's text: the call (or the request) and the page of its inputs; the answer says the rest.
+fn explain_text(v: &Value) -> String {
+    let what = match scalar(v.get("call")) {
+        c if c.is_empty() => "the request".to_string(),
+        c => c,
+    };
+    let num_of = |k: &str| v.get(k).and_then(Value::as_number_text).and_then(|t| t.parse::<usize>().ok());
+    let (Some(total), Some(page), Some(limit)) = (num_of("inputs_total"), num_of("page"), num_of("limit")) else {
+        return format!("{what}: no inputs to page.");
+    };
+    let pages = total.div_ceil(limit).max(1);
+    let mut text = format!("{what}: {total} inputs, page {page} of {pages} ({limit} to a page).");
+    if page < pages {
+        text.push_str(&format!(" The next page is explain's page {}.", page + 1));
+    }
+    text
+}
+
+fn verify_text(v: &Value) -> String {
+    let call = scalar(v.get("call"));
+    let subject = if call.is_empty() { "The receipt".to_string() } else { call };
+    let mut text = if v.get("ok") == Some(&Value::Bool(true)) {
+        format!(
+            "{subject} is verified at level {}, signed by {}, licence {}.",
+            scalar(v.get("level")),
+            scalar(v.get("signer")),
+            scalar(v.get("licence"))
+        )
+    } else {
+        format!("{subject} is not verified: {}.", scalar(v.get("code")))
+    };
+    match v.get("text_matches") {
+        Some(Value::Bool(true)) => text.push_str(" The quoted text matches."),
+        Some(Value::Bool(false)) => text.push_str(" The quoted text does not match."),
+        _ => {}
+    }
+    text
+}
+
+/// The calc answer's text: the value and unit, the as-of and the receipt's hash, and the lineage's total when cut.
+fn calc_text(v: &Value) -> String {
+    let unit = match v.get("unit") {
+        Some(Value::String(u)) => format!(" {u}"),
+        _ => String::new(),
+    };
+    let mut text = format!("{}{unit}, as of {}.", scalar(v.get("value")), scalar(v.get("asof")));
+    let hash = scalar(v.get("receipt_hash"));
+    if !hash.is_empty() {
+        text.push_str(&format!(" Receipt {hash}."));
+    }
+    if let Some(total) = v.get("lineage_total") {
+        text.push_str(&format!(
+            " It reads {} inputs; explain (the pointer in the answer) lists the rest.",
+            scalar(Some(total))
+        ));
+    }
+    text
+}
+
+fn interval_text(v: &Value) -> String {
+    let mut text = format!(
+        "{} members of {}, from {} to {}.",
+        scalar(v.get("count")),
+        scalar(v.get("function")),
+        scalar(v.get("from")),
+        scalar(v.get("to"))
+    );
+    if v.get("rest").is_some() {
+        text.push_str(" The first are listed; rest gives the call for the others.");
+    }
+    text
+}
+
+/// A slice answer's text: its call, its total, the members this answer gives, the summary's figures and the next page.
+fn slice_text(v: &Value) -> String {
+    let total = v.get("summary").and_then(|x| x.get("count")).map_or_else(
+        || match v.get("members") {
+            Some(Value::Array(a)) => a.len().to_string(),
+            _ => "0".to_string(),
+        },
+        |c| scalar(Some(c)),
+    );
+    let shown = match v.get("members") {
+        Some(Value::Array(a)) => a.len(),
+        _ => 0,
+    };
+    let mut text = format!(
+        "{} as of {}: {total} members; this answer gives {shown}, each with its call, value and receipt hash.",
+        scalar(v.get("slice")),
+        scalar(v.get("asof"))
+    );
+    if let Some(summary) = v.get("summary") {
+        text.push_str(&format!(
+            " Mean {}, min {}, max {}.",
+            scalar(summary.get("mean")),
+            scalar(summary.get("min")),
+            scalar(summary.get("max"))
+        ));
+    }
+    if let Some(next) = v.get("next") {
+        text.push_str(&format!(" The next page: get {}.", scalar(next.get("request"))));
+    }
+    text
+}
+
+/// A describe answer's text: its summary, else its kind and id.
+fn describe_text(id: &str, answer: &Value) -> String {
+    let summary = scalar(answer.get("summary"));
+    if !summary.is_empty() {
+        return summary;
+    }
+    match scalar(answer.get("kind")) {
+        kind if kind.is_empty() => format!("{id}."),
+        kind => format!("{id}: a {kind}."),
+    }
+}
+
+/// An optional positive integer argument (`page`, `limit`), at most `max` when given (A3).
+fn page_arg(args: &Value, key: &str, default: usize, max: Option<usize>) -> Result<usize, ToolError> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(v) => v
+            .as_number_text()
+            .and_then(|t| t.parse::<usize>().ok())
+            .filter(|n| *n >= 1 && max.is_none_or(|m| *n <= m))
+            .ok_or_else(|| match max {
+                Some(m) => ToolError::arg(format!("{key}: an integer from 1 to {m}")),
+                None => ToolError::arg(format!("{key}: an integer, at least 1")),
+            }),
+    }
+}
+
+/// An explain answer with its inputs cut to the page (from 1) of `limit`; the total, the page and the limit are
+/// named beside them (A3).
+fn paged_inputs(block: Value, page: usize, limit: usize) -> Value {
+    let Value::Object(members) = block else { return block };
+    let mut out = Vec::new();
+    for (k, v) in members {
+        match v {
+            Value::Array(all) if k == "inputs" => {
+                let total = all.len();
+                let shown: Vec<Value> = all.into_iter().skip((page - 1).saturating_mul(limit)).take(limit).collect();
+                out.push((k, Value::Array(shown)));
+                out.push(("inputs_total".into(), num(total as u64)));
+                out.push(("page".into(), num(page as u64)));
+                out.push(("limit".into(), num(limit as u64)));
+            }
+            v => out.push((k, v)),
+        }
+    }
+    Value::Object(out)
+}
+
+/// A tool answer's lineage cut to its first [`LINEAGE_CUT`] entries (A3): `lineage_total` counts them all, and
+/// when the answer has its call, `explain` gives the arguments of the page after the cut.
+fn cut_lineage(v: Value) -> Value {
+    let Value::Object(mut members) = v else { return v };
+    let total = match members.iter().find(|(k, _)| k.as_str() == "lineage") {
+        Some((_, Value::Array(a))) => a.len(),
+        _ => return Value::Object(members),
+    };
+    if total <= LINEAGE_CUT {
+        return Value::Object(members);
+    }
+    let call = members.iter().find(|(k, _)| k.as_str() == "call").and_then(|(_, c)| c.as_str().map(str::to_string));
+    for (k, v) in members.iter_mut() {
+        if let (true, Value::Array(a)) = (k.as_str() == "lineage", v) {
+            a.truncate(LINEAGE_CUT);
+        }
+    }
+    members.push(("lineage_total".into(), num(total as u64)));
+    if let Some(call) = call {
+        let pointer = obj(vec![("request", s(call)), ("page", num(2)), ("limit", num(LINEAGE_CUT as u64))]);
+        members.push(("explain".into(), pointer));
+    }
+    Value::Object(members)
+}
+
 /// The answer to an ambiguous reference: its candidates, labels and calls, and no value.
 fn ambiguous_members(request: &str, candidates: &[Value]) -> Vec<(String, Value)> {
     let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1561,17 +1853,25 @@ pub fn serve_stdio_with<R: BufRead, W: Write>(
     mut output: W,
 ) -> Result<(), Error> {
     let server = McpServer::with_profile(resolver, profile);
+    let mut send = |line: &str| -> Result<(), Error> {
+        output
+            .write_all(line.as_bytes())
+            .and_then(|()| output.write_all(b"\n"))
+            .and_then(|()| output.flush())
+            .map_err(|e| Error::Request(format!("stdout: {e}")))
+    };
     for line in input.lines() {
         let line = line.map_err(|e| Error::Request(format!("stdin: {e}")))?;
         if line.trim().is_empty() {
             continue;
         }
         if let Some(reply) = server.handle(&line, Transport::Stdio) {
-            output
-                .write_all(reply.as_bytes())
-                .and_then(|()| output.write_all(b"\n"))
-                .and_then(|()| output.flush())
-                .map_err(|e| Error::Request(format!("stdout: {e}")))?;
+            send(&reply)?;
+        }
+        // A retry of the summary that succeeded: the client is told once, after the answer (A4).
+        if server.take_notice() {
+            let note = obj(vec![("jsonrpc", s("2.0")), ("method", s(LIST_CHANGED))]);
+            send(&json_text(&note))?;
         }
     }
     Ok(())
