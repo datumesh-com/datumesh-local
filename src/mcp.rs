@@ -588,6 +588,11 @@ impl McpServer {
             block = with_members(block, vec![("resolved", obj(vec![("label", s(label)), ("call", s(call))]))]);
             head.push(format!("{label}\n{call}"));
         }
+        // A failed get (status 400 or more) is an error whose text names the code and every detail (datumesh-local
+        // 0.5.3): the answer block is the structured content, as it is for any answer.
+        if reply.status >= 400 {
+            return Err(failed(block, &reply.detail.iter().cloned().collect::<Vec<_>>()));
+        }
         let Some(blob) = self.resolver.blob_of(reply)? else {
             head.push(short);
             return Ok(content_members(head, block, false));
@@ -660,7 +665,11 @@ impl McpServer {
         let limit = page_arg(args, "limit", EXPLAIN_LIMIT, Some(EXPLAIN_MAX))?;
         let reply = self.resolver.explain(request, Some(depth))?;
         let node = json::parse(&reply.body).unwrap_or(Value::Null);
-        Ok(self.explain_answer(num(u64::from(reply.status)), &node, reply.label.as_deref(), page, limit))
+        let block = self.explain_answer(num(u64::from(reply.status)), &node, reply.label.as_deref(), page, limit);
+        if reply.status >= 400 {
+            return Err(failed(block, &reply.detail.iter().cloned().collect::<Vec<_>>()));
+        }
+        Ok(block)
     }
 
     /// An explain node as the answer (A3): the node in full (its answer block), its inputs cut to the page
@@ -738,6 +747,9 @@ impl McpServer {
         if let Some(sentence) = &unbound {
             members.push(("error", s("E_NAME_UNBOUND")));
             members.push(("detail", s(sentence)));
+        }
+        if reply.status >= 400 {
+            return Err(failed(obj(members), &reply.detail.iter().cloned().collect::<Vec<_>>()));
         }
         if answer.get("kind").and_then(Value::as_str) == Some("class") {
             let class = answer.get("class").and_then(Value::as_str).unwrap_or("");
@@ -1254,6 +1266,50 @@ fn content_members(texts: Vec<String>, structured: Value, is_error: bool) -> Vec
 /// `serve` with too).
 pub(crate) fn tool_code_of(e: Error) -> String {
     ToolError::from(e).code.unwrap_or_else(|| "error".to_string())
+}
+
+/// A failed answer (datumesh-local 0.5.3, A2): its code and every detail its structured content carries, as the
+/// other tools give `CODE: detail`; the structured content is the answer block, with the envelope and the status.
+fn failed(structured: Value, extra: &[String]) -> ToolError {
+    let (code, details) = failure_parts(&structured, extra);
+    let detail = if details.is_empty() { code.clone() } else { details.join("; ") };
+    ToolError { code: Some(code), detail, body: Some(structured) }
+}
+
+/// The code of a failed answer and its details: the first `error` (else `outcome`, else the status) and every string
+/// under `error`, `fault`, `detail`, `reason` or `outcome` anywhere in `structured`, then `extra`, each once (the
+/// bare words `error` and `ok` are not details).
+fn failure_parts(structured: &Value, extra: &[String]) -> (String, Vec<String>) {
+    fn walk(v: &Value, out: &mut Vec<(String, String)>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if let (true, Value::String(t)) =
+                        (matches!(k.as_str(), "error" | "fault" | "detail" | "reason" | "outcome"), x)
+                    {
+                        out.push((k.clone(), t.clone()));
+                    }
+                    walk(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(structured, &mut found);
+    let text_of = |key: &str| found.iter().find(|(k, t)| k == key && t != "ok" && t != "error").map(|(_, t)| t.clone());
+    let code = text_of("error")
+        .or_else(|| text_of("outcome"))
+        .or_else(|| structured.get("status").and_then(Value::as_number_text).map(|n| format!("status {n}")))
+        .unwrap_or_else(|| "error".to_string());
+    let mut details: Vec<String> = Vec::new();
+    for t in found.iter().map(|(_, t)| t).chain(extra.iter()) {
+        if t != &code && t != "error" && t != "ok" && !details.contains(t) {
+            details.push(t.clone());
+        }
+    }
+    (code, details)
 }
 
 fn tool_failure(e: ToolError) -> Vec<(String, Value)> {
