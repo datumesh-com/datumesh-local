@@ -644,6 +644,11 @@ impl Resolver {
         }
         let aliases = self.aliases_at(request_asof(request).as_deref());
         let text = aliases.expand_prefix(request);
+        // A page past the first of a slice (`<slice>?page=<n>`, datumesh-local 0.5.3, A3): the slice's own answer,
+        // which cuts the page. The call's parse does not take the query, so the request is not parsed as a call.
+        if is_slice_page(&text) {
+            return Ok(Got::Reply(self.answer(&aliases.expand_request(request), &Cell::new(false))?));
+        }
         let parsed = crate::classes::note_prefix(self.parse_request(&text, &aliases), request, &text, &aliases);
         let reply = match parsed {
             Parse::Call { rest, resolved, fetched, .. } => {
@@ -1791,6 +1796,14 @@ fn parse_find(body: &[u8]) -> Result<Vec<Found>, String> {
 /// The refusal of a call whose function name is not a canonical name (spec-0.6.1, 2.3: a segment
 /// after the host that is neither a name nor a DNS name, an uppercase letter, a DNS name as the last
 /// segment): `E_CANON_NAME`, its detail. `None` for any other malformed text.
+/// Whether `text` is a slice's page request: a slice (`*` in its arguments) with a `page=` in the query after its
+/// call's closing parenthesis (see `calc::split_page`).
+fn is_slice_page(text: &str) -> bool {
+    let Some(from) = text.rfind(')') else { return false };
+    let Some(q) = text[from..].find('?') else { return false };
+    text[..from].contains('*') && text[from + q + 1..].split('&').any(|p| p.starts_with("page="))
+}
+
 fn canon_refusal(text: &str) -> Option<String> {
     let rest = text.strip_prefix("cell://").unwrap_or(text);
     let name = name_of(rest);
