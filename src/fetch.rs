@@ -808,6 +808,27 @@ impl Shared {
         Ok(())
     }
 
+    /// The whole of a foreign slice a `get` reads and does not hold (datumesh-local 0.5.3): fetched as calc's read
+    /// fetches it, counted page by page against `slice_fetch_max` (a refusal keeps nothing), then kept as a prefetch
+    /// holds it. `rest` is the slice's rest as the mesh names it (`ns/fn(args, *)`), the key it is held by.
+    pub(crate) fn fetch_slice_read(&self, fn_name: &str, args: &Args, rest: &str) -> Result<(), Stop> {
+        let pattern: SlicePattern = args
+            .iter()
+            .map(|(k, a)| (k.clone(), if let Arg::Value(v) = a { Pattern::Value(v.clone()) } else { Pattern::Open }))
+            .collect();
+        let need = Need {
+            fn_name: fn_name.to_string(),
+            pattern,
+            key: rest.to_string(),
+            whole: rest.to_string(),
+            interval: false,
+        };
+        let mut acc = Ctx::default();
+        self.fetch_need(&need, &mut acc)?;
+        self.keep_slices(&acc.pending).map_err(Stop::Remote)?;
+        Ok(())
+    }
+
     /// The evaluation `run` as an answer (item 12): a run that needs a slice fetches it and runs again; a run
     /// that read fetched members is run again once they are kept, so the engine records the inputs it read from
     /// the store; the last run's context is returned, with the cells kept on the way.

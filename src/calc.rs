@@ -486,7 +486,9 @@ impl Resolver {
         let mut fetched = false;
         if !is_unrooted(&host) && !s.index.slice_held(t.rest())? {
             s.may_fetch(&host).map_err(Error::ForeignUnavailable)?;
-            self.prefetch(t.rest(), None, false)?;
+            // Bound by slice_fetch_max as calc's fetch is (datumesh-local 0.5.3): a slice over it is refused.
+            s.fetch_slice_read(&format!("{}/{}", cell.ns, cell.fn_name), &cell.args, t.rest())
+                .map_err(|e| e.into_error())?;
             fetched = true;
         }
         let now = s.now();
