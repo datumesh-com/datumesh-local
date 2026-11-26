@@ -31,6 +31,18 @@ The guard patch's part A, agent answers (CONTRACT-guard-patch.md, A1 to A5; the 
 - **The usage line (item 12).** `datumesh --help` lists every command the dispatcher takes: whatif, mcp, licence, trust, root and allow
   were missing.
 
+Fixes before the 0.5.3 release (datumesh-local 0.5.3, the three defects of REPORT-c-codes-and-small-profile.md).
+
+- **A failed answer says its code, and is an error.** A failed `get`, `explain` or `describe` (status 400 or more) sets `isError`,
+  and its text is `CODE: detail` as the other tools give it: the code, then every detail the structured content carries (`error`,
+  `fault`, `detail`, `reason`, `outcome`) and, for `get`, the resolver's detail (such as "offline: the resolver is offline"). It was
+  the status or the echoed id alone. The structured content keeps the envelope and the status.
+- **A slice `get` is bound by `slice_fetch_max`.** A `get` of a foreign slice that the store does not hold is counted page by page as
+  calc's read is: the first page over the bound is refused with `E_SLICE_FETCH_LIMIT` (the slice, its size so far, the bound and
+  `prefetch`), and nothing it fetched is kept. A slice within the bound is kept as before; `prefetch` stays unbounded.
+- **A foreign slice's `next` page is read.** `get <slice>?page=<n>` for a foreign slice (and a local one) answers that page, as `next`
+  names it. It answered `E_PARSE_URI` before any fetch.
+
 ## 0.5.2
 
 Protocol round, Part 1 (CONTRACT-next-patch, items 12, 13, 14 and 18; datumesh-local 0.5.2 with datumesh-engine 0.6.1).
