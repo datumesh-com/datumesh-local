@@ -393,7 +393,19 @@ impl Resolver {
         for input in receipt.inputs() {
             // A slice read is one entry (A1, datumesh-local 0.5.3): the slice, its member count and its
             // members hash, as the mesh's receipt cites them. Its members are not listed.
+            // The member-set row (datumesh-store 0.6.5) is kept in place of the manifest by default, so it
+            // is read first; the held manifest is the fallback. Both give the same entry.
             if input.starts_with("slice:") {
+                if let Some(set) = store.member_set(input).map_err(|e| Error::Store(e.to_string()))? {
+                    let slice = Slice::from_json(&set.slice).map_err(|e| Error::Store(e.to_string()))?;
+                    out.push(obj(vec![
+                        ("entry", js(input)),
+                        ("slice", slice.to_value()),
+                        ("members", number_of(&set.members.to_string())),
+                        ("members_hash", js(&set.members_hash)),
+                    ]));
+                    continue;
+                }
                 let bytes = store
                     .manifest(input)
                     .map(|b| b.into_owned())
