@@ -16,12 +16,13 @@
 //! strings (receipts, descriptors, key documents, manifests, envelopes) are kept as JSON
 //! strings of their exact text, blobs in base64.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{Receipt, Type};
+use datumesh_engine::Engine;
 
-use crate::fetch::{cell_rest, host_of, END, START};
+use crate::fetch::{cell_rest, host_of, Shared, END, START};
 use crate::gate::is_unrooted;
 use crate::index::{Forwarded, HeldCell};
 use crate::key::key_entries;
@@ -117,6 +118,31 @@ fn st(e: impl std::fmt::Display) -> Error {
     Error::Store(e.to_string())
 }
 
+/// The manifest of the slice `entry` as the engine rebuilds it as of `asof` (the bytes a stored
+/// manifest would hold; nothing is stored). The engine is built once per export. A rebuild that
+/// fails, or finds nothing, is an error naming the entry: the bundle would not carry the slice.
+fn rebuild_manifest(s: &Shared, engine: &mut Option<Engine>, entry: &str, asof: &str) -> Result<Vec<u8>, Error> {
+    let unavailable = |why: String| Error::Store(format!("the manifest of {entry} cannot be rebuilt: {why}"));
+    if engine.is_none() {
+        let built = Engine::builder(s.store.clone(), s.config.host.clone())
+            .signing_key(s.key().signing_key().clone())
+            .licence(s.config.licence.clone())
+            .clock(s.clock.clone())
+            .build()
+            .map_err(|e| unavailable(format!("engine: {e:?}")))?;
+        *engine = Some(built);
+    }
+    let built = engine.as_ref().expect("the engine is built");
+    if asof.is_empty() {
+        return Err(unavailable("the citing receipt has no asof".into()));
+    }
+    match built.manifest_asof(entry, asof) {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => Err(unavailable(format!("the engine holds no members as of {asof}"))),
+        Err(e) => Err(unavailable(e.to_string())),
+    }
+}
+
 impl Resolver {
     /// The bundle of everything held: names (bindings, descriptors), stored cells (every
     /// version), the receipts this machine answered with and their lineage (input receipts,
@@ -154,6 +180,11 @@ impl Resolver {
         }
         let mut computed = Vec::new();
         let mut manifests = BTreeSet::new();
+        // The bytes of each manifest in the bundle: the held one, or one rebuilt as of the asof of
+        // the first receipt that cites its slice (datumesh-store 0.6.5 keeps no manifest for a read).
+        let mut manifest_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut slice_asof: BTreeMap<String, String> = BTreeMap::new();
+        let mut engine: Option<Engine> = None;
         let mut todo: Vec<String> = Vec::new();
         for (h, cell_id) in s.index.all_answered()? {
             if let Some(bytes) = store.receipt(&h) {
@@ -178,11 +209,16 @@ impl Resolver {
         while let Some(h) = todo.pop() {
             if h.starts_with("slice:") {
                 if manifests.insert(h.clone()) {
-                    if let Some(m) = store.manifest(&h) {
-                        if let Ok(m) = datumesh_core::Manifest::from_json(&m) {
-                            todo.extend(m.members().iter().cloned());
+                    let bytes = match store.manifest(&h) {
+                        Some(b) => b.into_owned(),
+                        None => {
+                            let asof = slice_asof.get(&h).cloned().unwrap_or_default();
+                            rebuild_manifest(s, &mut engine, &h, &asof)?
                         }
-                    }
+                    };
+                    let m = datumesh_core::Manifest::from_json(&bytes).map_err(st)?;
+                    todo.extend(m.members().iter().cloned());
+                    manifest_bytes.insert(h.clone(), bytes);
                 }
                 continue;
             }
@@ -193,6 +229,9 @@ impl Resolver {
                 if let Ok(r) = Receipt::from_json(&bytes) {
                     for i in r.inputs() {
                         if !seen.contains(i) && !manifests.contains(i) {
+                            if i.starts_with("slice:") {
+                                slice_asof.entry(i.clone()).or_insert_with(|| r.asof().to_string());
+                            }
                             todo.push(i.clone());
                         }
                     }
@@ -237,7 +276,7 @@ impl Resolver {
         let descriptor_values: Vec<Value> =
             descriptors.iter().filter_map(|h| store.descriptor(h)).map(|b| text(&b)).collect();
         let manifest_values: Vec<Value> =
-            manifests.iter().filter_map(|e| store.manifest(e)).map(|b| text(&b)).collect();
+            manifests.iter().filter_map(|e| manifest_bytes.get(e)).map(|b| text(b)).collect();
         let forwarded: Vec<Value> = s
             .index
             .all_forwarded()?
