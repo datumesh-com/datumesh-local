@@ -171,6 +171,30 @@ fn calc_receipt(r: &Resolver, formula: &str) -> Receipt {
     Receipt::from_value(&receipt(&reply.body)).unwrap()
 }
 
+/// The manifest of a slice entry: the held bytes, or (datumesh-store 0.6.5 keeps a member-set row for a
+/// slice read, not the manifest) the members rebuilt by the engine as of the receipt's asof, the bytes a
+/// stored manifest would hold (CONTRACT-guard-patch G5, G10). Either way the member-set row exists and
+/// carries the manifest's count and members hash.
+fn manifest_of(r: &Resolver, entry: &str, asof: &str) -> Manifest {
+    let row = r.store().member_set(entry).unwrap().unwrap_or_else(|| panic!("a member-set row for {entry}"));
+    let bytes = match r.store().manifest(entry) {
+        Some(b) => b.into_owned(),
+        // An engine on the resolver's store, signing with its machine key (a key the store publishes).
+        None => datumesh_engine::Engine::builder(r.store().clone(), r.config().host.clone())
+            .signing_key(datumesh_local::MachineKey::load_or_create(&r.config().key_file).unwrap().signing_key().clone())
+            .build()
+            .unwrap()
+            .manifest_asof(entry, asof)
+            .unwrap()
+            .unwrap_or_else(|| panic!("the engine rebuilds the manifest of {entry}")),
+    };
+    let m = Manifest::from_json(&bytes).unwrap();
+    assert_eq!(m.entry(), entry);
+    assert_eq!(row.members, m.members().len() as u64, "the row's count");
+    assert_eq!(row.members_hash, m.members_hash(), "the row's members hash");
+    m
+}
+
 fn number_of(v: Option<&Value>) -> u64 {
     v.and_then(Value::as_number_text).and_then(|t| t.parse().ok()).unwrap_or_else(|| panic!("a JSON number: {v:?}"))
 }
@@ -216,9 +240,7 @@ fn a1_a_calc_over_a_500_member_slice_has_one_lineage_entry_for_the_slice() {
     assert_eq!(s(e, "members_hash"), parts[2], "the members hash is the entry's third part: {}", jcs(e));
     assert_eq!(number_of(e.get("members")), MEMBERS as u64, "{}", jcs(e));
     // The slice is the manifest's slice object, as the mesh's explain gives it.
-    let bytes =
-        w.r.store().manifest(&entry).expect("the manifest is held locally (ManifestPolicy::Store)").into_owned();
-    let m = Manifest::from_json(&bytes).unwrap();
+    let m = manifest_of(&w.r, &entry, rc.asof());
     assert_eq!(m.entry(), entry);
     assert_eq!(m.members().len(), MEMBERS);
     let slice = e.get("slice").unwrap_or_else(|| panic!("slice: {}", jcs(e)));
@@ -236,8 +258,9 @@ fn a1_the_lineage_names_no_member() {
     let (v, _) = calc(&w.srv, SLICE_F);
     assert!(!is_error(&v), "{}", jcs(&v));
     let whole = jcs(result(&v));
-    let entry = calc_receipt(&w.r, SLICE_F).inputs()[0].clone();
-    let m = Manifest::from_json(&w.r.store().manifest(&entry).unwrap()).unwrap();
+    let rc = calc_receipt(&w.r, SLICE_F);
+    let entry = rc.inputs()[0].clone();
+    let m = manifest_of(&w.r, &entry, rc.asof());
     for hash in m.members().iter().take(50).chain(m.members().iter().rev().take(50)) {
         assert!(!whole.contains(hash.as_str()), "a member's receipt hash {hash} is in the answer");
     }
