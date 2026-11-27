@@ -181,7 +181,9 @@ fn manifest_of(r: &Resolver, entry: &str, asof: &str) -> Manifest {
         Some(b) => b.into_owned(),
         // An engine on the resolver's store, signing with its machine key (a key the store publishes).
         None => datumesh_engine::Engine::builder(r.store().clone(), r.config().host.clone())
-            .signing_key(datumesh_local::MachineKey::load_or_create(&r.config().key_file).unwrap().signing_key().clone())
+            .signing_key(
+                datumesh_local::MachineKey::load_or_create(&r.config().key_file).unwrap().signing_key().clone(),
+            )
             .build()
             .unwrap()
             .manifest_asof(entry, asof)

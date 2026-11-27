@@ -23,6 +23,34 @@ fn call(c: &str, asof: Option<&str>) -> String {
     }
 }
 
+/// A receipt without its signing (`issued`, `sig`): what an answer states. A read that names an asof
+/// stores nothing (CONTRACT-guard-patch B1, datumesh-engine 0.6.2), so each such read is evaluated and
+/// signed again: two of them state the same thing and differ in these two members only.
+fn unsigned(receipt: &Value) -> Value {
+    match receipt {
+        Value::Object(m) => Value::Object(m.iter().filter(|(k, _)| k != "issued" && k != "sig").cloned().collect()),
+        other => other.clone(),
+    }
+}
+
+/// The envelope without `resolved`, its receipt [`unsigned`].
+fn stated(body: &[u8]) -> Value {
+    match without_resolved(body) {
+        Value::Object(m) => {
+            Value::Object(m.into_iter().map(|(k, v)| if k == "receipt" { (k, unsigned(&v)) } else { (k, v) }).collect())
+        }
+        other => other,
+    }
+}
+
+/// The same statement as `want`'s, and `got`'s own receipt verifies here.
+fn same_answer(r: &datumesh_local::Resolver, got: &[u8], want: &[u8], what: &str) {
+    assert_eq!(unsigned(&receipt(got)).to_jcs(), unsigned(&receipt(want)).to_jcs(), "{what}: the receipt");
+    assert_eq!(stated(got), stated(want), "{what}: the envelope");
+    let v = r.verify(&receipt(got).to_jcs());
+    assert_eq!(v.get("ok"), Some(&Value::Bool(true)), "{what}: {}", String::from_utf8_lossy(&v.to_jcs()));
+}
+
 fn cell_id(body: &[u8]) -> String {
     datumesh_core::Receipt::from_value(&receipt(body)).unwrap().cell().id()
 }
@@ -112,8 +140,7 @@ fn a_method_call_and_the_plain_read_are_one_cell() {
             let got = r.get(m).unwrap();
             assert_eq!(got.status, 200, "{m}: {}", String::from_utf8_lossy(&got.body));
             assert_eq!(cell_id(&got.body), id, "{m}: the cell id");
-            assert_eq!(receipt(&got.body).to_jcs(), receipt(&want.body).to_jcs(), "{m}: the receipt");
-            assert_eq!(without_resolved(&got.body), without_resolved(&want.body), "{m}: the envelope");
+            same_answer(&r, &got.body, &want.body, m);
             let (full, rs, _) = resolved_of(&got.body);
             assert!(full.starts_with(&format!("{name}(")), "{m}: resolved.call is the full call: {full}");
             assert!(rs.iter().any(|x| x.1 == "method" && x.2 == name), "{m}: a method resolution: {rs:?}");
@@ -175,8 +202,7 @@ fn resolved_on_a_short_call_with_a_defaulted_date() {
     let got = r.get(&call(&format!("{p}(GBP, USD).cross()"), Some(ASOF))).unwrap();
     assert_eq!(got.status, 200, "{}", String::from_utf8_lossy(&got.body));
     assert_eq!(cell_id(&got.body), cell_id(&plain.body), "the default is bound in the cell");
-    assert_eq!(receipt(&got.body).to_jcs(), receipt(&plain.body).to_jcs());
-    assert_eq!(without_resolved(&got.body), without_resolved(&plain.body));
+    same_answer(&r, &got.body, &plain.body, "the defaulted date");
     let (c, rs, tx) = resolved_of(&got.body);
     assert_eq!(c, full);
     assert_eq!(rs, vec![res(&format!("{p}(...).cross"), "method", &format!("{p}/cross")), res("date", "default", DAY)]);
@@ -186,7 +212,7 @@ fn resolved_on_a_short_call_with_a_defaulted_date() {
     for text in ["xcross(GBP, USD)", "@xcross(GBP, USD)", "xcross(base: GBP, quote: USD)"] {
         let got = r.get(&call(text, Some(ASOF))).unwrap();
         assert_eq!(got.status, 200, "{text}: {}", String::from_utf8_lossy(&got.body));
-        assert_eq!(receipt(&got.body).to_jcs(), receipt(&plain.body).to_jcs(), "{text}");
+        assert_eq!(unsigned(&receipt(&got.body)).to_jcs(), unsigned(&receipt(&plain.body)).to_jcs(), "{text}");
         let (c, rs, tx) = resolved_of(&got.body);
         assert_eq!(c, full, "{text}");
         let from = if text.starts_with('@') { "@xcross" } else { "xcross" };
