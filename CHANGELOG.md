@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.3
 
 The guard patch's part A, agent answers (CONTRACT-guard-patch.md, A1 to A5; the user's items 12 to 14, 37 and the usage line).
 
@@ -42,6 +42,18 @@ Fixes before the 0.5.3 release (datumesh-local 0.5.3, the three defects of REPOR
   `prefetch`), and nothing it fetched is kept. A slice within the bound is kept as before; `prefetch` stays unbounded.
 - **A foreign slice's `next` page is read.** `get <slice>?page=<n>` for a foreign slice (and a local one) answers that page, as `next`
   names it. It answered `E_PARSE_URI` before any fetch.
+
+On the guard releases (CONTRACT-guard-patch.md, part G): datumesh-store 0.6.5, datumesh-engine 0.6.2 and datumesh-http 0.5.5 are the
+minimums.
+
+- **Recorded time and backdating.** Each stored version carries the time it was recorded; a version whose signed time is not later than
+  its cell's latest is refused (`E_BACKDATED`). A read that names an asof answers by recorded time.
+- **A read that names an asof stores nothing.** It is evaluated and signed each time; only a read with no asof is stored. Two such reads
+  state the same answer and differ in `issued` and `sig`.
+- **A slice read keeps a member-set row, not its manifest.** A calc's lineage entry for a slice comes from that row.
+- **A bundle carries every slice manifest its receipts read.** A manifest that is not stored is rebuilt as of the asof of the receipt
+  that cites it. An export that cannot rebuild one fails, naming the slice; it left the manifest out before.
+- **SQLite:** a read waits behind a long write in another process (the store's barrier).
 
 ## 0.5.2
 
