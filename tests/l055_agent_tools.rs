@@ -390,6 +390,20 @@ fn i25_the_small_profile_s_calc_declares_remote() {
     assert!(full.get("inputSchema").and_then(|x| x.get("properties")).and_then(|p| p.get("remote")).is_some());
 }
 
+#[test]
+fn small_interval_s_schema_declares_keys() {
+    // Decided 28 Nov (2): the tool takes keys, so the small schema declares them (an object), not required.
+    let w = prod_world();
+    let t = tool_def(&w.small, "interval");
+    let schema = t.get("inputSchema").unwrap_or_else(|| panic!("{}", jcs(&t)));
+    let keys = schema
+        .get("properties")
+        .and_then(|p| p.get("keys"))
+        .unwrap_or_else(|| panic!("interval declares keys: {}", jcs(&t)));
+    assert_eq!(s(keys, "type"), "object", "{}", jcs(keys));
+    assert!(!jcs(schema.get("required").unwrap()).contains("\"keys\""), "keys may be omitted: {}", jcs(schema));
+}
+
 // =============================================================================== items 20 and 24
 
 /// The receipt hash of a get answer (the answer block's).
@@ -414,14 +428,18 @@ fn i20_get_takes_a_date_as_canonical_text() {
 }
 
 #[test]
-fn i20_calc_takes_a_date_as_canonical_text() {
+fn i20_calc_still_refuses_a_date_as_text() {
+    // Decided 28 Nov (4): a string literal for a date argument in a formula is the dialect's type rule (15.8), queued
+    // for spec 0.8; in 0.5.5 calc refuses it as today, and only get takes the text.
     let w = find_world(None);
     let full = |date: &str| format!(r#"{FX}(base: "EUR", quote: "USD", date: {date}) * 2"#);
     let plain = calc(&w.full, &full("2026-10-30")).0;
     assert!(!is_error(&plain), "{}", jcs(&plain));
-    let (v, _) = calc(&w.full, &full(r#""2026-10-30""#));
-    assert!(!is_error(&v), "{}", jcs(&v));
-    assert_eq!(s(structured(&v), "value"), s(structured(&plain), "value"), "{}", jcs(&v));
+    for (profile, srv) in [("full", &w.full), ("small", &w.small)] {
+        let (v, _) = calc(srv, &full(r#""2026-10-30""#));
+        assert!(is_error(&v), "{profile}: {}", jcs(&v));
+        assert!(text(&v).contains("E_FORMULA_TYPE"), "{profile}: {}", text(&v));
+    }
 }
 
 #[test]
@@ -860,6 +878,17 @@ fn i27_a_small_calc_of_40_cells_is_within_the_budget_with_a_small_lineage_page()
     assert!(!lineage.is_empty() && lineage.len() <= 10, "a lineage page of about 8: {}", lineage.len());
     assert_eq!(number(sc.get("lineage_total")), 40, "{}", jcs(sc));
     assert!(line.matches(&formula).count() <= 1, "the formula is not echoed twice");
+    // Decided 28 Nov (2): no answer names a tool the profile lacks; the lineage gives receipt hashes, with no
+    // pointer to explain.
+    assert!(!line.contains("explain"), "the small profile has no explain: {line}");
+    for e in lineage {
+        let hex = |x: &Value| x.as_str().is_some_and(|h| h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()));
+        let hashed = match e {
+            Value::Object(m) => m.iter().any(|(k, x)| k.starts_with("receipt") && hex(x)),
+            _ => false,
+        };
+        assert!(hashed || e.get("members_hash").is_some(), "a lineage entry gives its receipt hash: {}", jcs(e));
+    }
     // The full profile keeps its 20 (A3).
     let (v, line) = calc(&w.full, &formula);
     within("full calc", &line, BUDGET);
