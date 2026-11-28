@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (0.5.5)
+
+The agent tools (CONTRACT-patch-0.6.1 item 8a.8: NEXT-PATCH-QUEUE items 17 to 27 and the 4 KiB small profile).
+Tests first: `tests/l055_agent_tools.rs`; readings in CONTRACT-local-0.5.5.md.
+
 ## 0.5.4
 
 The client side of CONTRACT-patch-0.6.1 item 4c. Stays on datumesh-http 0.5.5 (no change to its public API).
