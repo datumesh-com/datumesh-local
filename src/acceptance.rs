@@ -197,7 +197,9 @@ pub(crate) fn not_publishable(licence: &str) -> Error {
 /// What an agent is told, and what the CLI names, for a restricted licence the user has not accepted:
 /// the user accepts it at the command line (D4.3).
 pub(crate) fn accept_hint(licence: &str) -> String {
-    format!("the user must accept {licence} at the command line: datumesh licence accept '{licence}'")
+    format!(
+        "the user must accept {licence} at the command line: datumesh licence accept '{licence}'; with remote, the calculation runs on the mesh and needs no licence"
+    )
 }
 
 /// Quotes a call's text value.

@@ -32,18 +32,14 @@ fn member(m: &Value) -> Value {
     Value::Object(pairs)
 }
 
-/// A listed member (datumesh-local 0.5.3, the coordinator's decision of 25 Nov): its `call`, `value` and
-/// `receipt_hash`, with its `keys` and `asof`, not the whole receipt (which was verified before). Over 100
-/// members a long answer stays within the 64 KiB budget.
+/// A listed member (datumesh-local 0.5.5, NEXT-PATCH-QUEUE item 18): a compact row of its `call`, `value` and
+/// `receipt_hash`. The call carries the keys, and the answer carries the as-of; the receipt was verified before.
 fn listed(m: &Value) -> Value {
     let Some(r) = m.get("receipt").and_then(|x| Receipt::from_value(x).ok()) else { return member(m) };
-    let asof = m.get("asof").cloned().unwrap_or_else(|| Value::String(r.asof().to_string()));
     Value::Object(vec![
         ("call".into(), Value::String(call_form(r.cell()))),
         ("value".into(), m.get("value").cloned().unwrap_or_else(|| Value::String(r.value().lexical().to_string()))),
         ("receipt_hash".into(), Value::String(r.hash().to_string())),
-        ("keys".into(), keys_of(m)),
-        ("asof".into(), asof),
     ])
 }
 
@@ -53,8 +49,16 @@ fn keys_of(m: &Value) -> Value {
 
 impl Resolver {
     /// The interval of `function` (a full or aliased name) over `keys` and `from`..`to`, from the
-    /// forward mesh (see the module documentation).
-    pub fn interval(&self, function: &str, keys: &[(String, String)], from: &str, to: &str) -> Result<Value, Error> {
+    /// forward mesh (see the module documentation). Its first `listed` members are listed; over that many
+    /// the answer summarises and gives the call for the rest.
+    pub fn interval(
+        &self,
+        function: &str,
+        keys: &[(String, String)],
+        from: &str,
+        to: &str,
+        size: usize,
+    ) -> Result<Value, Error> {
         let s = &self.shared;
         let full = self.aliases_at(None).expand(function);
         if !datumesh_formula::names::is_function_name(&full) {
@@ -115,13 +119,13 @@ impl Resolver {
             ("from".to_string(), Value::String(from.to_string())),
             ("to".to_string(), Value::String(to.to_string())),
             ("count".to_string(), num(members.len())),
-            ("members".to_string(), Value::Array(members.iter().take(LISTED).map(listed).collect())),
+            ("members".to_string(), Value::Array(members.iter().take(size).map(listed).collect())),
         ];
-        if members.len() > LISTED {
+        if members.len() > size {
             out.push(("summary".to_string(), summary(members)));
             // The call for the rest: the members after the listed ones, to the same end.
             let next_from = members
-                .get(LISTED)
+                .get(size)
                 .and_then(|m| keys_of(m).get("date").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_else(|| from.to_string());
             let args = Value::Object(vec![

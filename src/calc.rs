@@ -484,7 +484,7 @@ impl Resolver {
     /// members (up to 100 as they are, else a summary, the first 100 and the `calc` call), with the
     /// members of a foreign slice fetched first. `None` when the request is not a slice of a stored
     /// function (the caller gives the mesh's own answer then).
-    pub(crate) fn slice_answer(&self, rest: &str) -> Result<Option<Reply>, Error> {
+    pub(crate) fn slice_answer(&self, rest: &str, per_page: usize) -> Result<Option<Reply>, Error> {
         let s = &self.shared;
         let mesh = self.mesh();
         // A page past the first (`?page=<n>`, datumesh-local 0.5.3) is the same slice's, cut here.
@@ -519,11 +519,11 @@ impl Resolver {
         let numbers: Option<Vec<f64>> = (count > 0 && values.iter().all(|m| m.value.ty() == Type::Number))
             .then(|| values.iter().map(|m| m.value.lexical().parse::<f64>().ok()).collect::<Option<Vec<f64>>>())
             .flatten();
-        // A page of members (up to PAGE): each with its call, value and receipt hash, not the whole receipt
+        // A page of members (up to the page size): each with its call, value and receipt hash, not the whole receipt
         // (datumesh-local 0.5.3, A3). The total is `summary.count`.
-        let start = (page - 1).saturating_mul(PAGE);
+        let start = (page - 1).saturating_mul(per_page);
         let mut members = Vec::new();
-        for m in values.iter().skip(start).take(PAGE) {
+        for m in values.iter().skip(start).take(per_page) {
             let bytes = s
                 .store
                 .receipt(&m.version.receipt_hash)
@@ -538,7 +538,7 @@ impl Resolver {
             ]));
         }
         let mut out = vec![("outcome", js(SLICE)), ("slice", js(&call)), ("asof", js(&asof))];
-        if count > PAGE {
+        if count > per_page {
             let mut summary = vec![
                 ("count", number_of(&count.to_string())),
                 ("first", key_object(&values[0], &open)),
@@ -556,13 +556,13 @@ impl Resolver {
             out.push(("summary", obj(summary)));
             out.push(("members", Value::Array(members)));
             out.push(("calc", obj(vec![("formula", js(format!("{aggregate}({call})")))])));
-            if page * PAGE < count {
+            if page * per_page < count {
                 out.push((
                     "next",
                     obj(vec![
                         ("request", js(format!("{call}?page={}", page + 1))),
                         ("page", number_of(&(page + 1).to_string())),
-                        ("of", number_of(&count.div_ceil(PAGE).to_string())),
+                        ("of", number_of(&count.div_ceil(per_page).to_string())),
                     ]),
                 ));
             }

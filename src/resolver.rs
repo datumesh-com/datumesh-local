@@ -615,7 +615,7 @@ impl Resolver {
     /// `?asof=`), a cell URI, or the rest of one; short names expanded by the alias map. See
     /// the crate documentation for where answers come from.
     pub fn get(&self, request: &str) -> Result<Reply, Error> {
-        match self.get_or_refer(request, false)? {
+        match self.get_or_refer(request, false, crate::calc::PAGE)? {
             Got::Reply(reply) | Got::Read { reply, .. } => Ok(reply),
             // Only a reference is answered otherwise, and `references` is off here.
             _ => Err(Error::Request(format!("{request}: not a call or a cell URI"))),
@@ -626,11 +626,14 @@ impl Resolver {
     /// reference (no call, no cell URI, such as "John 3:16 in Greek") is resolved through the first
     /// find mesh's `/find` ([`Got`]). A query-string form (`name?key=value`) is refused as a call
     /// (`E_PARSE_URI`) before anything is parsed further, and never sent to `/find`.
-    pub(crate) fn get_request(&self, request: &str) -> Result<Got, Error> {
-        self.get_or_refer(request, true)
+    pub(crate) fn get_request(&self, request: &str, members: usize) -> Result<Got, Error> {
+        self.get_or_refer(request, true, members)
     }
 
-    fn get_or_refer(&self, request: &str, references: bool) -> Result<Got, Error> {
+    fn get_or_refer(&self, request: &str, references: bool, members: usize) -> Result<Got, Error> {
+        // A quoted canonical date and date(y, m, d) are the dates a call's date argument takes (datumesh-local 0.5.5,
+        // items 20 and 24).
+        let request: &str = &canonical_dates(request);
         let trimmed = request.trim();
         if !trimmed.starts_with("cell://")
             && !trimmed.contains('(')
@@ -647,12 +650,12 @@ impl Resolver {
         // A page past the first of a slice (`<slice>?page=<n>`, datumesh-local 0.5.3, A3): the slice's own answer,
         // which cuts the page. The call's parse does not take the query, so the request is not parsed as a call.
         if is_slice_page(&text) {
-            return Ok(Got::Reply(self.answer(&aliases.expand_request(request), &Cell::new(false))?));
+            return Ok(Got::Reply(self.answer(&aliases.expand_request(request), &Cell::new(false), members)?));
         }
         let parsed = crate::classes::note_prefix(self.parse_request(&text, &aliases), request, &text, &aliases);
         let reply = match parsed {
             Parse::Call { rest, resolved, fetched, .. } => {
-                let reply = self.answer(&rest, &Cell::new(fetched))?;
+                let reply = self.answer(&rest, &Cell::new(fetched), members)?;
                 match resolved {
                     Some(r) => with_resolved(reply, &r),
                     None => reply,
@@ -668,7 +671,7 @@ impl Resolver {
             Parse::Plain if references && !text.trim_start().starts_with("cell://") && !text.contains('(') => {
                 return self.reference(trimmed);
             }
-            Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false))?,
+            Parse::Plain => self.answer(&aliases.expand_request(request), &Cell::new(false), members)?,
         };
         Ok(Got::Reply(reply))
     }
@@ -827,7 +830,7 @@ impl Resolver {
 
     /// The answer to a cell URI's rest (or a URI, `cell://`), fetching what it needs from its host
     /// when it is not held (`fetched` notes that a fetch happened).
-    pub(crate) fn answer(&self, text: &str, fetched: &Cell<bool>) -> Result<Reply, Error> {
+    pub(crate) fn answer(&self, text: &str, fetched: &Cell<bool>, members: usize) -> Result<Reply, Error> {
         let s = &self.shared;
         let rest = text.strip_prefix("cell://").unwrap_or(text).to_string();
         let name = name_of(&rest).to_string();
@@ -864,7 +867,7 @@ impl Resolver {
         // A slice of a stored function: its members (C4); a computed function's slice keeps the
         // mesh's own refusal.
         if rest.contains('*') {
-            if let Some(reply) = self.slice_answer(&rest)? {
+            if let Some(reply) = self.slice_answer(&rest, members)? {
                 return Ok(reply);
             }
         }
@@ -2114,4 +2117,107 @@ pub(crate) fn build_mesh(shared: &Arc<Shared>, aliases: &AliasMap, base_url: Opt
         .licence(shared.config.licence.clone())
         .build()
         .map_err(|e| Error::Config(format!("mesh: {e:?}")))
+}
+
+/// The day number (days from 1970-01-01) of a `YYYY-MM-DD` date, when the text is one with a real day.
+pub(crate) fn day_number(date: &str) -> Option<i64> {
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit());
+    let b = date.as_bytes();
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !digits(&date[0..4])
+        || !digits(&date[5..7])
+        || !digits(&date[8..10])
+    {
+        return None;
+    }
+    let y: i64 = date[0..4].parse().ok()?;
+    let m: i64 = date[5..7].parse().ok()?;
+    let d: i64 = date[8..10].parse().ok()?;
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d))
+}
+
+/// The `YYYY-MM-DD` date of a day number (see [`day_number`]).
+pub(crate) fn date_of_day(z: i64) -> String {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        _ => 28,
+    }
+}
+
+/// The request with a quoted canonical date (`"2026-10-30"`) and `date(y, m, d)` written as the date they name
+/// (`2026-10-30`), where a call takes a date. Anything else is left as it is.
+pub(crate) fn canonical_dates(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if let Some(r) = rest.strip_prefix('"') {
+            if r.len() >= 11 && r.is_char_boundary(10) && r.as_bytes()[10] == b'"' && day_number(&r[..10]).is_some() {
+                out.push_str(&r[..10]);
+                rest = &r[11..];
+                continue;
+            }
+        } else if let Some(r) = rest.strip_prefix("date(") {
+            let call_position = !out.ends_with(|c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '/'));
+            if let (true, Some((date, used))) = (call_position, date_call(r)) {
+                out.push_str(&date);
+                rest = &r[used..];
+                continue;
+            }
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// `y, m, d)` (the rest of a `date(` call): its canonical date and the bytes it takes, when it is a date.
+fn date_call(r: &str) -> Option<(String, usize)> {
+    let close = r.find(')')?;
+    let parts: Vec<&str> = r[..close].split(',').map(str::trim).collect();
+    let [y, m, d] = parts.as_slice() else { return None };
+    if y.len() != 4
+        || !y.bytes().all(|c| c.is_ascii_digit())
+        || m.is_empty()
+        || m.len() > 2
+        || d.is_empty()
+        || d.len() > 2
+    {
+        return None;
+    }
+    if !m.bytes().chain(d.bytes()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let date = format!("{y}-{:02}-{:02}", m.parse::<u32>().ok()?, d.parse::<u32>().ok()?);
+    day_number(&date)?;
+    Some((date, close + 1))
 }

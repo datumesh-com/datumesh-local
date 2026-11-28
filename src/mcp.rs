@@ -28,7 +28,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::bundle::base64;
 use crate::calculus::{OverrideArg, SolveArg, WhatifArgs};
-use crate::resolver::{call_form, cell_uri, BlobContent, Got, Source, TEXT_LIMIT};
+use crate::resolver::{call_form, cell_uri, date_of_day, day_number, BlobContent, Got, Source, TEXT_LIMIT};
 use crate::{Error, PublicPlan, Reply, Resolver, RootPlan};
 
 /// The protocol revision this server speaks.
@@ -53,12 +53,24 @@ const EXPLAIN_NESTED: usize = 20;
 const LINEAGE_CUT: usize = 20;
 /// The results a find answer's text names (A2).
 const FIND_LISTED: usize = 20;
+/// The small profile's sizes (datumesh-local 0.5.5, item 27): the members of a page (a slice or an interval), the lineage
+/// a calc lists, the results a find lists, the text a get inlines, and the length of a description a find gives.
+const SMALL_MEMBERS: usize = 15;
+const SMALL_LINEAGE: usize = 8;
+const SMALL_FIND: usize = 10;
+const SMALL_TEXT: usize = 1536;
+const SMALL_DESCRIPTION: usize = 100;
+/// The most years of a daily series one interval takes (datumesh-http's INTERVAL_YEARS, copied here: CONTRACT-local-0.5.5).
+const INTERVAL_YEARS: i64 = 10;
+/// The line a get adds when it reads a series at a third date (item 17).
+const SERIES_LINE: &str =
+    "Many dates of one series are read with interval, or with a calc over a slice (a key written as *).";
 /// The notification that the tools' summary has changed (A4).
 const LIST_CHANGED: &str = "notifications/tools/list_changed";
 
 const TOOLS: &str = r#"[
 {"name":"find","description":"Names held here whose name contains the query (case-insensitive). When none are held, or with remote, also the configured find_meshes (and the forward mesh with remote); searched lists each place looked and its status. A class is followed by its methods.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"type":"string"},"remote":{"type":"boolean"}},"required":["query"],"additionalProperties":false}},
-{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size. A slice of more than 100 members answers a summary (count, first and last key, and for numbers min, max and mean), its first 100 members and the calc call that aggregates the slice (mean for numbers, else count): run that calc to get the aggregate.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
+{"name":"get","description":"The answer to a call (name(arg: value, ...)) or a cell:// URI, as a signed receipt. A text blob's content (up to 64 KiB) comes first, checked against its SHA-256 (blob_checked); otherwise its blob:// address and size. A slice of more than 100 members answers a summary (count, first and last key, and for numbers min, max and mean), its first 100 members and the calc call that aggregates the slice (mean for numbers, else count): run that calc to get the aggregate. Many dates of one series are read with interval, or with a calc over a slice (a key written as *).","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}},
 {"name":"explain","description":"The lineage of a cell: its answer and the answers of its inputs, to depth. Its inputs are paged: page (from 1) and limit (default 20, at most 40) choose the page, and inputs_total counts them all.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"request":{"type":"string"},"depth":{"type":"integer","minimum":0},"page":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":40}},"required":["request"],"additionalProperties":false}},
 {"name":"describe","description":"A class, object, cell or short id (SPEC 16.8), as the mesh describes it.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
 {"name":"verify","description":"Verifies a receipt (its JSON) with this machine's keys.","inputSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"receipt":{"type":"string"},"call":{"type":"string"},"text":{"type":"string"}},"additionalProperties":false}},
@@ -118,9 +130,9 @@ const SMALL_INSTRUCTIONS: &str = "Datumesh: every answer is a signed receipt. Us
 /// The tools of the small profile, in `tools/list` order (`find`, `get`, `calc`, `interval`).
 const SMALL_TOOLS: &str = r#"[
 {"name":"find","description":"Names held here that contain the query, case-insensitively. With remote, or when none are held, also the find meshes.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
-{"name":"get","description":"The signed answer to a call such as name(arg: value), or to a cell:// URI.","inputSchema":{"type":"object","properties":{"request":{"type":"string"}},"required":["request"]}},
-{"name":"calc","description":"Calculates a formula beside the data and returns the result with its lineage.","inputSchema":{"type":"object","properties":{"formula":{"type":"string"}},"required":["formula"]}},
-{"name":"interval","description":"The members of a function over a range of keys, each with its receipt.","inputSchema":{"type":"object","properties":{"function":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["function","from","to"]}}
+{"name":"get","description":"The signed answer to a call such as name(arg: value), or to a cell:// URI. For many dates of one series, use interval, or a calc over a slice such as name(date: *).","inputSchema":{"type":"object","properties":{"request":{"type":"string"}},"required":["request"]}},
+{"name":"calc","description":"Calculates a formula beside the data and returns the result with its lineage.","inputSchema":{"type":"object","properties":{"formula":{"type":"string"},"remote":{"type":"boolean"}},"required":["formula"]}},
+{"name":"interval","description":"The members of a function over a range of keys, each with its receipt.","inputSchema":{"type":"object","properties":{"function":{"type":"string"},"keys":{"type":"object"},"from":{"type":"string"},"to":{"type":"string"}},"required":["function","from","to"]}}
 ]"#;
 
 /// The MCP server over a resolver: [`McpServer::handle`] answers one message.
@@ -134,6 +146,8 @@ pub struct McpServer {
     profile: Profile,
     /// What the catalogue summary gave, or why it could not be had (items 36 to 38).
     surface: Mutex<Surface>,
+    /// Each function read through get, with the dates read of it (item 17).
+    series: Mutex<Vec<(String, Vec<String>)>>,
 }
 
 /// The catalogue state of a server (datumesh-local 0.5.2, items 37 and 38): the summary and the
@@ -259,6 +273,7 @@ impl McpServer {
             tools,
             profile,
             surface: Mutex::new(Surface::default()),
+            series: Mutex::new(Vec::new()),
         };
         server.refresh();
         server
@@ -544,7 +559,14 @@ impl McpServer {
                 obj(m)
             })
             .collect();
+        let total = results.len();
+        if self.profile == Profile::Small {
+            results = results.into_iter().map(small_entry).take(SMALL_FIND).collect();
+        }
         let mut members = vec![("results", Value::Array(results)), ("searched", Value::Array(searched))];
+        if self.profile == Profile::Small {
+            members.push(("total", num(total as u64)));
+        }
         if answer.nothing_matches() {
             members.push(("message", s(crate::resolver::NOTHING_MATCHES)));
         }
@@ -555,12 +577,36 @@ impl McpServer {
     /// find mesh resolves it exactly, else its candidates, its range refusal or its suggestions.
     fn get(&self, args: &Value) -> Result<Vec<(String, Value)>, ToolError> {
         let request = str_arg(args, "request")?;
-        match self.resolver.get_request(request)? {
-            Got::Reply(reply) => match slice_answer_of(&reply) {
-                Some(v) => Ok(content_members(vec![slice_text(&v)], v, false)),
-                None => self.answer(&reply, None),
-            },
-            Got::Read { reply, label, call } => self.answer(&reply, Some((label, call))),
+        let got = match self.resolver.get_request(request, self.members_per_page()) {
+            Ok(got) => got,
+            Err(e) => {
+                let failure = ToolError::from(e);
+                return Err(if is_label_code(failure.code.as_deref()) && label_shaped(request) {
+                    self.label_answer(request)
+                } else {
+                    failure
+                });
+            }
+        };
+        match got {
+            Got::Reply(reply) => {
+                if let Some(refusal) = self.label_refusal(request, &reply) {
+                    return Err(refusal);
+                }
+                match slice_answer_of(&reply) {
+                    Some(v) => Ok(content_members(vec![slice_text(&v)], v, false)),
+                    None => {
+                        let note = self.failure_note(&reply, request);
+                        let mut members = self.answer(&reply, None, note)?;
+                        self.series_line(&reply, &mut members);
+                        Ok(members)
+                    }
+                }
+            }
+            Got::Read { reply, label, call } => {
+                let note = self.failure_note(&reply, request);
+                self.answer(&reply, Some((label, call)), note)
+            }
             Got::Ambiguous(candidates) => Ok(ambiguous_members(request, &candidates)),
             Got::Range => {
                 Err(ToolError { code: Some("E_RANGE_REFUSED".into()), detail: RANGE_DETAIL.into(), body: None })
@@ -572,7 +618,12 @@ impl McpServer {
     /// The answer to `get` for `reply`: its blob's checked text first when it is text within the
     /// limit (CONTRACT-1.7a-text L1), else its `blob` address; a mismatch is an error. With
     /// `resolved` (a reference's label and call), the answer starts with them (R4).
-    fn answer(&self, reply: &Reply, resolved: Option<(String, String)>) -> Result<Vec<(String, Value)>, ToolError> {
+    fn answer(
+        &self,
+        reply: &Reply,
+        resolved: Option<(String, String)>,
+        note: Option<String>,
+    ) -> Result<Vec<(String, Value)>, ToolError> {
         if let Some(detail) = blob_mismatch(reply) {
             return Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None });
         }
@@ -591,7 +642,8 @@ impl McpServer {
         // A failed get (status 400 or more) is an error whose text names the code and every detail (datumesh-local
         // 0.5.3): the answer block is the structured content, as it is for any answer.
         if reply.status >= 400 {
-            return Err(failed(block, &reply.detail.iter().cloned().collect::<Vec<_>>()));
+            let extra: Vec<String> = reply.detail.iter().cloned().chain(note).collect();
+            return Err(failed(block, &extra));
         }
         let Some(blob) = self.resolver.blob_of(reply)? else {
             head.push(short);
@@ -607,15 +659,19 @@ impl McpServer {
             info.push(("url", s(format!("https://{host}/blob/{}", blob.sha256))));
         }
         match blob.content {
-            BlobContent::Text(text) => {
+            BlobContent::Text(text) if self.profile == Profile::Full || text.len() <= SMALL_TEXT => {
                 let checked = obj(vec![
                     ("blob_checked", Value::Bool(true)),
                     ("length", num(blob.length)),
                     ("media_type", s(&blob.media_type)),
                     ("sha256", s(&blob.sha256)),
                 ]);
-                let structured =
-                    with_members(block.clone(), vec![("text", s(&text)), ("blob_checked", Value::Bool(true))]);
+                // The small profile gives the text once, in the text part (datumesh-local 0.5.5, item 27).
+                let mut extra = vec![("blob_checked", Value::Bool(true))];
+                if self.profile == Profile::Full {
+                    extra.push(("text", s(&text)));
+                }
+                let structured = with_members(block.clone(), extra);
                 head.extend([text, json_text(&checked)]);
                 head.push(short);
                 Ok(content_members(head, structured, false))
@@ -623,7 +679,7 @@ impl McpServer {
             BlobContent::Mismatch(detail) => {
                 Err(ToolError { code: Some("E_BLOB_MISMATCH".into()), detail, body: None })
             }
-            BlobContent::NotText | BlobContent::Unavailable(_) => {
+            BlobContent::Text(_) | BlobContent::NotText | BlobContent::Unavailable(_) => {
                 let mut members = vec![("blob", obj(info)), ("blob_checked", Value::Bool(false))];
                 if let BlobContent::Unavailable(why) = &blob.content {
                     members.push(("blob_unavailable", s(why)));
@@ -650,6 +706,213 @@ impl McpServer {
             r.computed_by(),
             r.hash()
         )
+    }
+
+    /// The members a page gives at once: 100 in the full profile, 15 in the small one.
+    fn members_per_page(&self) -> usize {
+        if self.profile == Profile::Small {
+            SMALL_MEMBERS
+        } else {
+            crate::interval::LISTED
+        }
+    }
+
+    /// The refusal of a label given as a call (datumesh-local 0.5.5, item 22): a label is not read as a find. The
+    /// answer says it looks like a label and carries the find mesh's matches, the top one first.
+    fn label_answer(&self, text: &str) -> ToolError {
+        let found: Vec<crate::Found> = self.resolver.find_in(text, false).map(|a| a.results).unwrap_or_default();
+        let top = match found.first() {
+            Some(f) => format!("The top match is {}: {}.", f.name, call_template(&f.name, &f.args)),
+            None => "Nothing the find mesh holds matches it.".to_string(),
+        };
+        let detail = format!("{text} looks like a label, not a call or a cell, so no value is read. {top}");
+        let matches = found
+            .iter()
+            .take(FIND_LISTED)
+            .map(|f| {
+                obj(vec![("name", s(&f.name)), ("kind", s(&f.kind)), ("call", s(call_template(&f.name, &f.args)))])
+            })
+            .collect();
+        let body = obj(vec![("error", s("E_LABEL")), ("detail", s(&detail)), ("matches", Value::Array(matches))]);
+        ToolError { code: Some("E_LABEL".into()), detail, body: Some(body) }
+    }
+
+    /// The label refusal of a reply: a text with parentheses that is neither a call nor a reference (E_PARSE_URI or
+    /// E_KEY_ENCODING), read as a label.
+    fn label_refusal(&self, text: &str, reply: &Reply) -> Option<ToolError> {
+        let label = reply.status == 400 && label_shaped(text) && is_label_code(error_code_of(reply).as_deref());
+        label.then(|| self.label_answer(text))
+    }
+
+    /// The note a failed get gives (datumesh-local 0.5.5, items 21 and 23), from the call it was asked.
+    fn failure_note(&self, reply: &Reply, request: &str) -> Option<String> {
+        if reply.status < 400 || !request.contains('(') {
+            return None;
+        }
+        self.candidate_note(request)
+    }
+
+    /// The note a failed calc gives: its unqualified name's full name, or the note of the first call it makes that
+    /// fails for its name, its key or its date.
+    fn calc_note(&self, formula: &str, failure: &ToolError) -> Option<String> {
+        if failure.code.as_deref() == Some("E_FORMULA_UNKNOWN_FUNCTION") {
+            return self.unqualified_note(&failure.detail);
+        }
+        calls_in(formula).iter().find_map(|c| self.candidate_note(c))
+    }
+
+    /// What one call's failed read says of its cause: a name the mesh does not hold (E_NAME_UNBOUND), a key value it
+    /// does not take, or a cell with no value on its date. `None` when the call is not such a failure.
+    fn candidate_note(&self, call: &str) -> Option<String> {
+        let (name, args) = split_call(call)?;
+        let full = self.resolver.aliases().expand(name);
+        let reply = self.resolver.get(&format!("{full}({args})")).ok()?;
+        if error_code_of(&reply).as_deref() == Some("E_NAME_UNBOUND") {
+            return Some(self.name_note(&full));
+        }
+        if reply.receipt().is_some() || reply.outcome().as_deref() != Some("not_covered") {
+            return None;
+        }
+        for (key, value) in string_args(args) {
+            if key == "date" {
+                continue;
+            }
+            let values = self.key_values(&full, args, &key);
+            if !values.is_empty() && !values.contains(&value) {
+                let list = values.join(", ");
+                return Some(format!(
+                    "{key}: \"{value}\" is not a value of {key} in {full}. The values it takes are {list}."
+                ));
+            }
+        }
+        let date = date_arg(args)?;
+        Some(self.date_note(&full, args, &date))
+    }
+
+    /// The names a function holds in the namespace of `full`, or that there are none.
+    fn name_note(&self, full: &str) -> String {
+        let (ns, leaf) = full.rsplit_once('/').unwrap_or(("", full));
+        let near: Vec<String> = self
+            .resolver
+            .find_in(leaf, false)
+            .map(|a| a.results)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.name.rsplit_once('/').is_some_and(|(p, _)| p == ns))
+            .map(|f| f.name)
+            .collect();
+        if near.is_empty() {
+            format!(
+                "{full} is not bound on this mesh, and the mesh holds no names in {ns}. Use find to look for names."
+            )
+        } else {
+            format!(
+                "{full} is not bound on this mesh. Names near it in {ns}: {}. Use find to look for names.",
+                near.join(", ")
+            )
+        }
+    }
+
+    /// The values `key` takes at the other arguments of a call, as the members of its slice give them.
+    fn key_values(&self, full: &str, args: &str, key: &str) -> Vec<String> {
+        let parts: Vec<String> = split_args(args)
+            .into_iter()
+            .map(|p| match p.split_once(':') {
+                Some((k, _)) if k.trim() == key => format!("{key}: *"),
+                _ => p,
+            })
+            .collect();
+        let Ok(reply) = self.resolver.get(&format!("{full}({})", parts.join(", "))) else { return Vec::new() };
+        let members = match reply.envelope().and_then(|e| e.get("members").cloned()) {
+            Some(Value::Array(a)) => a,
+            _ => Vec::new(),
+        };
+        let marker = format!("{key}: \"");
+        let mut values: Vec<String> = Vec::new();
+        for m in &members {
+            let call = s_of(m, "call");
+            if let Some(rest) = call.find(&marker).map(|at| &call[at + marker.len()..]) {
+                if let Some(end) = rest.find('"') {
+                    let value = rest[..end].to_string();
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    /// The note for a cell with no value on its date: the nearest dates either side that have one, and the lookup
+    /// that reads the nearest value (`last_before`).
+    fn date_note(&self, full: &str, args: &str, date: &str) -> String {
+        let day = day_number(date).unwrap_or(0);
+        let nearest = |step: i64| -> String {
+            (1..=7)
+                .map(|k| date_of_day(day + step * k))
+                .find(|cand| {
+                    let call = format!("{full}({})", args.replace(date, cand));
+                    self.resolver.get(&call).is_ok_and(|r| r.receipt().is_some())
+                })
+                .unwrap_or_else(|| "none within a week".to_string())
+        };
+        let (before, after) = (nearest(-1), nearest(1));
+        let star = args.replace(date, "*");
+        format!(
+            "{full}({args}) has no value on {date}: its nearest dates are {before} and {after}. The nearest value is read with last_before({full}({star}), {date}, 7)."
+        )
+    }
+
+    /// The full name of an unqualified function of a formula, from the find mesh's names of its last word.
+    fn unqualified_note(&self, detail: &str) -> Option<String> {
+        let (head, _) = detail.split_once(" is not a built-in")?;
+        let ident = head.rsplit(|c: char| c.is_whitespace() || c == ':').next()?;
+        if ident.is_empty() {
+            return None;
+        }
+        let near: Vec<String> = self
+            .resolver
+            .find_in(ident, false)
+            .map(|a| a.results)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.name.rsplit('/').next() == Some(ident))
+            .map(|f| f.name)
+            .collect();
+        (!near.is_empty()).then(|| format!("Did you mean {}?", near.join(", ")))
+    }
+
+    /// A calc answer as the profile gives it: the lineage cut to its page; the small profile gives the formula once (its
+    /// canonical form) and no pointer to explain, which that profile does not have (datumesh-local 0.5.5, item 27).
+    fn calc_answer(&self, v: Value) -> Value {
+        if self.profile == Profile::Small {
+            cut_lineage(without(v, "formula"), SMALL_LINEAGE, false)
+        } else {
+            cut_lineage(v, LINEAGE_CUT, true)
+        }
+    }
+
+    /// The one line a get adds when it reads a series at a third date, or later, of the same function (item 17).
+    fn series_line(&self, reply: &Reply, members: &mut [(String, Value)]) {
+        let Some((function, date)) = reply.receipt().and_then(|r| series_of(&call_form(r.cell()))) else { return };
+        let mut seen = self.series.lock().unwrap_or_else(|p| p.into_inner());
+        let at = match seen.iter().position(|(f, _)| *f == function) {
+            Some(at) => at,
+            None => {
+                seen.push((function, Vec::new()));
+                seen.len() - 1
+            }
+        };
+        let dates = &mut seen[at].1;
+        if dates.contains(&date) {
+            return;
+        }
+        if dates.len() >= 2 {
+            if let Some((_, Value::Array(items))) = members.iter_mut().find(|(k, _)| k.as_str() == "content") {
+                items.push(obj(vec![("type", s("text")), ("text", s(SERIES_LINE))]));
+            }
+        }
+        dates.push(date);
     }
 
     fn explain(&self, args: &Value) -> ToolResult {
@@ -740,7 +1003,20 @@ impl McpServer {
     /// they cannot be read).
     fn describe(&self, args: &Value) -> Result<(Value, Vec<String>), ToolError> {
         let id = str_arg(args, "id")?;
-        let (reply, listing) = self.resolver.describe_listing(id)?;
+        let (reply, listing) = match self.resolver.describe_listing(id) {
+            Ok(found) => found,
+            Err(e) => {
+                let failure = ToolError::from(e);
+                return Err(if is_label_code(failure.code.as_deref()) && label_shaped(id) {
+                    self.label_answer(id)
+                } else {
+                    failure
+                });
+            }
+        };
+        if self.label_refusal(id, &reply).is_some() {
+            return Err(self.label_answer(id));
+        }
         let answer = json::parse(&reply.body).unwrap_or(Value::Null);
         let mut members = vec![("status", num(u64::from(reply.status))), ("describe", answer.clone())];
         let unbound = self.resolver.describe_unbound(id, reply.status);
@@ -923,7 +1199,14 @@ impl McpServer {
                 .collect::<Result<Vec<_>, _>>()?,
             Some(_) => return Err(ToolError::arg("keys: an object of key values")),
         };
-        Ok(self.resolver.interval(function, &keys, from, to)?)
+        match self.resolver.interval(function, &keys, from, to, self.members_per_page()) {
+            Ok(v) => Ok(v),
+            Err(Error::Client { code, .. }) if code == "E_RANGE_TOO_LARGE" => {
+                let keys = args.get("keys").cloned().unwrap_or_else(|| Value::Object(Vec::new()));
+                Err(range_refusal(function, keys, from, to))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn calc(&self, args: &Value) -> ToolResult {
@@ -943,7 +1226,16 @@ impl McpServer {
             Some(Value::Bool(b)) => *b,
             Some(_) => return Err(ToolError::arg("remote: a boolean")),
         };
-        Ok(cut_lineage(self.resolver.calc(formula, asof, remote)?))
+        match self.resolver.calc(formula, asof, remote) {
+            Ok(v) => Ok(self.calc_answer(v)),
+            Err(e) => {
+                let mut failure = ToolError::from(e);
+                if let Some(note) = self.calc_note(formula, &failure) {
+                    failure.detail = format!("{} {note}", failure.detail);
+                }
+                Err(failure)
+            }
+        }
     }
 
     /// `whatif` (E6): the scenario of the request, from the mesh that answers for the cell or from
@@ -1566,11 +1858,15 @@ fn find_text(v: &Value) -> String {
         let message = scalar(v.get("message"));
         return if message.is_empty() { "No results.".to_string() } else { message };
     }
-    let mut lines = vec![format!("{} results:", results.len())];
+    let total = v.get("total").and_then(Value::as_number_text).and_then(|t| t.parse::<usize>().ok());
+    let total = total.unwrap_or(results.len());
+    let mut lines = vec![format!("{total} results:")];
     for r in results.iter().take(FIND_LISTED) {
         lines.push(format!("- {} ({}): {}", scalar(r.get("name")), scalar(r.get("kind")), scalar(r.get("call"))));
     }
-    if results.len() > FIND_LISTED {
+    if total > results.len() {
+        lines.push(format!("... and {} more; this answer gives the first {}.", total - results.len(), results.len()));
+    } else if results.len() > FIND_LISTED {
         lines.push(format!("... and {} more in the structured content.", results.len() - FIND_LISTED));
     }
     lines.join("\n")
@@ -1627,10 +1923,18 @@ fn calc_text(v: &Value) -> String {
         text.push_str(&format!(" Receipt {hash}."));
     }
     if let Some(total) = v.get("lineage_total") {
-        text.push_str(&format!(
-            " It reads {} inputs; explain (the pointer in the answer) lists the rest.",
-            scalar(Some(total))
-        ));
+        let shown = match v.get("lineage") {
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        };
+        if v.get("explain").is_some() {
+            text.push_str(&format!(
+                " It reads {} inputs; explain (the pointer in the answer) lists the rest.",
+                scalar(Some(total))
+            ));
+        } else {
+            text.push_str(&format!(" It reads {} inputs; the first {shown} are listed.", scalar(Some(total))));
+        }
     }
     text
 }
@@ -1710,27 +2014,172 @@ fn page_arg(args: &Value, key: &str, default: usize, max: Option<usize>) -> Resu
 
 /// A tool answer's lineage cut to its first [`LINEAGE_CUT`] entries (A3): `lineage_total` counts them all, and
 /// when the answer has its call, `explain` gives the arguments of the page after the cut.
-fn cut_lineage(v: Value) -> Value {
+fn cut_lineage(v: Value, limit: usize, pointer: bool) -> Value {
     let Value::Object(mut members) = v else { return v };
     let total = match members.iter().find(|(k, _)| k.as_str() == "lineage") {
         Some((_, Value::Array(a))) => a.len(),
         _ => return Value::Object(members),
     };
-    if total <= LINEAGE_CUT {
+    if total <= limit {
         return Value::Object(members);
     }
     let call = members.iter().find(|(k, _)| k.as_str() == "call").and_then(|(_, c)| c.as_str().map(str::to_string));
     for (k, v) in members.iter_mut() {
         if let (true, Value::Array(a)) = (k.as_str() == "lineage", v) {
-            a.truncate(LINEAGE_CUT);
+            a.truncate(limit);
         }
     }
     members.push(("lineage_total".into(), num(total as u64)));
-    if let Some(call) = call {
-        let pointer = obj(vec![("request", s(call)), ("page", num(2)), ("limit", num(LINEAGE_CUT as u64))]);
+    if let (true, Some(call)) = (pointer, call) {
+        let pointer = obj(vec![("request", s(call)), ("page", num(2)), ("limit", num(limit as u64))]);
         members.push(("explain".into(), pointer));
     }
     Value::Object(members)
+}
+
+/// Whether a text reads as a label: words before its first parenthesis (`Euro short-term rate (€STR)`), not a call's
+/// name (`ecb/fx_rate(...)`), which a malformed call keeps its own code for.
+fn label_shaped(text: &str) -> bool {
+    text.contains('(') && text.split('(').next().is_some_and(|head| head.trim().contains(char::is_whitespace))
+}
+
+/// Whether a failure's code is one a label given as a call gets (its text is not a call, a URI or a reference).
+fn is_label_code(code: Option<&str>) -> bool {
+    matches!(code, Some("E_PARSE_URI" | "E_KEY_ENCODING"))
+}
+
+/// The error code of a reply's envelope, if it has one.
+fn error_code_of(reply: &Reply) -> Option<String> {
+    reply.envelope()?.get("error")?.as_str().map(str::to_string)
+}
+
+/// A call's name and its arguments' text: `name(args)` gives `name` and `args`.
+fn split_call(call: &str) -> Option<(&str, &str)> {
+    let open = call.find('(')?;
+    let close = call.rfind(')')?;
+    (close > open).then(|| (call[..open].trim(), &call[open + 1..close]))
+}
+
+/// The arguments of a call's text, one per comma (a value's own comma is not kept apart).
+fn split_args(args: &str) -> Vec<String> {
+    args.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+/// The string-valued arguments of a call's text, as `(key, value)`.
+fn string_args(args: &str) -> Vec<(String, String)> {
+    split_args(args)
+        .into_iter()
+        .filter_map(|p| {
+            let (k, v) = p.split_once(':')?;
+            let inner = v.trim().strip_prefix('"')?.strip_suffix('"')?;
+            Some((k.trim().to_string(), inner.to_string()))
+        })
+        .collect()
+}
+
+/// The `date:` argument's date of a call's text, when it is a date.
+fn date_arg(args: &str) -> Option<String> {
+    let at = args.find("date: ")? + "date: ".len();
+    let date = args.get(at..at + 10)?;
+    day_number(date)?;
+    Some(date.to_string())
+}
+
+/// A call's function and its date argument's date: the series a get reads at that date.
+fn series_of(call: &str) -> Option<(String, String)> {
+    let (name, args) = split_call(call)?;
+    Some((name.to_string(), date_arg(args)?))
+}
+
+/// The calls a formula writes, each as `name(args)`: a name is the word before its `(`.
+fn calls_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (open, _) in text.match_indices('(') {
+        let name: String = text[..open]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '/' | '-' | '@'))
+            .collect::<Vec<char>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let (mut depth, mut quoted, mut close) = (0i32, false, None);
+        for (at, c) in text[open..].char_indices() {
+            match c {
+                '"' => quoted = !quoted,
+                '(' if !quoted => depth += 1,
+                ')' if !quoted => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + at);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(close) = close {
+            out.push(format!("{name}({})", &text[open + 1..close]));
+        }
+    }
+    out
+}
+
+/// A find result of the small profile: its name, kind, call, a description cut short, its label and source.
+fn small_entry(entry: Value) -> Value {
+    let Value::Object(members) = entry else { return entry };
+    let kept = members
+        .into_iter()
+        .filter(|(k, _)| matches!(k.as_str(), "name" | "kind" | "call" | "description" | "label" | "source"))
+        .map(|(k, v)| {
+            let v = match v {
+                Value::String(t) if k == "description" && t.chars().count() > SMALL_DESCRIPTION => {
+                    s(format!("{}...", t.chars().take(SMALL_DESCRIPTION).collect::<String>()))
+                }
+                other => other,
+            };
+            (k, v)
+        })
+        .collect();
+    Value::Object(kept)
+}
+
+/// An object without one of its members.
+fn without(v: Value, key: &str) -> Value {
+    match v {
+        Value::Object(members) => Value::Object(members.into_iter().filter(|(k, _)| k != key).collect()),
+        other => other,
+    }
+}
+
+/// The date `years` years after `date`; a February 29 becomes the 28th when that year has none.
+fn years_on(date: &str, years: i64) -> Option<String> {
+    day_number(date)?;
+    let y = date[..4].parse::<i64>().ok()? + years;
+    let (m, d) = (&date[5..7], &date[8..10]);
+    let d = if m == "02" && d == "29" && day_number(&format!("{y:04}-02-29")).is_none() { "28" } else { d };
+    Some(format!("{y:04}-{m}-{d}"))
+}
+
+/// The refusal of an interval over more than [`INTERVAL_YEARS`] years (datumesh-local 0.5.5, item 26): the most it
+/// takes, and the first page's arguments, from the same start to ten years on (or to the end, when that is sooner).
+fn range_refusal(function: &str, keys: Value, from: &str, to: &str) -> ToolError {
+    let first_to = years_on(from, INTERVAL_YEARS).filter(|end| end.as_str() < to).unwrap_or_else(|| to.to_string());
+    let detail = format!(
+        "the range is over {INTERVAL_YEARS} years of a daily series, the most one interval takes: read it in pages, starting with the arguments in the structured content."
+    );
+    let arguments = obj(vec![("function", s(function)), ("keys", keys), ("from", s(from)), ("to", s(first_to))]);
+    let page = obj(vec![("tool", s("interval")), ("arguments", arguments)]);
+    let body = obj(vec![
+        ("error", s("E_RANGE_TOO_LARGE")),
+        ("detail", s(&detail)),
+        ("limit", s(format!("{INTERVAL_YEARS} years"))),
+        ("page", page),
+    ]);
+    ToolError { code: Some("E_RANGE_TOO_LARGE".into()), detail, body: Some(body) }
 }
 
 /// The answer to an ambiguous reference: its candidates, labels and calls, and no value.

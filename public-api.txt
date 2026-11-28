@@ -680,7 +680,7 @@ impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::export(&self) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_local::Error>
 pub fn datumesh_local::Resolver::import(&self, &[u8], &[alloc::string::String]) -> core::result::Result<datumesh_local::bundle::Imported, datumesh_local::Error>
 impl datumesh_local::Resolver
-pub fn datumesh_local::Resolver::interval(&self, &str, &[(alloc::string::String, alloc::string::String)], &str, &str) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
+pub fn datumesh_local::Resolver::interval(&self, &str, &[(alloc::string::String, alloc::string::String)], &str, &str, usize) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
 impl datumesh_local::Resolver
 pub fn datumesh_local::Resolver::publish_public(&self, &datumesh_local::PublicPlan) -> core::result::Result<datumesh_core::json::Value, datumesh_local::Error>
 impl datumesh_local::Resolver

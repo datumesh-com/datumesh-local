@@ -5,6 +5,27 @@
 The agent tools (CONTRACT-patch-0.6.1 item 8a.8: NEXT-PATCH-QUEUE items 17 to 27 and the 4 KiB small profile).
 Tests first: `tests/l055_agent_tools.rs`; readings in CONTRACT-local-0.5.5.md.
 
+- **get's description points to many dates.** Both profiles' `get` descriptions say that many dates of one series are read
+  with `interval`, or with a calc over a slice (a key written as `*`). When a get reads a function at a third date or later,
+  the answer adds one line saying so.
+- **Interval and slice answers are compact rows.** Each member is its call, value and receipt hash (and `trust` for a slice).
+  The keys and the as-of are no longer repeated in every row.
+- **Dates in get.** A quoted canonical date (`"2026-10-30"`) and `date(2026, 10, 30)` read the same cell as `2026-10-30`, in
+  `get` (the CLI too). `calc` still refuses a quoted date, as the formula's type rule does; a non-canonical date is still refused.
+- **Unlicensed answers.** The answer names the `licence accept` command as before, and says that with `remote` the calculation
+  runs on the mesh and needs no licence.
+- **Failed reads say why.** A missing cell is named with its nearest dates and the `last_before` lookup that reads the nearest
+  value. A wrong key value lists the values the key takes. A name the mesh does not hold says so and points to find; a guessed
+  name gets the near names in its namespace. An unqualified function in calc gets its full name from find.
+- **A label is not read as a call.** Text with parentheses that is neither a call nor a reference is refused as a label (E_LABEL)
+  for `get` and `describe`, with the find mesh's top matches; it is not run as a find.
+- **A refused long interval says why.** An interval over more than 10 years is refused with the most it takes and the first
+  page's arguments, from the same start to ten years on.
+- **The small profile is about 4 KiB an answer.** Its find lists 10 results (with the total and descriptions cut to 100
+  characters); its slices and intervals give pages of 15 members; its calc gives 8 lineage entries, the formula once and no
+  pointer to explain; its get inlines a text of up to 1.5 KiB, once, and otherwise gives the text's address. Its `calc` declares
+  `remote`, and its `interval` declares `keys`. The full profile keeps its 64 KiB budget and its 100 members and 20 lineage entries.
+
 ## 0.5.4
 
 The client side of CONTRACT-patch-0.6.1 item 4c. Stays on datumesh-http 0.5.5 (no change to its public API).

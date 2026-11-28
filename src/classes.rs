@@ -209,7 +209,7 @@ impl CallEnv for Env<'_> {
         let Some(d) = self.bound_class(class, Some(asof))? else { return Ok(None) };
         let Some(method) = d.lookup.clone() else { return Ok(None) };
         let rest = format!("{class}/{method}?label={}&asof={asof}", pct(label));
-        let reply = self.resolver.answer(&rest, &self.fetched).map_err(|e| e.to_string())?;
+        let reply = self.resolver.answer(&rest, &self.fetched, crate::calc::PAGE).map_err(|e| e.to_string())?;
         if reply.status == FOREIGN_UNAVAILABLE_STATUS {
             return Err(self.unavailable(reply));
         }
