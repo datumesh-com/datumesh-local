@@ -217,9 +217,14 @@ fn mcp_get_of_a_slice_over_the_bound_is_refused_in_both_profiles() {
 fn mcp_get_of_a_slice_within_the_bound_is_answered() {
     let prod = ProdMesh::start(true);
     let dir = fresh_home_bounded(&[("datumesh.com", &prod.origin)], MEMBERS as u64);
-    let v = get(&mcp(&dir, Profile::Small), &bank_slice());
+    // The full profile answers the whole slice in one page; the small one pages it by 15 (local 0.5.5, item 27),
+    // and its first page is an answer, not a refusal.
+    let v = get(&mcp(&dir, Profile::Full), &bank_slice());
     assert!(!is_error(&v), "{}", jcs(&v));
     assert_eq!(arr(structured(&v), "members").len(), MEMBERS, "{}", jcs(&v));
+    let v = get(&mcp(&dir, Profile::Small), &bank_slice());
+    assert!(!is_error(&v), "{}", jcs(&v));
+    assert_eq!(arr(structured(&v), "members").len(), 15, "{}", jcs(&v));
 }
 
 // ------------------------------------------------------------------------------- several open arguments

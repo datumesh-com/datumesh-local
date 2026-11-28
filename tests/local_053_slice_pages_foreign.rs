@@ -134,13 +134,37 @@ fn mcp_get_follows_next_through_a_foreign_slice_in_both_profiles() {
             let next = next_of(&page).and_then(|n| n.get("request")).and_then(Value::as_str).map(str::to_string);
             pages.push(page);
             match next {
-                Some(request) if pages.len() < PAGES + 2 => v = get(&srv, &request),
+                Some(request) if pages.len() < MEMBERS => v = get(&srv, &request),
                 _ => break,
             }
         }
-        assert_walk(&what, &pages);
-        assert_hashes(&what, &r, &pages[1]);
+        if profile == Profile::Full {
+            assert_walk(&what, &pages);
+            assert_hashes(&what, &r, &pages[1]);
+        } else {
+            assert_small_walk(&pages);
+        }
     }
+}
+
+/// The small profile pages by at most 15 members (local 0.5.5, item 27): `next` covers every member once, in key
+/// order, and the last page has no `next`.
+fn assert_small_walk(pages: &[Value]) {
+    const SMALL: usize = 15;
+    assert_eq!(pages.len(), MEMBERS.div_ceil(SMALL), "Small: pages of {SMALL}");
+    let mut all = BTreeSet::new();
+    let mut last = String::new();
+    for (i, page) in pages.iter().enumerate() {
+        let d = dates(page);
+        assert!(!d.is_empty() && d.len() <= SMALL, "Small: page {} has {} members", i + 1, d.len());
+        for x in d {
+            assert!(x > last, "Small: key order across pages at {x}");
+            last = x.clone();
+            assert!(all.insert(x), "Small: a member on two pages");
+        }
+    }
+    assert_eq!(all.len(), MEMBERS, "Small: every member once");
+    assert!(next_of(&pages[pages.len() - 1]).is_none(), "Small: the last page has no next");
 }
 
 /// A home of 0.5.0's shape whose config reaches the test mesh (the command reads config.json).
