@@ -208,7 +208,9 @@ fn the_small_profile_stays_within_its_character_ceiling() {
 }
 
 /// The surface with `explain`'s description and schema set aside (local 0.5.3, the guard patch's
-/// A3: `explain` pages, with `page` and `limit`), and that tool's own entry.
+/// A3: `explain` pages, with `page` and `limit`), and that tool's own entry. `get`'s description is set
+/// aside too (local 0.5.5, NEXT-PATCH-QUEUE item 17: it points to interval and to a calc over a range);
+/// its schema is kept.
 fn without_explain(surface: &Value) -> (String, Value) {
     let mut v = surface.clone();
     let mut explain = Value::Null;
@@ -222,6 +224,10 @@ fn without_explain(surface: &Value) -> (String, Value) {
                     if s(t, "name") == "explain" {
                         explain = t.clone();
                         *t = Value::String("explain".into());
+                    } else if s(t, "name") == "get" {
+                        if let Value::Object(m) = t {
+                            m.retain(|(k, _)| k != "description");
+                        }
                     }
                 }
             }

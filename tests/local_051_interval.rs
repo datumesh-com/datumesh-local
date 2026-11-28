@@ -38,6 +38,14 @@ fn assert_listed_member(m: &Value) {
     assert!(h.len() == 64 && h.bytes().all(|c| c.is_ascii_hexdigit()), "its receipt hash: {}", jcs(m));
 }
 
+/// A listed member's date, from its call (local 0.5.5, NEXT-PATCH-QUEUE item 18: a member is a compact row
+/// of its call, value and receipt hash; its `keys` and `asof` are no longer repeated).
+fn date_of(m: &Value) -> String {
+    let call = s(m, "call");
+    let at = call.find("date: ").unwrap_or_else(|| panic!("a date in {call}")) + 6;
+    call[at..at + 10].to_string()
+}
+
 fn interval_targets(prod: &ProdMesh) -> Vec<String> {
     prod.targets().into_iter().filter(|t| t.starts_with("/x/interval/")).collect()
 }
@@ -111,15 +119,14 @@ fn a_small_interval_answers_its_members_each_with_its_receipt() {
     let sc = structured(&v);
     let members = arr(sc, "members");
     assert_eq!(members.len(), 6, "{}", jcs(sc));
-    let by_date: Vec<(String, String)> =
-        members.iter().map(|m| (s(m.get("keys").unwrap(), "date"), s(m, "value"))).collect();
+    let by_date: Vec<(String, String)> = members.iter().map(|m| (date_of(m), s(m, "value"))).collect();
     assert_eq!(by_date[0], ("2026-11-16".to_string(), "5.12".to_string()));
     assert_eq!(by_date[4], ("2026-11-20".to_string(), "4.92".to_string()));
     for m in members {
         assert_listed_member(m);
     }
     // The hash is the receipt's: 2026-11-20's is production's recorded /cell receipt.
-    let m20 = members.iter().find(|m| s(m.get("keys").unwrap(), "date") == "2026-11-20").unwrap();
+    let m20 = members.iter().find(|m| date_of(m) == "2026-11-20").unwrap();
     assert_eq!(s(m20, "receipt_hash"), fixture_receipt_hash("par_yield?date=2026-11-20&tenor=10Y"), "{}", jcs(m20));
     assert!(s(m20, "call").contains("par_yield") && s(m20, "call").contains("2026-11-20"), "{}", jcs(m20));
     // Under the hundred: no summary of the kind a long answer has, no call for the rest.
@@ -139,12 +146,11 @@ fn over_a_hundred_members_it_summarises_gives_the_first_hundred_and_the_call_for
     let sc = structured(&v);
     let members = arr(sc, "members");
     assert_eq!(members.len(), 100, "the first 100 of 126");
-    assert!(!s(&members[0], "asof").is_empty());
     for m in members {
         assert_listed_member(m);
     }
     // Members in key order: the first is the first business day of 2024.
-    assert_eq!(s(members[0].get("keys").unwrap(), "date"), "2024-01-02");
+    assert_eq!(date_of(&members[0]), "2024-01-02");
     // The summary: count 126, first and last key, min/max/mean for numbers.
     let summary = sc.get("summary").unwrap_or_else(|| panic!("a summary: {}", jcs(sc)));
     let st = jcs(summary);
@@ -154,7 +160,7 @@ fn over_a_hundred_members_it_summarises_gives_the_first_hundred_and_the_call_for
         assert!(st.contains(k), "{k}: {st}");
     }
     // The call for the rest: names the function, the keys and a range that starts after the 100th.
-    let hundredth = s(members[99].get("keys").unwrap(), "date");
+    let hundredth = date_of(&members[99]);
     // (the member is `rest`, like `get`'s `calc`; `next` and `call` are accepted as its name)
     let call = sc
         .get("rest")
