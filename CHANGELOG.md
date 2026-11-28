@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.5.5)
+## 0.5.5 (2026-11-28)
 
 The agent tools (CONTRACT-patch-0.6.1 item 8a.8: NEXT-PATCH-QUEUE items 17 to 27 and the 4 KiB small profile).
 Tests first: `tests/l055_agent_tools.rs`; readings in CONTRACT-local-0.5.5.md.
