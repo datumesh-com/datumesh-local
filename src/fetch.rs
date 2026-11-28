@@ -7,12 +7,12 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
     Arg, Args, Cell, ErrorCode, ForeignDetail, FunctionDescriptor, KeyDocument, Keys, LicenceReason, Receipt,
-    Reference, Scalar, Type, Withdrawal,
+    Reference, Request, Scalar, Type, Withdrawal,
 };
 use datumesh_engine::{Budget, Clock, EvalError, FnBinding, Input, Inputs, Member, Pattern, Runtime, SlicePattern};
 use datumesh_http::client::{pct, Client, ClientError, Fetched};
@@ -63,6 +63,30 @@ pub(crate) fn store_err(e: impl std::fmt::Display) -> ClientError {
 /// The failure of a fetch that reached no answer (the network's, not another mesh's), named
 /// as `E_FOREIGN_UNAVAILABLE`'s detail: `dns`, `tls`, `timeout`, `refused` or `network`.
 /// `None` for an answer that came back (a status, a check that failed).
+/// A client error of `code` with `detail`.
+fn ce(code: ErrorCode, detail: impl Into<String>) -> ClientError {
+    ClientError { code, detail: detail.into() }
+}
+
+/// The `pending` envelope of a `202` answer, if it is one.
+fn pending_of(f: &Fetched) -> Option<datumesh_core::Pending> {
+    if f.status != 202 {
+        return None;
+    }
+    f.answer.pending.clone()
+}
+
+/// Whether a body is the mesh's `E_JOB_UNKNOWN` error envelope (a job it no longer holds).
+fn is_job_unknown_body(body: &[u8]) -> bool {
+    json::parse(body).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
+        == Some(ErrorCode::JobUnknown.as_str().to_string())
+}
+
+/// Whether an answer is the mesh's `E_JOB_UNKNOWN` (a job it no longer holds).
+fn is_job_unknown(f: &Fetched) -> bool {
+    f.status == 400 && is_job_unknown_body(&f.body)
+}
+
 pub(crate) fn network_failure(e: &ClientError) -> Option<String> {
     // The client's own (typed) classification, where it gives one (http 0.2.1: the
     // publisher's key document): its detail starts with the kind. Its catch-all `network` is
@@ -314,7 +338,7 @@ impl Shared {
     }
 
     /// A cell's envelope from `host`, waiting out a `rate_limited` answer a few times.
-    pub(crate) fn fetch_cell(&self, host: &str, reference: &Reference) -> Result<Fetched, ClientError> {
+    fn send_cell(&self, host: &str, reference: &Reference) -> Result<Fetched, ClientError> {
         let mut wait = 1u64;
         for _ in 0..6 {
             let f = self.client.reference(host, reference)?;
@@ -326,6 +350,81 @@ impl Shared {
             wait = (wait * 2).min(30);
         }
         self.client.reference(host, reference)
+    }
+
+    /// A cell's envelope from `host`, following its job (CONTRACT-patch-0.6.1 4c).
+    pub(crate) fn fetch_cell(&self, host: &str, reference: &Reference) -> Result<Fetched, ClientError> {
+        self.follow_job(host, || self.send_cell(host, reference))
+    }
+
+    /// The one poll-following helper of `/cell` requests (4c). `send` makes the request. On a `202` with `poll`,
+    /// the job's URL is polled, waiting the answer's estimate clamped to 1..10 s before each poll, until the job
+    /// answers something else. The original request is not sent again while the job is known; when the mesh no
+    /// longer knows the job (`E_JOB_UNKNOWN`, a restart), it is sent once more, and a second `E_JOB_UNKNOWN` ends
+    /// the wait with that answer. At the configured `timeout` (counted from the first request) the last `202` is
+    /// returned as it came.
+    pub(crate) fn follow_job(
+        &self,
+        host: &str,
+        send: impl Fn() -> Result<Fetched, ClientError>,
+    ) -> Result<Fetched, ClientError> {
+        let deadline = Instant::now() + self.config.timeout;
+        let mut resent = false;
+        let mut f = send()?;
+        loop {
+            let Some(mut pending) = pending_of(&f) else { return Ok(f) };
+            let request = pending.request.clone();
+            let mut last = f;
+            let unknown = loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(last);
+                }
+                let wait = Duration::from_secs(pending.estimate_seconds.clamp(1, 10)).min(deadline - now);
+                std::thread::sleep(wait);
+                if Instant::now() >= deadline {
+                    return Ok(last);
+                }
+                let g = self.poll_job(host, &pending.poll, &request)?;
+                if let Some(next) = pending_of(&g) {
+                    pending = next;
+                    last = g;
+                    continue;
+                }
+                if is_job_unknown(&g) {
+                    break g;
+                }
+                return Ok(g);
+            };
+            if resent {
+                return Ok(unknown);
+            }
+            resent = true;
+            f = send()?;
+        }
+    }
+
+    /// A poll of a job's URL (through the client's peers, as any URL of `host`), its answer checked against the
+    /// request the job answers.
+    fn poll_job(&self, host: &str, url: &str, request: &Request) -> Result<Fetched, ClientError> {
+        let (status, body) = self.client.get(url, 16 << 20).map_err(|m| ce(ErrorCode::InputUnavailable, m))?;
+        let req = request.clone().with_mesh(host).map_err(|e| ce(ErrorCode::Envelope, format!("{e:?}")))?;
+        // The mesh's `E_JOB_UNKNOWN` is a bad request with no receipt to check: it is its own answer.
+        if status == 400 && is_job_unknown_body(&body) {
+            let answer =
+                datumesh_core::Answer::bad_request(ErrorCode::JobUnknown).map_err(|e| ce(e.code(), e.to_string()))?;
+            return Ok(Fetched { status, body, answer });
+        }
+        let check = |b: &[u8]| datumesh_core::check_answer(status, b, &self.client.keys_for_body(b), &req);
+        let answer = match check(&body) {
+            Err(e) if matches!(e.code(), ErrorCode::KeyUnknown | ErrorCode::KeyNotValid) => {
+                let _ = self.client.key_document(host, true);
+                check(&body)
+            }
+            r => r,
+        }
+        .map_err(|e| ce(e.code(), e.to_string()))?;
+        Ok(Fetched { status, body, answer })
     }
 
     /// Puts `host`'s key document (as the client fetched it from `host`) in the store unless

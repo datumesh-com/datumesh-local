@@ -1046,7 +1046,7 @@ impl Resolver {
         if let Some(p) = &target.pin {
             req = req.with_pin(p).map_err(|e| Error::Request(format!("{e:?}")))?;
         }
-        let f = match s.patient(|| s.client.cell(&mesh, target.rest(), &req)) {
+        let f = match s.follow_job(&mesh, || s.patient(|| s.client.cell(&mesh, target.rest(), &req))) {
             Ok(f) => f,
             Err(e) => {
                 return Ok(match network_failure(&e) {

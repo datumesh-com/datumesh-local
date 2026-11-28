@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.4
+
+The client side of CONTRACT-patch-0.6.1 item 4c. Stays on datumesh-http 0.5.5 (no change to its public API).
+
+- **The client follows a job (4c).** When a mesh answers `202 pending` with a `poll` URL, the cell's fetch (`fetch_cell`, a
+  foreign stored cell) and the forward to the forward mesh (`forward`) poll that URL through the configured peers, waiting the
+  answer's estimate clamped to 1 to 10 s before each poll, until the job answers. The original `/cell` request is not sent
+  again while the job is known. On `E_JOB_UNKNOWN` (a mesh restart) the original request is sent once more; a second
+  `E_JOB_UNKNOWN` ends the wait with that answer. At the client's own `timeout` (from the first request) the last `202` is
+  returned as it came. A poll's answer is checked against the request the job answers, as a cell's is.
+
 ## 0.5.3
 
 The guard patch's part A, agent answers (CONTRACT-guard-patch.md, A1 to A5; the user's items 12 to 14, 37 and the usage line).
